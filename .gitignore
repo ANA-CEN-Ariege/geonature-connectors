@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Configuration et données locales (ne pas versionner)
+config.toml
+connectors_config.toml
+gbif_imported_ids.csv
+gbif_results.csv
+gbif_cache.jsonl*
+*.csv
+
+# Sorties de import_tranches.sh (configs dérivées + caches par tranche)
+tranches/
+
+# Référentiel TAXREF (855 Mo, à télécharger séparément depuis l'INPN)
+TAXREF_v17_2024/
+
+# Sauvegardes locales avant modification
+.backup-*/
+
+# Téléchargements GBIF bruts (plusieurs centaines de Mo)
+# Ancré à la racine : sans le « / » initial, la règle excluait aussi docs/data/,
+# et l'exception plus bas ne pouvait pas s'appliquer — git ne redescend pas
+# dans un dossier exclu.
+/data/
+*.zip
+
+# Fichiers de verrou LibreOffice
+.~lock.*#
+
+# Sorties de travail du connecteur
+gbif2geonature/tmp/
+*.bak
+
+# Exception : les jeux de références de la documentation sont, eux, versionnés
+!docs/data/*.csv

@@ -1,0 +1,137 @@
+# Configuration du module CONNECTORS.
+#
+# À déposer à côté de geonature_config.toml, sous le nom `connectors_config.toml`.
+# Emplacements recherchés, dans l'ordre :
+#   1. le chemin donné par la variable d'environnement GEONATURE_CONNECTORS_CONFIG_FILE
+#   2. <dossier de geonature_config.toml>/connectors_config.toml
+#   3. <racine du module>/config/conf_gn_module.toml
+#
+# Le fichier est FACULTATIF : sans lui, les valeurs par défaut ci-dessous s'appliquent.
+# Toute clé inconnue est refusée au démarrage (schéma Marshmallow strict).
+
+[gbif]
+enabled = true
+
+# ── Périmètre ────────────────────────────────────────────────────────────────
+# gadm_gid est le seul filtre géographique fiable pour un département français.
+# Le résoudre via https://api.gbif.org/v1/geocode/gadm/search?q=<nom>
+# Mesuré sur l'Ariège : gadmGid -> 1 309 180 occurrences, stateProvince -> 1 215,
+# une bbox lat/lon -> 2 582 085 (elle déborde sur l'Aude et la Catalogne).
+gadm_gid = "FRA.11.1_1"
+country = "FR"
+
+# ── Qualité de base ──────────────────────────────────────────────────────────
+has_coordinate = true
+has_geospatial_issue = false
+# Ne JAMAIS mettre autre chose que PRESENT sans y avoir réfléchi : les absences
+# deviendraient des présences fausses en Synthèse. Un seul jeu ariégeois
+# (Culicoides du Cirad) en compte 116 799.
+occurrence_status = "PRESENT"
+
+# ── Licences ─────────────────────────────────────────────────────────────────
+# Valeurs possibles : "CC0_1_0", "CC_BY_4_0", "CC_BY_NC_4_0".
+# Le CC BY-NC est viral : GBIF applique « la plus restrictive gagne », donc une
+# seule occurrence non commerciale dans un agrégat le rend non commercial en
+# entier. Si vous l'acceptez, versez-le dans un JDD distinct, exclu des exports.
+licenses = ["CC0_1_0", "CC_BY_4_0"]
+
+# ── Exclusions ───────────────────────────────────────────────────────────────
+# Jeux déjà présents dans votre Synthèse par une autre voie (SINP, saisie directe).
+# ⚠ Il n'existe AUCUNE clé permettant de dédoublonner automatiquement contre
+# l'existant : cette liste est un travail de curation manuel, irréductible.
+exclude_dataset_keys = []
+# ⚠ Il n'existe AUCUNE clé permettant de dédoublonner automatiquement contre votre
+# Synthèse existante : ni les UUID de jeux de données (GBIF n'expose pas les
+# identifiants SINP), ni les identifiants d'observation. Cette liste est un travail
+# de curation manuel, irréductible.
+#
+# Vérifiez vos clés avant de vous y fier : une clé périmée n'exclut rien et ne le
+# signale pas. Attention aussi aux jeux homonymes — sur l'Ariège, deux jeux portent
+# le titre « Saisie naturaliste opportuniste dans SICEN Occitanie », l'un pour les
+# données d'une association, l'autre pour celles d'un autre producteur.
+
+# Exclusion par sous-chaîne du datasetName (insensible à la casse).
+# Filet de sécurité complémentaire aux clés, et non redondant : sur une configuration
+# réelle en Ariège, les termes rattrapaient 55 919 occurrences réparties sur 4 jeux
+# absents de la liste de clés. Les producteurs déclinent leurs jeux en de nombreuses
+# entrées GBIF, et une liste de clés se périme.
+#
+# Un terme court reste utilisable : le sigle « ana » attrapait 13 jeux ariégeois dont
+# 12 étaient bien les bons, le seul faux positif étant « Projet CANAlisation gazière ».
+# Mesurez avant d'adopter un terme, plutôt que de le supposer sûr ou dangereux.
+exclude_dataset_terms = []
+
+# Clés d'organisations publiantes à écarter. Repère : UAR PatriNat publie 75,8 %
+# du GBIF ariégeois, données qui proviennent déjà du SINP.
+exclude_publishing_orgs = []
+# Ne garder que ces observateurs (sous-chaîne sur recordedBy). Vide = tous.
+include_observers = []
+
+# Bornes sur eventDate, au format AAAA-MM-JJ. Vides = pas de borne.
+date_min = ""
+date_max = ""
+
+# ── Précision géographique ───────────────────────────────────────────────────
+# Incertitude maximale en mètres. Vide/absent = pas de filtre.
+# Repères mesurés sur l'Ariège : <= 1100 m ne retient que 39,9 % des occurrences,
+# <= 5000 m en retient 59,7 %. Un seuil trop bas n'écarte pas les mauvaises
+# données, il annule l'import : certains jeux publient TOUT à 5 km.
+# coordinate_uncertainty_max = 1000
+
+# Sort des occurrences sans incertitude déclarée — 34,9 % du corpus ariégeois.
+# Les garder revient à accepter une précision inconnue, potentiellement pire que
+# le seuil qu'on rejette par ailleurs.
+keep_unknown_uncertainty = true
+
+# ── Jeux publiés à la maille ─────────────────────────────────────────────────
+# Écarte les jeux dont les coordonnées sont des centroïdes de maille ou de
+# commune plutôt que des points d'observation. La détection croise le machine tag
+# GBIF « griddedDataset » (figé depuis 2020, donc incomplet) avec une analyse de
+# l'incertitude déclarée sur échantillon. Voir sources/gbif/griddedness.py.
+skip_gridded_datasets = true
+gridded_threshold_m = 1000
+
+# ── Traçabilité ──────────────────────────────────────────────────────────────
+# DOI du téléchargement GBIF, conservé sur chaque observation (obligation de
+# citation). L'API `search` n'en délivre aucun : ne vaut que pour l'API
+# `download`, et change à chaque téléchargement.
+download_doi = ""
+
+# ── Performance ──────────────────────────────────────────────────────────────
+# Les triggers de gn_synthese.synthese sont FOR EACH STATEMENT : leur coût ne
+# s'amortit qu'en insérant par paquets. Ne pas descendre sous quelques centaines.
+batch_size = 1000
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+[gbif.schedule]
+# Moissonnage planifié, via le Celery Beat déjà présent dans GeoNature : rien à
+# installer ni à configurer au niveau système.
+#
+# Désactivé par défaut : c'est à l'administrateur de décider qu'un import automatique
+# écrive dans sa Synthèse.
+enabled = false
+
+# « minute heure jour_du_mois mois jour_de_semaine ». Ici : lundi 3 h du matin.
+#
+# Une cadence fine ne sert à rien : les producteurs republient rarement. Mesuré sur
+# l'Ariège, aucun des 60 plus gros jeux n'avait été modifié dans les 7 derniers jours,
+# et la dernière modification de Faune Occitanie remontait à 901 jours. Le connecteur
+# saute d'ailleurs les jeux inchangés depuis son dernier passage, si bien qu'une
+# semaine sans republication coûte quelques minutes au lieu de plusieurs heures.
+crontab = "0 3 * * 1"
+
+
+[validation]
+# Pré-validation automatique des observations importées.
+#
+# Sans elle, chaque observation entre « En attente de validation » — le défaut de la
+# colonne. Sur un import de plusieurs centaines de milliers d'occurrences, cela noierait
+# le module Validation sous une file que personne ne traitera, et qui masquerait les
+# observations internes réellement à valider.
+#
+# `status` accepte un cd_nomenclature du type STATUT_VALID ou son libellé :
+#   1 Certain · 2 Probable · 3 Douteux · 4 Invalide · 5 Non réalisable · 6 Non évalué
+enabled = false
+status = "2"
+comment = "Validation automatique — données importées depuis une source externe"
