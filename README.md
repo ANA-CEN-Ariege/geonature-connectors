@@ -260,6 +260,13 @@ donc récupéré ensuite par `api_get`, soit **une requête par relevé modifié
 acceptable pour un delta, mais c'est aussi pourquoi `--since` ne remplace pas un
 moissonnage complet : sur un intervalle large, le nombre de requêtes explose.
 
+Un relevé peut être listé par le différentiel sans être lisible individuellement — l'API
+répond alors 403. Le client vendorisé traitant tout 4xx comme irrécupérable, une seule
+observation protégée faisait échouer le moissonnage entier. Ces relevés sont désormais
+journalisés sous le motif `inaccessible` dans `vn_rejets.csv` et le traitement continue.
+C'est une donnée manquante, pas une panne — mais elle est signalée, car ne pas savoir ce
+qu'on n'a pas serait pire que l'erreur.
+
 ### Anonymat : le rattrapage a posteriori
 
 Un observateur peut demander l'anonymat après coup, ou le lever. Ce changement porte sur

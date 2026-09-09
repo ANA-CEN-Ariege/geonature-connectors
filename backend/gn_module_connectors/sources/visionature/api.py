@@ -144,8 +144,9 @@ def identifiant(entree: dict) -> str | None:
 
 
 def observations_modifiees(cfg, id_taxo_group: str, depuis: str,
-                           type_modification: str = "only_modified") -> list[dict]:
-    """Relevés créés ou modifiés depuis `depuis` (ISO 8601), complets.
+                           type_modification: str = "only_modified"
+                           ) -> tuple[list[dict], list[tuple[str, str]]]:
+    """Relevés créés ou modifiés depuis `depuis`, et la liste des inaccessibles.
 
     Le différentiel ne livrant que des identifiants, chaque relevé signalé est ensuite
     récupéré par `api_get`. C'est une requête par relevé : acceptable pour un incrémental,
@@ -155,11 +156,21 @@ def observations_modifiees(cfg, id_taxo_group: str, depuis: str,
     Le défaut est `only_modified` et non « all » : les suppressions sont traitées à part,
     par `observations_supprimees`, et les inclure ici ferait tenter la récupération de
     relevés qui n'existent plus.
+
+    ⚠ Un relevé peut être listé par le différentiel sans être lisible individuellement :
+    l'API répond alors 403, et le client vendorisé traite tout 4xx comme irrécupérable en
+    levant `HTTPError`. Sans le rattrapage ci-dessous, **une seule observation protégée
+    fait échouer le moissonnage entier** — mesuré sur faune-occitanie.org, où l'import est
+    tombé au premier groupe sur l'observation 88724785.
+
+    Un relevé inaccessible est donc une donnée manquante, pas une panne : il est retourné
+    à l'appelant avec son motif, à charge pour lui de le journaliser. L'ignorer en silence
+    serait pire que l'erreur — on ne saurait pas ce qu'on n'a pas.
     """
     controleur = _controleur(bio.ObservationsAPI, cfg)
     entrees = _extraire(controleur.api_diff(id_taxo_group, depuis, type_modification))
 
-    releves = []
+    releves, inaccessibles = [], []
     for entree in entrees:
         if est_releve_complet(entree):
             releves.append(entree)
@@ -167,5 +178,10 @@ def observations_modifiees(cfg, id_taxo_group: str, depuis: str,
         cle = identifiant(entree)
         if not cle:
             continue
-        releves.extend(_extraire(controleur.api_get(cle)))
-    return releves
+        try:
+            releves.extend(_extraire(controleur.api_get(cle)))
+        except bio.HTTPError as erreur:
+            inaccessibles.append((cle, f"HTTP {erreur}"))
+        except bio.BiolovisionApiException as erreur:
+            inaccessibles.append((cle, str(erreur) or type(erreur).__name__))
+    return releves, inaccessibles

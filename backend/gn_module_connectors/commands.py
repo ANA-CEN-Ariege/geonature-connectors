@@ -747,7 +747,9 @@ def vn_import(groupes, since, batch_size, dry_run):
                     total_supprimes += n
                     click.echo(f"\n    {len(supprimes)} relevé(s) supprimé(s) à la "
                                f"source -> {n} observation(s) retirée(s)", nl=False)
-            releves = vn_api.observations_modifiees(cfg, str(groupe), since)
+            releves, inaccessibles = vn_api.observations_modifiees(cfg, str(groupe), since)
+            for cle, motif in inaccessibles:
+                rejets.add("inaccessible", cle, "", motif)
         else:
             releves = vn_api.observations(cfg, str(groupe))
         couples = vn_tr.deplier(releves)

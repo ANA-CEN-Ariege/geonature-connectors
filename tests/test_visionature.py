@@ -653,3 +653,36 @@ def test_une_entree_de_diff_nest_pas_un_releve():
 ])
 def test_identifiant_de_diff(entree, attendu):
     assert A.identifiant(entree) == attendu
+
+
+def test_un_releve_inaccessible_ninterrompt_pas_le_moissonnage(monkeypatch):
+    """Un 403 sur une observation ne doit pas faire tomber tout l'import.
+
+    Le différentiel liste des relevés que le compte n'a pas forcément le droit de lire
+    individuellement. Le client vendorisé traite tout 4xx comme irrécupérable et lève :
+    sans rattrapage, une seule observation protégée fait échouer un moissonnage de
+    milliers de relevés. Mesuré sur faune-occitanie.org, où l'import est tombé au premier
+    groupe sur l'observation 88724785.
+    """
+    from gn_module_connectors.sources.visionature.biolovision import api as bio
+
+    class ControleurFactice:
+        def api_diff(self, *_args):
+            return [{"id_sighting": "1"}, {"id_sighting": "403"}, {"id_sighting": "3"}]
+
+        def api_get(self, cle):
+            if cle == "403":
+                raise bio.HTTPError(403)
+            return {"data": {"sightings": [{"@id": cle, "observers": [{"@id": "9"}]}]}}
+
+    monkeypatch.setattr(A, "_controleur", lambda *_a, **_k: ControleurFactice())
+    releves, inaccessibles = A.observations_modifiees({}, "1", "2026-09-09")
+
+    assert [r["@id"] for r in releves] == ["1", "3"]
+    assert [cle for cle, _ in inaccessibles] == ["403"]
+    assert "403" in inaccessibles[0][1]
+
+
+def test_un_releve_deja_complet_nest_pas_recharge():
+    """Économie de requêtes : si le diff livre la donnée, ne pas la redemander."""
+    assert A.est_releve_complet({"@id": "1", "observers": [{"@id": "9"}]})
