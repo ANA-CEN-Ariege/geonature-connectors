@@ -1117,8 +1117,18 @@ def vn_diagnostic(groupe):
         except bio.BiolovisionApiException as erreur:
             click.secho(f"  {intitule:<34} échec  {erreur!r}", fg="yellow")
             return None
-        n = len(vn_api._extraire(reponse))
-        click.secho(f"  {intitule:<34} OK     {n} entrée(s)", fg="green")
+        entrees = vn_api._extraire(reponse)
+        click.secho(f"  {intitule:<34} OK     {len(entrees)} entrée(s)", fg="green")
+        if entrees:
+            # La forme de l'entrée commande toute la conception : une entrée réduite à un
+            # identifiant impose une requête par relevé, ce qui ne passe pas à l'échelle.
+            premiere = entrees[0]
+            if isinstance(premiere, dict):
+                complet = vn_api.est_releve_complet(premiere)
+                click.echo(f"  {'':<34}        champs : "
+                           f"{', '.join(sorted(premiere)[:12])}")
+                click.echo(f"  {'':<34}        relevé complet : "
+                           f"{'oui' if complet else 'NON — un api_get par entrée'}")
         return reponse
 
     click.echo(f"Instance {cfg['url']}, groupe taxonomique {groupe} :\n")
@@ -1134,6 +1144,9 @@ def vn_diagnostic(groupe):
     sonder("observations/search", lambda: obs.api_search(
         {"id_taxo_group": str(groupe), "date_from": recent, "date_to": recent}))
 
+    click.echo("\nLa ligne « relevé complet » est décisive : si le différentiel ne livre\n"
+               "que des identifiants, chaque entrée impose une requête supplémentaire.\n"
+               "À 37 000 modifications par jour et par groupe, ce n'est pas tenable.\n")
     click.echo("\nLecture :\n"
                "  liste complète OK              -> moissonnage initial possible tel quel.\n"
                "  liste 403 mais search OK       -> le moissonnage initial doit passer par\n"
