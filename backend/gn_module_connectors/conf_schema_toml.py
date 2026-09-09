@@ -106,6 +106,28 @@ class AtlasSchemaConf(Schema):
     comportement = fields.Dict(keys=fields.String(), values=fields.String(), load_default={})
 
 
+class ReproductionSchemaConf(Schema):
+    """Statut de reproduction des groupes sans code atlas (tout sauf les oiseaux).
+
+    La table de correspondance vit dans le code (`sources/visionature/reproduction.py`)
+    et non dans une table PostgreSQL comme chez `gn_vn2synthese` : le module ne crée
+    aucune table hors de ses propres migrations, et une correspondance en base serait
+    invisible en revue comme en test — la suite de tests tourne sans base. Cette section
+    ne sert donc qu'à corriger ou compléter la table livrée, pas à la constituer.
+    """
+
+    active = fields.Boolean(load_default=True)
+    # groupe -> type de valeur -> code -> degré. Le groupe se désigne par son code
+    # (`TAXO_GROUP_BAT`) ou par son identifiant numérique sur l'instance ; le type vaut
+    # « age », « sex » ou « behaviour » ; le degré « certain », « probable », « possible »
+    # ou « inconnu ». Les entrées surchargent la table du module groupe par groupe, sans
+    # effacer le reste.
+    #
+    #   [visionature.reproduction.regles.TAXO_GROUP_BAT.age]
+    #   YOUNGNAKED = "certain"
+    regles = fields.Dict(keys=fields.String(), values=fields.Raw(), load_default={})
+
+
 class VisioNatureSchemaConf(Schema):
     """Connecteur VisioNature (Biolovision)."""
 
@@ -162,6 +184,8 @@ class VisioNatureSchemaConf(Schema):
     max_chunks = fields.Integer(load_default=100)
     batch_size = fields.Integer(load_default=1000)
     atlas = fields.Nested(AtlasSchemaConf, load_default=lambda: AtlasSchemaConf().load({}))
+    reproduction = fields.Nested(ReproductionSchemaConf,
+                                 load_default=lambda: ReproductionSchemaConf().load({}))
     schedule = fields.Nested(ScheduleSchemaConf, load_default=lambda: ScheduleSchemaConf().load({}))
 
 

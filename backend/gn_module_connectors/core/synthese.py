@@ -43,10 +43,11 @@ from geonature.utils.env import db
 INSERT_SQL = text(
     """
     INSERT INTO gn_synthese.synthese (
-        unique_id_sinp, id_source, id_module, id_dataset,
-        entity_source_pk_value, cd_nom, nom_cite,
+        unique_id_sinp, unique_id_sinp_grp, id_source, id_module, id_dataset,
+        entity_source_pk_value, cd_nom, nom_cite, meta_v_taxref,
         date_min, date_max, count_min, count_max,
-        observers, "precision", additional_data,
+        observers, "precision", altitude_min, altitude_max,
+        digital_proof, additional_data,
         id_nomenclature_obs_technique, id_nomenclature_bio_condition,
         id_nomenclature_bio_status, id_nomenclature_naturalness,
         id_nomenclature_observation_status, id_nomenclature_source_status,
@@ -54,14 +55,16 @@ INSERT_SQL = text(
         id_nomenclature_obj_count, id_nomenclature_type_count,
         id_nomenclature_biogeo_status, id_nomenclature_exist_proof,
         id_nomenclature_valid_status, id_nomenclature_behaviour,
-        id_nomenclature_diffusion_level, comment_description,
+        id_nomenclature_diffusion_level, id_nomenclature_geo_object_nature,
+        comment_description,
         the_geom_4326, the_geom_point, the_geom_local,
         last_action
     ) VALUES (
-        :unique_id_sinp, :id_source, :id_module, :id_dataset,
-        :entity_source_pk_value, :cd_nom, :nom_cite,
+        :unique_id_sinp, CAST(:unique_id_sinp_grp AS uuid), :id_source, :id_module, :id_dataset,
+        :entity_source_pk_value, :cd_nom, :nom_cite, :meta_v_taxref,
         :date_min, :date_max, :count_min, :count_max,
-        :observers, :precision, CAST(:additional_data AS jsonb),
+        :observers, :precision, :altitude_min, :altitude_max,
+        :digital_proof, CAST(:additional_data AS jsonb),
         :id_nomenclature_obs_technique, :id_nomenclature_bio_condition,
         :id_nomenclature_bio_status, :id_nomenclature_naturalness,
         :id_nomenclature_observation_status, :id_nomenclature_source_status,
@@ -69,21 +72,27 @@ INSERT_SQL = text(
         :id_nomenclature_obj_count, :id_nomenclature_type_count,
         :id_nomenclature_biogeo_status, :id_nomenclature_exist_proof,
         :id_nomenclature_valid_status, :id_nomenclature_behaviour,
-        :id_nomenclature_diffusion_level, :comment_description,
+        :id_nomenclature_diffusion_level, :id_nomenclature_geo_object_nature,
+        :comment_description,
         ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
         ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
         ST_Transform(ST_SetSRID(ST_MakePoint(:lon, :lat), 4326), :local_srid),
         'I'
     )
     ON CONFLICT (unique_id_sinp) DO UPDATE SET
+        unique_id_sinp_grp = EXCLUDED.unique_id_sinp_grp,
         cd_nom = EXCLUDED.cd_nom,
         nom_cite = EXCLUDED.nom_cite,
+        meta_v_taxref = EXCLUDED.meta_v_taxref,
         date_min = EXCLUDED.date_min,
         date_max = EXCLUDED.date_max,
         count_min = EXCLUDED.count_min,
         count_max = EXCLUDED.count_max,
         observers = EXCLUDED.observers,
         "precision" = EXCLUDED."precision",
+        altitude_min = EXCLUDED.altitude_min,
+        altitude_max = EXCLUDED.altitude_max,
+        digital_proof = EXCLUDED.digital_proof,
         additional_data = EXCLUDED.additional_data,
         id_nomenclature_obs_technique = EXCLUDED.id_nomenclature_obs_technique,
         id_nomenclature_bio_condition = EXCLUDED.id_nomenclature_bio_condition,
@@ -100,6 +109,7 @@ INSERT_SQL = text(
         id_nomenclature_valid_status = EXCLUDED.id_nomenclature_valid_status,
         id_nomenclature_behaviour = EXCLUDED.id_nomenclature_behaviour,
         id_nomenclature_diffusion_level = EXCLUDED.id_nomenclature_diffusion_level,
+        id_nomenclature_geo_object_nature = EXCLUDED.id_nomenclature_geo_object_nature,
         comment_description = EXCLUDED.comment_description,
         the_geom_4326 = EXCLUDED.the_geom_4326,
         the_geom_point = EXCLUDED.the_geom_point,
@@ -131,6 +141,77 @@ def local_srid() -> int:
     return db.session.execute(
         text("SELECT Find_SRID('ref_geo', 'l_areas', 'geom')")
     ).scalar()
+
+
+def version_taxref() -> str | None:
+    """Version de TAXREF de l'instance, pour `synthese.meta_v_taxref`.
+
+    Même source que `gn_vn2synthese` (08:334-336) : le paramètre `taxref_version` de
+    `gn_commons.t_parameters`, que GeoNature renseigne à l'installation du référentiel.
+    Sans cette colonne, un `cd_nom` devenu obsolète après une montée de version de
+    TAXREF n'est plus interprétable — on ne sait plus dans quel référentiel le lire.
+    """
+    return db.session.execute(
+        text("SELECT gn_commons.get_default_parameter('taxref_version', NULL::integer)")
+    ).scalar()
+
+
+def realigner_uuid(lignes: list[dict], id_source: int) -> int:
+    """Renomme les lignes déjà en base qui portent un UUID désormais supplanté.
+
+    Raison d'être : le module a longtemps calculé lui-même l'`unique_id_sinp` (uuid5).
+    Il retient maintenant l'UUID que le producteur publie, quand il existe. Sans
+    précaution, le moissonnage suivant réinsérerait les mêmes observations sous leur
+    nouvel identifiant : chaque ligne existante deviendrait un doublon, invisible
+    puisque les deux copies auraient un UUID différent et la même source.
+
+    On renomme donc l'ancienne ligne avant l'insertion. C'est la seule opération qui
+    préserve tout ce que la Synthèse a accroché à `id_synthese` : validations,
+    rattachements aux zonages, signalements, exports déjà cités.
+
+    Trois garde-fous :
+
+    - le renommage est borné à `id_source`, il ne peut pas toucher une ligne d'une
+      autre origine ;
+    - il n'écrase jamais une ligne qui porterait déjà l'UUID cible (`NOT EXISTS`) ;
+    - il est idempotent : une fois renommée, la ligne n'a plus l'ancien UUID, et le
+      statement suivant ne trouve plus rien.
+
+    Le renommage ne déclenche aucun recalcul coûteux : les triggers `UPDATE OF` de
+    GeoNature ne surveillent que `the_geom_local`, `the_geom_4326`, `date_min`,
+    `date_max`, `cd_nom` et `id_nomenclature_bio_status` — aucun n'est touché ici.
+
+    Retourne le nombre de lignes effectivement renommées, pour que le bilan d'import
+    le dise plutôt que de le faire en silence.
+    """
+    import json as _json
+
+    anciens, cibles = [], []
+    for ligne in lignes:
+        try:
+            provenance = _json.loads(ligne.get("additional_data") or "{}")
+        except ValueError:
+            continue
+        ancien = provenance.get("vn_uuid_calcule")
+        if ancien and ancien != ligne["unique_id_sinp"]:
+            anciens.append(ancien)
+            cibles.append(str(ligne["unique_id_sinp"]))
+    if not anciens:
+        return 0
+
+    return db.session.execute(
+        text("""
+            UPDATE gn_synthese.synthese AS s
+            SET unique_id_sinp = c.cible
+            FROM UNNEST(CAST(:anciens AS uuid[]),
+                        CAST(:cibles AS uuid[])) AS c(ancien, cible)
+            WHERE s.unique_id_sinp = c.ancien
+              AND s.id_source = :id_source
+              AND NOT EXISTS (SELECT 1 FROM gn_synthese.synthese AS t
+                              WHERE t.unique_id_sinp = c.cible)
+        """),
+        {"anciens": anciens, "cibles": cibles, "id_source": id_source},
+    ).rowcount
 
 
 def get_source_id(name_source: str) -> int:

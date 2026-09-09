@@ -73,16 +73,23 @@ OCCURRENCE_GBIF = {
 
 RELEVE_VN = {
     "@id": "9001",
-    "date": {"@ISO8601": "2024-06-01T00:00:00+02:00"},
+    "date": {"@ISO8601": "2024-06-01T00:00:00+02:00", "@notime": "1"},
     "species": {"@id": "94", "name": "Anas crecca"},
     "place": {"name": "Étang de Lers", "loc_precision": "100"},
 }
 
+# Observation réelle telle qu'exportée par l'API Biolovision (export Faune-LR) :
+# `uuid`, `timing`, `altitude` et `id_form_universal` y sont toujours présents, ce qui
+# n'apparaissait dans aucun cas de test tant que le connecteur les jetait.
 OBSERVATION_VN = {
     "@id": "1", "@uid": "7", "name": "Untel",
+    "uuid": "d689b344-2255-41ef-b297-041008b9ed95",
     "coord_lat": "42.8", "coord_lon": "1.9",
     "count": "3", "estimation_code": "EXACT_VALUE",
     "atlas_code": {"@id": "3"}, "precision": "precise",
+    "altitude": "365", "id_form_universal": "65_3477089",
+    "timing": {"@timestamp": "1717491238", "@notime": "0", "@offset": "7200",
+               "@ISO8601": "2024-06-04T10:53:58+02:00"},
     "comment": "au bord de l'eau",
 }
 
@@ -166,3 +173,118 @@ def test_lempreinte_visionature_est_prise_en_compte():
     where = _source_insert().split("ON CONFLICT")[-1]
     assert "vn_empreinte" in where
     assert "gbif_empreinte" in where
+
+
+# ── Colonnes ajoutées pour VisioNature, mais portées par l'INSERT commun ─────
+#
+# `INSERT_SQL` est partagé entre GBIF et VisioNature. Toute colonne ajoutée pour l'un
+# doit être alimentée par le `to_row` de l'autre, sinon `executemany` lève
+# « A value is required for bind parameter » et **le lot entier** échoue. Les deux tests
+# génériques ci-dessus le vérifient déjà ; ceux-ci nomment les colonnes en question,
+# pour que leur disparition soit un échec explicite et non une régression silencieuse.
+
+COLONNES_AJOUTEES = {
+    "unique_id_sinp_grp",                 # regroupement par formulaire VisioNature
+    "meta_v_taxref",                      # version du référentiel de résolution
+    "altitude_min", "altitude_max",       # observers[0].altitude
+    "digital_proof",                      # observers[0].medias
+    "id_nomenclature_geo_object_nature",  # observers[0].precision
+}
+
+
+def test_les_colonnes_de_completude_sont_bien_dans_linsert():
+    manquantes = COLONNES_AJOUTEES - colonnes_insert()
+    assert not manquantes, sorted(manquantes)
+
+
+# Colonnes que l'ON CONFLICT ne réécrit délibérément pas.
+#
+# `unique_id_sinp` est la clé du conflit. Les quatre autres décrivent le rattachement de
+# la ligne, pas son contenu : les réécrire n'apporterait rien et `last_action` doit
+# valoir « U », pas la valeur insérée.
+HORS_MISE_A_JOUR = {"unique_id_sinp", "id_source", "id_module", "id_dataset",
+                    "entity_source_pk_value", "last_action"}
+
+
+def test_toute_colonne_inseree_est_aussi_mise_a_jour():
+    """Une colonne présente à l'INSERT mais absente du SET de l'ON CONFLICT n'est jamais
+    corrigée sur une ligne déjà en base : elle garde éternellement la valeur du premier
+    import. C'est le piège dans lequel tombent les colonnes qu'on vient d'ajouter, et
+    rien ne le signalerait — l'insertion réussit, la donnée reste périmée.
+    """
+    # Marqueur explicite : « ON CONFLICT » apparaît aussi dans les commentaires du
+    # fichier, et la clause de réécriture est celle qui suit le DO UPDATE SET.
+    bloc_set = (_source_insert().split("ON CONFLICT (unique_id_sinp) DO UPDATE SET")[1]
+                .split("WHERE COALESCE")[0])
+    mises_a_jour = set(re.findall(r"([a-z_]+) = EXCLUDED\.", bloc_set))
+    # `"precision"` est un mot réservé, donc entre guillemets dans le SET.
+    if '"precision" = EXCLUDED."precision"' in bloc_set:
+        mises_a_jour.add("precision")
+    attendues = colonnes_insert() - HORS_MISE_A_JOUR - {"the_geom_4326", "the_geom_point",
+                                                        "the_geom_local"}
+    # Les géométries sont bien mises à jour, mais sous une forme construite en SQL.
+    for geom in ("the_geom_4326", "the_geom_point", "the_geom_local"):
+        assert f"{geom} = EXCLUDED.{geom}" in bloc_set, geom
+    manquantes = attendues - mises_a_jour
+    assert not manquantes, f"jamais mises à jour -> {sorted(manquantes)}"
+
+
+# ── Les champs VisioNature arrivent bien jusqu'à la ligne ────────────────────
+
+def test_la_ligne_visionature_porte_les_champs_recuperes():
+    """Chacun de ces champs était perdu à l'import, alors qu'il est renseigné sur la
+    quasi-totalité des observations réelles."""
+    ligne = ligne_vn()
+    assert str(ligne["date_min"]) == "2024-06-01 10:53:58"   # et non minuit
+    assert ligne["date_max"] == ligne["date_min"]
+    assert ligne["altitude_min"] == ligne["altitude_max"] == 365
+    assert ligne["unique_id_sinp"] == "d689b344-2255-41ef-b297-041008b9ed95"
+    assert ligne["unique_id_sinp_grp"] is not None
+    assert ligne["id_nomenclature_geo_object_nature"] == "NAT_OBJ_GEO=St"
+    assert ligne["id_nomenclature_bio_condition"] == "ETA_BIO=2"
+    assert ligne["id_nomenclature_exist_proof"] == "PREUVE_EXIST=2"
+
+
+def test_luuid_calcule_supplante_est_conserve_pour_le_realignement():
+    """Sans cette trace, les lignes déjà importées sous l'uuid5 seraient réinsérées à
+    côté de leur nouvel identifiant : un doublon dans notre propre base, que rien ne
+    signalerait. `core.synthese.realigner_uuid` lit cette clé pour renommer l'ancienne
+    ligne avant l'insertion.
+    """
+    import json
+    provenance = json.loads(ligne_vn()["additional_data"])
+    assert provenance["vn_uuid_calcule"] == vn_tr.sinp_uuid(
+        RELEVE_VN, OBSERVATION_VN, "faune-ariege.org")
+    assert provenance["heure_connue"] == "oui"
+
+
+def test_pas_de_trace_de_realignement_sans_uuid_natif():
+    """La clé ne doit apparaître que lorsqu'un renommage est réellement nécessaire :
+    la présence systématique ferait tourner le UPDATE de réalignement pour rien."""
+    import json
+    sans_uuid = {k: v for k, v in OBSERVATION_VN.items() if k != "uuid"}
+    ligne = vn_tr.to_row(RELEVE_VN, sans_uuid, cd_nom=1958, id_dataset=1, id_source=1,
+                         id_module=1, srid=2154, resolver=ResolverFactice(),
+                         instance="faune-ariege.org", index_anonymat={"7": False},
+                         secret_pseudo="cle-de-test")
+    assert "vn_uuid_calcule" not in json.loads(ligne["additional_data"])
+
+
+def test_la_ligne_gbif_alimente_aussi_les_nouvelles_colonnes():
+    """GBIF n'a pas d'équivalent pour la plupart, mais doit fournir le paramètre lié :
+    une clé absente fait échouer le lot entier, GBIF compris."""
+    ligne = ligne_gbif()
+    for colonne in COLONNES_AJOUTEES:
+        assert colonne in ligne, colonne
+    assert ligne["unique_id_sinp_grp"] is None
+    assert ligne["digital_proof"] is None
+
+
+def test_altitude_gbif_depuis_elevation():
+    """`elevation` est le champ interprété ; `verbatimElevation` est du texte libre
+    (« 1200-1400 m ») et reste ignoré."""
+    ligne = gbif_tr.to_row({**OCCURRENCE_GBIF, "elevation": 1150.0}, cd_nom=252,
+                           id_dataset=1, id_source=1, id_module=1, srid=2154,
+                           resolver=ResolverFactice())
+    assert ligne["altitude_min"] == ligne["altitude_max"] == 1150
+    assert gbif_tr.altitude({"verbatimElevation": "1200-1400 m"}) is None

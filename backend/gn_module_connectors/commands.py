@@ -315,8 +315,12 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
     id_module = syn_core.get_module_id("CONNECTORS")
     srid = syn_core.local_srid()
     af = ds_core.get_acquisition_framework(CA_UUID)
+    # Version du référentiel sous lequel `cd_nom` est résolu : la même pour les deux
+    # connecteurs, puisque c'est celle de l'instance qui reçoit la donnée.
+    v_taxref = syn_core.version_taxref()
     click.secho(f"source={id_source} module={id_module} srid={srid} "
-                f"cadre={af.id_acquisition_framework}", fg="green")
+                f"cadre={af.id_acquisition_framework} taxref={v_taxref or 'inconnu'}",
+                fg="green")
     if max_uncertainty:
         politique = "conservées" if keep_unknown_uncertainty else "écartées"
         click.echo(f"  incertitude max : {max_uncertainty} m "
@@ -452,7 +456,8 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
             ligne = gbif_tr.to_row(occ, cd_nom=cd_nom, id_dataset=None,
                                    id_source=id_source, id_module=id_module, srid=srid,
                                    resolver=resolver, download_doi=download_doi,
-                                   statut_validation=statut_validation)
+                                   statut_validation=statut_validation,
+                                   version_taxref=v_taxref)
             if ligne is None:
                 rejets.add("no_coordinates" if occ.get("decimalLatitude") is None else "no_date",
                            occ.get("gbifID"), occ.get("scientificName"),
@@ -617,7 +622,8 @@ def vn_import(groupes, since, batch_size, dry_run):
                        datasets as ds_core, nomenclatures as nomen_core,
                        purge as purge_core)
     from .sources.visionature import (api as vn_api, taxonomy as vn_taxo,
-                                     transform as vn_tr, confidentialite as vn_conf)
+                                     transform as vn_tr, confidentialite as vn_conf,
+                                     reproduction as vn_repro)
     from .migrations.e91b4c07a2d8_source_visionature import SOURCE_NAME, CA_UUID
 
     cfg = (gn_config.get("CONNECTORS") or {}).get("visionature", {})
@@ -648,7 +654,12 @@ def vn_import(groupes, since, batch_size, dry_run):
     id_module = syn_core.get_module_id("CONNECTORS")
     srid = syn_core.local_srid()
     af = ds_core.get_acquisition_framework(CA_UUID)
-    click.secho(f"instance={instance} source={id_source} srid={srid}", fg="green")
+    v_taxref = syn_core.version_taxref()
+    click.secho(f"instance={instance} source={id_source} srid={srid} "
+                f"taxref={v_taxref or 'inconnu'}", fg="green")
+    if not v_taxref:
+        click.secho("  ⚠ paramètre `taxref_version` absent de gn_commons.t_parameters : "
+                    "meta_v_taxref restera NULL.", fg="yellow")
 
     # L'URL de la source ne peut être connue qu'ici : elle dépend de l'instance.
     db.session.execute(
@@ -669,14 +680,24 @@ def vn_import(groupes, since, batch_size, dry_run):
         rejets.add("espece_non_resolue", e["id"], e["latin_name"] or e["french_name"],
                    e["motif"])
 
-    groupes = list(groupes) or cfg.get("taxo_groups") or [
-        g.get("id") for g in vn_api.groupes_taxonomiques(cfg)]
+    # Le référentiel des groupes est chargé dans tous les cas, pas seulement pour établir
+    # la liste à moissonner : le statut de reproduction des non-oiseaux dépend du groupe,
+    # et le désigner par son code (`TAXO_GROUP_BAT`) plutôt que par son identifiant
+    # numérique est ce qui rend la table de correspondance transposable d'une instance à
+    # l'autre. Sans cet index, le module retombe sur les identifiants de Faune-France.
+    index_groupes = vn_repro.index_groupes(vn_api.groupes_taxonomiques(cfg))
+    groupes = list(groupes) or cfg.get("taxo_groups") or list(index_groupes)
     click.echo(f"{len(groupes)} groupe(s) taxonomique(s) à traiter.")
 
     resolver = nomen_core.Resolver()
     cfg_valid = (gn_config.get("CONNECTORS") or {}).get("validation", {})
     statut_validation = cfg_valid.get("status") if cfg_valid.get("enabled") else None
     surcharges = cfg.get("atlas") or {}
+    cfg_repro = cfg.get("reproduction") or {}
+    contexte_repro = vn_repro.Contexte(
+        index=index_groupes,
+        regles=vn_repro.fusionner(cfg_repro.get("regles")),
+        active=cfg_repro.get("active", True))
     secret = cfg.get("pseudonymisation_secret", "")
     if not secret:
         raise click.ClickException(
@@ -707,6 +728,7 @@ def vn_import(groupes, since, batch_size, dry_run):
     jdds: dict = {}
 
     for groupe in groupes:
+        contexte_repro.groupe_courant = groupe
         if since:
             # Les suppressions d'abord : une observation supprimée puis recréée sous le
             # même identifiant serait sinon retirée après avoir été réécrite.
@@ -750,7 +772,9 @@ def vn_import(groupes, since, batch_size, dry_run):
                                  statut_validation=statut_validation,
                                  index_anonymat=index_anonymat, secret_pseudo=secret,
                                  forcer_anonymat=forcer_anonymat,
-                                 code_diffusion_masquee=niveau_masquees)
+                                 code_diffusion_masquee=niveau_masquees,
+                                 version_taxref=v_taxref,
+                                 repro=contexte_repro)
             if ligne is None:
                 rejets.add("no_coordinates", sighting.get("@id"),
                            (sighting.get("species") or {}).get("name"), "")
@@ -758,12 +782,12 @@ def vn_import(groupes, since, batch_size, dry_run):
             ligne["_projet"] = vn_tr.code_projet(observation) if par_projet else None
             lot.append(ligne)
             if len(lot) >= batch_size and not dry_run:
-                i, u = _ecrire_lot(lot, jdds, instance, af)
+                i, u = _ecrire_lot(lot, jdds, instance, af, id_source)
                 ecrits += i; maj += u
                 db.session.commit(); lot = []
                 click.echo(f"    … {ecrits} écrites, {maj} mises à jour")
         if lot and not dry_run:
-            i, u = _ecrire_lot(lot, jdds, instance, af)
+            i, u = _ecrire_lot(lot, jdds, instance, af, id_source)
             ecrits += i; maj += u
             db.session.commit()
         elif dry_run:
@@ -778,18 +802,38 @@ def vn_import(groupes, since, batch_size, dry_run):
                 f"{len(rejets)} rejetée(s).", fg="green")
     for ligne in rejets.summary_lines():
         click.echo(ligne)
+    # Un code d'âge, de sexe ou de comportement absent de la table n'est pas une erreur —
+    # l'énumération VisioNature est localement extensible — mais c'est le seul signal
+    # qu'une règle manque, et donc que des indices de reproduction passent à la trappe.
+    # `gn_vn2synthese` ne le produit pas : chez lui, un code inconnu et un code jugé non
+    # significatif sont indiscernables.
+    if contexte_repro.inconnus:
+        click.secho(f"  {len(contexte_repro.inconnus)} code(s) de reproduction non "
+                    f"reconnu(s) — à déclarer dans [visionature.reproduction.regles] :",
+                    fg="yellow")
+        for cle, n in contexte_repro.inconnus.most_common(15):
+            click.echo(f"    {cle} ({n})")
     chemin = rejets.write_csv(Path("vn_rejets.csv"))
     if chemin:
         click.echo(f"  Journal détaillé : {chemin}")
 
 
-def _ecrire_lot(lot, jdds, instance, af):
+def _ecrire_lot(lot, jdds, instance, af, id_source=None):
     """Écrit un lot en le répartissant par code projet.
 
     Les JDD sont créés à la demande : un projet dont toutes les observations sont
     rejetées ne laisse pas de jeu vide dans le module Métadonnées.
     """
     from .core import synthese as syn_core
+
+    # Réalignement des identifiants avant écriture : les lignes déjà importées portent
+    # l'uuid5 calculé par les versions antérieures du module, alors que le producteur
+    # publie son propre UUID. Sans ce renommage, chacune serait réinsérée à côté de
+    # l'ancienne — un doublon que rien ne signalerait.
+    if id_source is not None:
+        renommees = syn_core.realigner_uuid(lot, id_source)
+        if renommees:
+            click.echo(f"    … {renommees} ligne(s) réalignée(s) sur l'UUID du producteur")
 
     par_jdd: dict = {}
     for ligne in lot:

@@ -335,11 +335,164 @@ reproduction_min = 2
 absence = 99
 ```
 
+⚠️ **Le code atlas arrive sous trois formes**, et l'une d'elles était mal lue. Les exports
+réels renvoient `{"@id": "3_13", "#text": "12"}` : l'`@id` est la clé d'énumération du
+champ, le `#text` le code EOAC. Or `int("3_13")` vaut **313** en Python — l'underscore y
+est un séparateur de chiffres. Le module lisait donc 313 pour 12, 32 pour 1, et 399 pour
+99. Sur les 165 observations à code atlas du corpus d'exemple, les 38 codes 1 passaient en
+« Reproduction » alors qu'ils en sont explicitement exclus, et les 4 absences déclarées
+entraient en présence. Le `#text` fait désormais foi dès que l'`@id` porte un underscore.
+
+### Statut de reproduction des autres groupes
+
+Les codes atlas ne concernent que les oiseaux. Pour les amphibiens, les reptiles, les
+mammifères, les chiroptères, les odonates, les orthoptères et les papillons de jour, la
+reproduction se déduit de la **classe d'âge** (`details[].age`), du **sexe**
+(`details[].sex`) et du **comportement** (`behaviours[].@id`), dont le sens dépend du
+groupe : une exuvie prouve la reproduction chez un odonate, « imago » ne prouve rien chez
+un papillon.
+
+La table est transposée de `gn_vn2synthese` v1.6.0 (`t_c_vn_repro_matching_values`,
+107 lignes) et vit dans `sources/visionature/reproduction.py`. Quatre degrés — certain,
+probable, possible, inconnu — dont les trois premiers sont versés en `STATUT_BIO = 3`, le
+SINP ne graduant pas la reproduction. Le degré et l'indice qui l'a emporté sont conservés
+dans `additional_data` (`repro_degre`, `repro_indice`), pour la même raison que le code
+atlas brut.
+
+Le groupe est désigné par son **code** (`TAXO_GROUP_BAT`), résolu depuis le contrôleur
+`taxo_groups` de l'instance, et non par son identifiant numérique comme le fait la LPO :
+rien ne garantit qu'une instance numérote ses groupes comme Faune-France.
+
+`details[]` ventile un relevé en classes d'âge et de sexe. Elles sont **agrégées** en une
+ligne de Synthèse, pas dépliées en plusieurs : les entrées de `details[]` n'ont aucun
+identifiant, donc aucune clé stable pour `unique_id_sinp` ; `observers[].count` est le seul
+effectif qui fait foi ; et surtout la reproduction est une propriété de l'ensemble —
+« 1 adulte + 2 juvéniles » la prouve, alors qu'éclaté en deux lignes le juvénile la
+porterait et l'adulte passerait pour une donnée sans indice.
+
+Un code d'âge, de sexe ou de comportement qu'aucune règle ne couvre est **compté et
+signalé** en fin de moissonnage. Ce n'est pas une erreur — l'énumération VisioNature est
+localement extensible — mais c'est le seul signal qu'une règle manque. Mesuré sur
+56 relevés de reptiles réels : `IMM` (immature) y apparaît 9 fois et la table de la LPO ne
+lui donne aucune règle chez les reptiles, alors qu'elle en donne une chez les mammifères
+et les odonates.
+
+```toml
+[visionature.reproduction]
+active = true
+
+# Complète la table livrée, groupe par groupe, sans effacer le reste.
+[visionature.reproduction.regles.TAXO_GROUP_BAT.age]
+YOUNGNAKED = "certain"
+```
+
+### Heure d'observation
+
+`gn_synthese.synthese.date_min` et `date_max` sont des `timestamp`. Le module y écrivait
+un `date`, donc **minuit pour tout le monde**. L'heure vient de
+`observers[].timing.@timestamp`, avec `@offset` pour l'heure murale locale.
+
+Elle n'est écrite **que si elle a un sens** : chaque bloc de date Biolovision porte un
+indicateur `@notime`, que `gn_vn2synthese` ignore — il écrit donc « 00:00:00 » sans
+distinguer une observation réellement faite à minuit d'une heure inconnue. Mesuré sur 338
+observations réelles : `timing.@notime = 0` dans 95,6 % des cas. `additional_data.heure_connue`
+(`oui` / `non`) tranche l'ambiguïté sur les 4,4 % restants.
+
+L'heure est reportée sur le **jour du relevé** : la date d'observation déclarée fait foi,
+un `timing` décalé ne doit pas faire glisser `date_min` d'un jour.
+
+### Identifiant SINP : l'UUID du producteur d'abord
+
+`observers[].uuid` existe et est renseigné sur la totalité des observations examinées.
+C'est l'identifiant sous lequel le producteur publie sa donnée. Le module recalculait
+systématiquement un uuid5 : l'identifiant DEE divergeait donc de celui du producteur, et
+si la même donnée arrivait aussi par un dépôt SINP, le doublon était **invisible** — deux
+UUID différents, deux sources différentes, rien pour les rapprocher.
+
+L'UUID natif prime désormais ; l'uuid5 reste le repli quand la source n'en fournit pas.
+
+⚠️ **Migration.** Les lignes déjà importées portent l'uuid5. Elles sont **renommées** au
+moissonnage suivant (`core.synthese.realigner_uuid`) plutôt que réinsérées à côté : c'est
+la seule opération qui préserve ce que la Synthèse a accroché à `id_synthese`
+(validations, rattachements aux zonages, signalements). Le renommage est borné à
+`id_source`, n'écrase jamais une ligne portant déjà l'UUID cible, est idempotent, et le
+bilan d'import annonce le nombre de lignes réalignées. L'ancien identifiant reste
+consultable dans `additional_data.vn_uuid_calcule`.
+
+⚠️ **Premier moissonnage après cette version.** Les champs nouvellement exploités entrent
+dans l'empreinte de contenu : **tout le corpus VisioNature est réécrit une fois**, ce qui
+est le seul moyen que les lignes existantes reçoivent l'heure, l'altitude et le reste.
+Cette réécriture déclenche par ligne les triggers `tri_update_cor_area_synthese` et
+`tri_update_calculate_sensitivity` — prévoir le temps de traitement. Les lignes GBIF ne
+sont pas concernées : leur empreinte est inchangée.
+
+### Mortalité
+
+`observers[].extended_info.mortality` porte `death_cause2` (ROAD_VEHICLE, ELECTRIC,
+EOLIEN, POISONING, HUNTING, PREDATION…), `wounded`, et selon la cause `road_type2` ou
+`predation2`. `ETA_BIO` valait `None` en dur : toute la mortalité routière arrivait
+indiscernable d'une observation ordinaire.
+
+| cas | `ETA_BIO` |
+| --- | --- |
+| bloc `mortality` présent | `3` — Trouvé mort |
+| bloc `mortality` avec `wounded = 1` | `2` — Observé vivant |
+| `details[].condition` ∈ {PEL, MUMMIE, BONESREMAINS, REMAINS} | `3` |
+| absence constatée | `1` — Non observé |
+| sinon | `2` — Observé vivant |
+
+Deux écarts avec `gn_vn2synthese` :
+
+- ils écrivent « Trouvé mort » même quand `wounded = 1`, ce qui décrit pourtant un animal
+  blessé donc vivant ;
+- leur table de synonymes `ETA_BIO` mappe bien PEL, MUMMIE et BONESREMAINS vers « Trouvé
+  mort », mais leur script d'upsert **ne l'interroge jamais** : un reste osseux de
+  chiroptère y ressort « Observé vivant ». On lit la table qu'ils ont écrite.
+
+La cause part dans `additional_data` (`mortalite_cause`, `mortalite_detail`,
+`mortalite_blesse`) : aucune nomenclature SINP ne sait dire « collision routière », et la
+perdre reviendrait à ne plus pouvoir isoler les données que les gestionnaires
+d'infrastructures viennent chercher.
+
+### Altitude, médias, complétude
+
+| champ VisioNature | colonne Synthèse |
+| --- | --- |
+| `observers[].altitude` | `altitude_min` = `altitude_max` |
+| `observers[].medias` | `digital_proof` (`path` + `/` + `filename`, séparés par `, `) |
+| `observers[].medias` présents | `id_nomenclature_exist_proof` = `1`, sinon `2` |
+| `observers[].precision` | `id_nomenclature_geo_object_nature` (table de onze synonymes : `precise` → `St`, les autres → `In`) |
+| `observers[].id_form_universal` | `unique_id_sinp_grp` (uuid5 dérivé) |
+| paramètre `taxref_version` | `meta_v_taxref` |
+
+⚠️ Les médias marqués `media_is_hidden = 1` sont **écartés de `digital_proof`** : un média
+masqué à la source l'est pour protéger un nid, un gîte ou une station. La preuve reste
+déclarée existante — c'est sa diffusion qui est interdite, pas son existence.
+`gn_vn2synthese` concatène sans regarder ce champ.
+
+⚠️ `unique_id_sinp_grp` : `gn_vn2synthese` lit `forms_json.uuid`, qui n'est **pas** un
+champ de l'API mais une colonne qu'ils ajoutent avec `DEFAULT uuid_generate_v4()` — un
+UUID aléatoire, stable seulement grâce à leur table de transit. N'ayant pas de table de
+transit, on dérive un uuid5 de `id_form_universal` : reproductible sans rien stocker.
+
+`reference_biblio` n'est **pas** renseigné, contrairement à eux qui y écrivent
+`t_sources.url_source || entity_source_pk_value`. C'est exactement ce que GeoNature
+reconstruit déjà depuis `t_sources.url_source`, que `vn-import` renseigne : dupliquer le
+lien sur chaque ligne d'un corpus de plusieurs centaines de milliers d'observations
+n'apporterait rien.
+
 ### Limites connues
 
-Les codes atlas ne concernent que **les oiseaux**. Pour les autres groupes,
-`gn_vn2synthese` déduit un statut de reproduction du groupe taxonomique et du champ
-`details[].condition` ; ce repli n'est pas implémenté ici.
+La table de reproduction ne couvre que sept groupes taxonomiques : ceux que couvre le
+témoin. Les papillons de nuit, les hyménoptères, les araignées, les poissons et les
+mollusques n'en ont aucune règle et restent au défaut. Rien n'est déduit non plus de
+`details[].condition`, dont l'énumération (VIEW, FLY, LAID, HAND, AUDIO…) alimenterait
+plutôt `METH_OBS`.
+
+`OCC_COMPORTEMENT` n'est déduit de `behaviours[]` que pour « Accouplement » et
+« Territorial » : ce sont les seuls dont le `cd_nomenclature` SINP soit déjà vérifié
+ailleurs dans le module. « Pond », « Tandem » ou « Émergence » n'ont pas d'équivalent
+certain, et un code inventé produirait une valeur fausse mais silencieuse.
 
 `api_diff` signale les **suppressions**, mais `vn-import` ne les répercute pas encore en
 Synthèse. Un observateur qui change d'avis sur son anonymat après coup n'est pas non plus

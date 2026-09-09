@@ -237,6 +237,30 @@ absence = 99
 # comportement = { 2 = "18", 5 = "19" }
 
 
+[visionature.reproduction]
+# Statut de reproduction des groupes sans code atlas — amphibiens, reptiles, mammifères,
+# chiroptères, odonates, orthoptères, papillons de jour. Déduit de la classe d'âge, du
+# sexe et du comportement, dont le sens dépend du groupe taxonomique.
+#
+# La table de correspondance est livrée avec le module
+# (sources/visionature/reproduction.py, transposée de gn_vn2synthese v1.6.0). Cette
+# section ne sert qu'à la corriger ou la compléter.
+active = true
+
+# Un exemple, et pas au hasard : la table du témoin contient une règle « jeune non velu »
+# pour les chiroptères dont le code est NULL, donc qui n'apparie jamais rien. Si votre
+# instance emploie ce code, déclarez-le ici.
+#
+#   [visionature.reproduction.regles.TAXO_GROUP_BAT.age]
+#   YOUNGNAKED = "certain"
+#
+# Le groupe se désigne par son code (TAXO_GROUP_BAT) ou par son identifiant numérique sur
+# l'instance ; le type par « age », « sex » ou « behaviour » ; le degré par « certain »,
+# « probable », « possible » ou « inconnu ». Seuls les trois premiers valent
+# « Reproduction » en Synthèse ; « inconnu » sert à déclarer un code comme examiné et non
+# significatif, ce qui l'écarte du signalement de fin de moissonnage.
+
+
 [visionature.schedule]
 enabled = false
 crontab = "0 4 * * 1"

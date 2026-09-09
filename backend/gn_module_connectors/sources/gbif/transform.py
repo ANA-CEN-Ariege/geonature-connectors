@@ -166,12 +166,34 @@ COLONNES_NOMENCLATURE = {
     # contrôlé : aucune correspondance fiable vers OCC_COMPORTEMENT. La colonne reste au
     # défaut, et doit tout de même être fournie puisque l'INSERT la porte.
     "id_nomenclature_behaviour": "OCC_COMPORTEMENT",
+    # Darwin Core n'a pas d'équivalent de la « nature de l'objet géographique » : rien
+    # n'y distingue un pointage de terrain d'un centroïde de maille. La colonne reste au
+    # défaut, mais doit figurer ici puisque l'INSERT — partagé avec VisioNature — la
+    # porte désormais.
+    "id_nomenclature_geo_object_nature": "NAT_OBJ_GEO",
 }
+
+
+def altitude(occ: dict) -> int | None:
+    """Altitude en mètres, si GBIF l'a interprétée.
+
+    `elevation` est le champ interprété ; `verbatimElevation` est du texte libre
+    (« 1200-1400 m », « env. 800 »), inexploitable sans analyse et volontairement
+    ignoré. La colonne est renseignée pour les occurrences nouvelles ou modifiées
+    seulement : `elevation` n'entre pas dans `CHAMPS_SUIVIS`, donc l'empreinte du corpus
+    GBIF déjà importé ne change pas et rien n'est réécrit inutilement.
+    """
+    valeur = occ.get("elevation")
+    try:
+        return int(round(float(valeur)))
+    except (TypeError, ValueError):
+        return None
 
 
 def to_row(occ: dict, *, cd_nom: int, id_dataset: int, id_source: int,
            id_module: int, srid: int, resolver, download_doi: str = "",
-           statut_validation: str | None = None) -> dict | None:
+           statut_validation: str | None = None,
+           version_taxref: str | None = None) -> dict | None:
     """Ligne prête pour l'insertion, ou None si l'occurrence est inexploitable."""
     lon, lat = occ.get("decimalLongitude"), occ.get("decimalLatitude")
     if lon is None or lat is None:
@@ -200,6 +222,10 @@ def to_row(occ: dict, *, cd_nom: int, id_dataset: int, id_source: int,
     return {
         **nomenclatures,
         "unique_id_sinp": sinp_uuid(occ),
+        # GBIF n'expose pas de notion de relevé collectif exploitable : `eventID` est
+        # facultatif, non contrôlé, et absent de la quasi-totalité des jeux français.
+        # Inventer un regroupement serait pire que de n'en déclarer aucun.
+        "unique_id_sinp_grp": None,
         "id_source": id_source,
         "id_module": id_module,
         "id_dataset": id_dataset,
@@ -218,6 +244,13 @@ def to_row(occ: dict, *, cd_nom: int, id_dataset: int, id_source: int,
         # est la bonne façon de ne pas se prononcer.
         "id_nomenclature_diffusion_level": None,
         "precision": int(incertitude) if incertitude else None,
+        "altitude_min": altitude(occ),
+        "altitude_max": altitude(occ),
+        # GBIF expose bien un tableau `media`, mais l'API `search` ne le renvoie pas de
+        # façon fiable et les URL y pointent souvent vers une page, pas vers un fichier.
+        # Rien de solide à écrire ici tant que ce n'est pas mesuré.
+        "digital_proof": None,
+        "meta_v_taxref": (version_taxref or None),
         "additional_data": json.dumps(
             {**gbif_api.provenance(occ, download_doi), "gbif_empreinte": empreinte(occ)},
             ensure_ascii=False,
