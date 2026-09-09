@@ -264,3 +264,51 @@ def test_to_row_deduit_sans_contexte_fourni():
                      id_dataset=None, id_source=1, id_module=2, srid=2154,
                      resolver=ResolverFactice(), instance="faune-lr", secret_pseudo="k")
     assert ligne["id_nomenclature_bio_status"] == "STATUT_BIO=3"
+
+
+# ── Index des groupes : le code est dans name_constant ───────────────────────
+
+# Forme réelle du contrôleur `taxo_groups`, relevée sur Faune-Occitanie :
+# champs id, name, name_constant, latin_name, access_mode.
+GROUPES_REELS = [
+    {"id": "1", "name": "Oiseaux", "name_constant": "TAXO_GROUP_BIRD",
+     "latin_name": "Aves", "access_mode": "full"},
+    {"id": "2", "name": "Chauves-souris", "name_constant": "TAXO_GROUP_BAT",
+     "latin_name": "Chiroptera", "access_mode": "full"},
+    {"id": "6", "name": "Reptiles", "name_constant": "TAXO_GROUP_REPTILIAN",
+     "latin_name": "Reptilia", "access_mode": "full"},
+]
+
+
+def test_le_code_du_groupe_vient_de_name_constant():
+    """`name` est le libellé TRADUIT, pas le code.
+
+    Ce module a longtemps lu `name`. L'index associait alors « Reptiles » à
+    l'identifiant 6, tandis que les règles sont indexées par `TAXO_GROUP_REPTILIAN` :
+    aucune ne pouvait s'apparier et tout le dispositif de reproduction des non-oiseaux
+    était inerte. Rien ne le signalait — un groupe sans règle est un cas normal,
+    indiscernable d'un groupe dont le code n'a pas été reconnu.
+    """
+    index = R.index_groupes(GROUPES_REELS)
+    assert index == {"1": "TAXO_GROUP_BIRD", "2": "TAXO_GROUP_BAT",
+                     "6": "TAXO_GROUP_REPTILIAN"}
+
+
+def test_les_codes_indexes_apparient_les_regles():
+    """Garde-fou de bout en bout : sans lui, la correction pourrait se reperdre."""
+    index = R.index_groupes(GROUPES_REELS)
+    assert index["2"] in R.REGLES
+    assert index["6"] in R.REGLES
+
+
+def test_repli_sur_name_si_name_constant_absent():
+    """Mieux vaut un libellé qui n'appariera rien qu'un index vide.
+
+    Un index vide ferait retomber tout le module sur les identifiants numériques de
+    Faune-France, dont seuls deux sont vérifiés.
+    """
+    assert R.index_groupes([{"id": "6", "name": "Reptiles"}]) == {"6": "Reptiles"}
+
+
+def test_un_groupe_sans_identifiant_est_ignore():
+    assert R.index_groupes([{"name_constant": "TAXO_GROUP_BAT"}]) == {}

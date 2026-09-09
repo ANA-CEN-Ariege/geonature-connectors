@@ -1055,12 +1055,14 @@ def vn_groupes():
 
     couverts = set(vn_repro.REGLES)
     click.echo(f"{len(groupes)} groupe(s) taxonomique(s) :\n")
-    click.echo(f"  {'id':>4}  {'code':<26}  {'repro':<6}  nom")
+    click.echo(f"  {'id':>4}  {'code':<26}  {'repro':<6}  {'accès':<8}  nom")
     for g in groupes:
         identifiant = str(g.get("id") or g.get("@id") or "")
-        code = str(g.get("name") or "")
+        # `name_constant` et non `name` : ce dernier est le libellé traduit.
+        code = str(g.get("name_constant") or "")
         repro = "oui" if code in couverts else "—"
-        click.echo(f"  {identifiant:>4}  {code:<26}  {repro:<6}  {g.get('latin_name') or ''}")
+        click.echo(f"  {identifiant:>4}  {code:<26}  {repro:<6}  "
+                   f"{str(g.get('access_mode') or ''):<8}  {g.get('name') or ''}")
     click.echo("\nColonne « repro » : le groupe dispose-t-il de règles de déduction du "
                "statut de reproduction ?\nLes oiseaux passent par les codes atlas, pas "
                "par ces règles — ils affichent donc « — » sans que ce soit un manque.")
@@ -1195,7 +1197,7 @@ def vn_volumetrie(jours):
     mesures = []
     for g in groupes:
         identifiant = str(g.get("id") or g.get("@id") or "")
-        code = str(g.get("name") or "")
+        code = str(g.get("name_constant") or g.get("name") or "")
         try:
             n = len(vn_api._extraire(obs.api_diff(identifiant, depuis, "only_modified")))
         except bio.BiolovisionApiException as erreur:
