@@ -77,6 +77,27 @@ def test_code_atlas_accepte_les_deux_formes():
     assert N.code_atlas(obs(atlas_code="3")) == 3
 
 
+def test_code_atlas_lit_le_texte_et_non_la_cle_denumeration():
+    """La forme majoritaire des exports réels est `{"@id": "3_13", "#text": "12"}`.
+
+    L'`@id` y est la clé d'énumération du champ, le `#text` le code EOAC. Prendre l'`@id`
+    ne donnait pas une valeur nulle — ce qui aurait été visible — mais un nombre faux :
+    `int("3_13")` vaut **313** en Python, l'underscore étant un séparateur de chiffres
+    accepté depuis la 3.6. Mesuré sur 165 observations réelles portant un code atlas,
+    165 étaient versées en « Reproduction » contre 123 après correction, dont
+    38 observations de code 1 que le seuil exclut explicitement.
+    """
+    assert N.code_atlas(obs(atlas_code={"@id": "3_13", "#text": "12"})) == 12
+    assert N.code_atlas(obs(atlas_code={"@id": "3_3", "#text": "2"})) == 2
+    # La correspondance n'est pas un décalage constant : 3_13 vaut 12, 3_16 vaut 14.
+    assert N.code_atlas(obs(atlas_code={"@id": "3_16", "#text": "14"})) == 14
+
+
+def test_absence_declaree_reperee_sous_la_forme_reelle():
+    """Sans la lecture du `#text`, une absence déclarée entrait en présence."""
+    assert N.est_absence(obs(atlas_code={"@id": "3_99", "#text": "99"}))
+
+
 # ── Dénombrement ─────────────────────────────────────────────────────────────
 
 def test_estimation_nest_pas_un_comptage():

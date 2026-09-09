@@ -78,15 +78,39 @@ def _entier(valeur) -> int | None:
 
 
 def code_atlas(observation: dict) -> int | None:
-    """Code atlas d'une observation, quel que soit la forme renvoyée par l'API.
+    """Code atlas d'une observation, quelle que soit la forme renvoyée par l'API.
 
-    Biolovision renvoie tantôt `{"@id": "3", "#text": "Couple"}`, tantôt une valeur
-    simple selon le point d'entrée et la version.
+    Trois formes coexistent dans la nature :
+      - `"2"` — valeur simple, celle que journalise le client `transfer_vn` de la LPO ;
+      - `{"@id": "3", "#text": "Couple"}` — l'`@id` porte le code ;
+      - `{"@id": "3_13", "#text": "12"}` — l'`@id` porte la **clé d'énumération du
+        champ** (`3_<n>`, où 3 est l'identifiant du champ « code atlas ») et le `#text`
+        le code EOAC réel.
+
+    ⚠ La troisième forme est majoritaire dans les exports réels : mesurée sur
+    165 observations de Faune-LR portant un code atlas, elle est la seule employée
+    (`3_3`/« 2 » 89 fois, `3_2`/« 1 » 38 fois, `3_99`/« 99 » 4 fois…). Et la
+    correspondance n'est pas un décalage constant — `3_14` vaut 13, mais `3_16` vaut 14 :
+    seul le `#text` fait foi.
+
+    ⚠⚠ Prendre l'`@id` tel quel ne donnait pas une valeur nulle, ce qui aurait au moins
+    été visible : `int("3_13")` vaut **313** en Python, l'underscore étant un séparateur
+    de chiffres accepté depuis la 3.6. Le connecteur lisait donc « 313 » là où le code
+    est 12, « 32 » là où il est 1, et « 399 » là où il est 99. Conséquences mesurables
+    sur le corpus d'exemple : les 38 observations de code 1 — « vu en période de
+    nidification dans un milieu favorable », explicitement écarté du seuil — passaient
+    en « Reproduction », et les 4 absences déclarées (code 99) entraient en présence.
     """
     brut = observation.get("atlas_code")
     if isinstance(brut, dict):
-        brut = brut.get("@id") or brut.get("#text")
-    return _entier(brut)
+        identifiant = str(brut.get("@id") or "").strip()
+        # Un `@id` de la forme `3_13` est une clé d'énumération, pas un code : le `#text`
+        # porte alors la valeur. Le test sur l'underscore doit précéder la conversion,
+        # qui l'avalerait silencieusement.
+        brut = brut.get("#text") if "_" in identifiant else (identifiant or brut.get("#text"))
+    brut = str(brut if brut is not None else "").strip()
+    # Refus explicite de tout underscore résiduel, pour la raison ci-dessus.
+    return None if "_" in brut else _entier(brut)
 
 
 def est_absence(observation: dict, code_absence: int = None) -> bool:
