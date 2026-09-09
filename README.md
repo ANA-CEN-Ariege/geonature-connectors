@@ -301,6 +301,43 @@ rapprochables sans qu'il soit identifiable. **La clé est obligatoire et vient d
 configuration** — jamais une valeur par défaut, qui rendrait les pseudonymes recalculables
 par un tiers, donc réidentifiables.
 
+Elle est exigée même si aucun observateur ne demande l'anonymat : le module écrit
+systématiquement un identifiant pseudonymisé dans `additional_data.observateur`, quel que
+soit le sort du nom. Sans elle, `vn-import` refuse de démarrer.
+
+#### Générer la clé de pseudonymisation
+
+Sur la machine qui héberge GeoNature :
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+48 octets d'aléa cryptographique, soit environ 64 caractères — largement suffisant pour
+une clé HMAC-SHA256. `openssl rand -base64 48` fait aussi bien.
+
+Reporter la valeur dans `connectors_config.toml`, puis redémarrer le service :
+
+```toml
+[visionature]
+pseudonymisation_secret = "la-chaîne-obtenue"
+```
+
+⚠️ **Cette clé ne doit jamais changer, et doit être sauvegardée hors de la machine.**
+Les pseudonymes n'en dérivent que d'elle et de l'identifiant d'observateur ; le nom réel
+n'est stocké nulle part pour les observateurs anonymisés. La perdre ou la remplacer après
+un import a deux conséquences irréversibles :
+
+- `vn-reanonymiser` ne retrouve plus aucune ligne — il apparie sur le pseudonyme conservé
+  dans `additional_data.observateur`, et rien d'autre ;
+- le moissonnage suivant produit des pseudonymes différents pour les mêmes observateurs,
+  qui cessent donc d'être rapprochables entre eux.
+
+La consigner dans un gestionnaire de mots de passe **au moment où on la génère**, pas
+après. Et restreindre le fichier : `chmod 600 connectors_config.toml`, qui porte aussi le
+mot de passe Biolovision et le `client_secret`. Il est dans le `.gitignore` du dépôt —
+seul `connectors_config.toml.example`, aux valeurs vides, est suivi.
+
 #### Observations masquées : importées, pas écartées
 
 Dans VisioNature, on masque une observation (`hidden`) pour protéger **l'espèce ou le

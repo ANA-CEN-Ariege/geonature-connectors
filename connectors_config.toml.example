@@ -185,6 +185,11 @@ taxo_groups = []
 # l'anonymat : sans elle on ne peut traiter ni ceux qui l'ont demandé, ni ceux que le
 # référentiel ne connaît pas. Ne jamais la publier — un pseudonyme dont la clé est
 # connue se recalcule, donc se réidentifie.
+# Générer avec :  python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+# ⚠ Ne jamais la changer une fois des données importées, et la sauvegarder ailleurs :
+# les pseudonymes n'en dérivent que d'elle, et le nom réel n'est pas conservé pour les
+# observateurs anonymisés. La remplacer rend `vn-reanonymiser` aveugle et casse le
+# rapprochement des observations d'un même contributeur.
 pseudonymisation_secret = ""
 
 # Le consentement est individuel : VisioNature porte un champ `anonymous` sur chaque
