@@ -802,4 +802,61 @@ def _jdd_visionature(instance: str, af, projet: str | None = None):
     return jdd
 
 
-connectors_cli = [status, gbif_sync_datasets, gbif_import, gbif_purge, vn_import]
+@click.command("vn-reanonymiser")
+@click.option("--yes", is_flag=True, help="Exécuter réellement. Sinon, simulation.")
+def vn_reanonymiser(yes):
+    """Réaligne les noms d'observateurs sur leur consentement courant.
+
+    Un observateur peut demander l'anonymat après coup, ou le lever. Ce changement ne
+    se voit dans aucune empreinte de contenu — il porte sur l'observateur, pas sur
+    l'observation —, donc ni le moissonnage incrémental ni le court-circuit sur la date
+    de modification ne le rattrapent. D'où cette commande, à passer périodiquement.
+    """
+    from geonature.utils.config import config as gn_config
+    from .core import reanonymisation as rea, synthese as syn_core
+    from .sources.visionature import (api as vn_api, confidentialite as vn_conf)
+    from .migrations.e91b4c07a2d8_source_visionature import SOURCE_NAME
+
+    cfg = (gn_config.get("CONNECTORS") or {}).get("visionature", {})
+    if not cfg.get("enabled"):
+        raise click.ClickException("Connecteur VisioNature désactivé.")
+    secret = cfg.get("pseudonymisation_secret", "")
+    if not secret:
+        raise click.ClickException("[visionature] pseudonymisation_secret manquant.")
+
+    id_source = syn_core.get_source_id(SOURCE_NAME)
+    click.echo("Chargement du référentiel des observateurs…")
+    observateurs = vn_api.observateurs(cfg)
+    forcer = cfg.get("forcer_anonymat", False)
+
+    # Indexé par pseudonyme : c'est la seule clé présente en base, le nom réel n'y étant
+    # pas conservé pour les observateurs anonymisés.
+    souhaits = {}
+    for o in observateurs:
+        uid = str(o.get("@id") or o.get("id") or "").strip()
+        if not uid:
+            continue
+        anonyme = forcer or str(o.get("anonymous") or "0").strip() in ("1", "true", "True")
+        souhaits[vn_conf.pseudonyme(uid, secret)[:12]] = (
+            anonyme, (o.get("name") or "").strip())
+    click.echo(f"  {len(souhaits)} observateur(s), "
+               f"{sum(1 for a, _ in souhaits.values() if a)} demandant l'anonymat")
+
+    bilan = rea.appliquer(id_source, souhaits, dry_run=not yes)
+    if yes:
+        db.session.commit()
+
+    click.secho(f"\n{'' if yes else 'SIMULATION — '}"
+                f"{bilan['vers_pseudonyme']} vers pseudonyme, "
+                f"{bilan['vers_nom']} vers nom réel, "
+                f"{bilan['inchangees']} inchangée(s).", fg="green")
+    if bilan["inconnues"]:
+        click.secho(f"  {bilan['inconnues']} observation(s) dont l'observateur n'est plus "
+                    f"dans le référentiel — laissées en l'état, leur pseudonyme étant "
+                    f"la seule information disponible.", fg="yellow")
+    if not yes and (bilan["vers_pseudonyme"] or bilan["vers_nom"]):
+        click.secho("Relancez avec --yes pour appliquer.", fg="yellow")
+
+
+connectors_cli = [status, gbif_sync_datasets, gbif_import, gbif_purge, vn_import,
+                  vn_reanonymiser]
