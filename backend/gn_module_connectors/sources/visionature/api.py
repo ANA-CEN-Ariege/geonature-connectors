@@ -61,13 +61,25 @@ def groupes_taxonomiques(cfg) -> list[dict]:
     return reponse.get("data") or []
 
 
-def _extraire(reponse: dict) -> list[dict]:
+def _extraire(reponse) -> list[dict]:
     """Relevés d'une réponse, formulaires compris.
 
     Biolovision range les observations issues d'un formulaire — une liste complète, un
     protocole — sous `forms`, séparément des `sightings` isolés. N'aller chercher que ces
     derniers perdrait l'essentiel des données protocolées.
+
+    ⚠ Trois formes de réponse coexistent, et le client vendorisé les annonce toutes comme
+    « dict or None » dans ses docstrings :
+      - `{"data": {"sightings": [...], "forms": [...]}}` — `api_list`, `api_search` ;
+      - `{"data": [...]}` ;
+      - `[...]` — **`api_diff` renvoie une liste nue**, sans enveloppe `data`.
+    La troisième faisait échouer `vn-import --since` sur un `AttributeError: 'list'
+    object has no attribute 'get'`, au premier groupe traité.
     """
+    if isinstance(reponse, list):
+        return list(reponse)
+    if not isinstance(reponse, dict):
+        return []
     data = reponse.get("data") or {}
     if isinstance(data, list):
         return list(data)
@@ -109,24 +121,51 @@ def observations_supprimees(cfg, id_taxo_group: str, depuis: str) -> list[str]:
     """
     reponse = _controleur(bio.ObservationsAPI, cfg).api_diff(
         id_taxo_group, depuis, "only_deleted")
-    identifiants = []
-    for entree in _extraire(reponse):
-        valeur = (entree.get("id_sighting") or entree.get("@id")
-                  or entree.get("id_universal"))
-        if valeur:
-            identifiants.append(str(valeur))
-    return identifiants
+    return [cle for cle in (identifiant(e) for e in _extraire(reponse)) if cle]
+
+
+def est_releve_complet(entree: dict) -> bool:
+    """L'entrée porte-t-elle la donnée, ou seulement un identifiant ?
+
+    `observations/diff` ne renvoie pas les observations : il renvoie la liste de ce qui a
+    changé, sous forme d'enregistrements réduits à un identifiant et un type de
+    modification. Le confondre avec un relevé complet est silencieux et coûteux — le
+    dépliage ne trouve pas de clé `observers`, ne produit aucun couple, et l'incrémental
+    annonce « 0 observation » sans que rien ne signale l'erreur.
+    """
+    return bool(entree.get("observers") or entree.get("species"))
+
+
+def identifiant(entree: dict) -> str | None:
+    """Identifiant de relevé d'une entrée de diff, quel que soit le champ employé."""
+    valeur = (entree.get("id_sighting") or entree.get("@id")
+              or entree.get("id_universal"))
+    return str(valeur) if valeur else None
 
 
 def observations_modifiees(cfg, id_taxo_group: str, depuis: str,
-                           type_modification: str = "all") -> list[dict]:
-    """Créations, modifications et suppressions depuis `depuis` (ISO 8601).
+                           type_modification: str = "only_modified") -> list[dict]:
+    """Relevés créés ou modifiés depuis `depuis` (ISO 8601), complets.
 
-    `type_modification` vaut « all », « only_modified » ou « only_deleted ». Les
-    suppressions se reconnaissent au champ `id_sighting` accompagné de l'absence de
-    données : c'est ainsi qu'on peut retirer de la Synthèse une observation effacée à la
-    source, ce qu'aucun autre connecteur du module ne sait faire.
+    Le différentiel ne livrant que des identifiants, chaque relevé signalé est ensuite
+    récupéré par `api_get`. C'est une requête par relevé : acceptable pour un incrémental,
+    dont c'est le propre de ne porter que sur un delta, mais c'est aussi la raison pour
+    laquelle `--since` ne remplace pas un moissonnage complet.
+
+    Le défaut est `only_modified` et non « all » : les suppressions sont traitées à part,
+    par `observations_supprimees`, et les inclure ici ferait tenter la récupération de
+    relevés qui n'existent plus.
     """
-    return _extraire(
-        _controleur(bio.ObservationsAPI, cfg).api_diff(id_taxo_group, depuis, type_modification)
-    )
+    controleur = _controleur(bio.ObservationsAPI, cfg)
+    entrees = _extraire(controleur.api_diff(id_taxo_group, depuis, type_modification))
+
+    releves = []
+    for entree in entrees:
+        if est_releve_complet(entree):
+            releves.append(entree)
+            continue
+        cle = identifiant(entree)
+        if not cle:
+            continue
+        releves.extend(_extraire(controleur.api_get(cle)))
+    return releves

@@ -602,3 +602,54 @@ def test_les_controleurs_relaient_le_timeout():
             assert controleur._limits["unavailable_delay"] == 60, classe.__name__
     finally:
         logging.disable(logging.NOTSET)
+
+
+# ── Formes de réponse de l'API ───────────────────────────────────────────────
+
+def test_extraire_accepte_une_liste_nue():
+    """`api_diff` renvoie une liste, sans enveloppe `data`.
+
+    Le client vendorisé annonce « dict or None » dans toutes ses docstrings, y compris
+    pour `api_diff`. La réalité contredit la documentation : `vn-import --since` échouait
+    au premier groupe sur `AttributeError: 'list' object has no attribute 'get'`.
+    """
+    assert A._extraire([{"id_sighting": "1"}]) == [{"id_sighting": "1"}]
+    assert A._extraire([]) == []
+
+
+def test_extraire_accepte_les_deux_enveloppes():
+    assert A._extraire({"data": [{"@id": "1"}]}) == [{"@id": "1"}]
+    assert A._extraire({"data": {"sightings": [{"@id": "1"}]}}) == [{"@id": "1"}]
+
+
+def test_extraire_reprend_les_releves_de_formulaire():
+    """Ne lire que `sightings` perdrait toutes les données protocolées."""
+    reponse = {"data": {"sightings": [{"@id": "1"}],
+                        "forms": [{"sightings": [{"@id": "2"}, {"@id": "3"}]}]}}
+    assert [r["@id"] for r in A._extraire(reponse)] == ["1", "2", "3"]
+
+
+def test_extraire_tolere_une_reponse_vide():
+    assert A._extraire(None) == []
+
+
+def test_une_entree_de_diff_nest_pas_un_releve():
+    """Le diff ne livre que des identifiants et un type de modification.
+
+    Les confondre avec des relevés est silencieux : le dépliage ne trouve pas de clé
+    `observers`, ne produit aucun couple, et l'incrémental annonce « 0 observation »
+    sans que rien ne signale que la donnée n'a jamais été récupérée.
+    """
+    assert not A.est_releve_complet({"id_sighting": "42", "modification_type": "updated"})
+    assert A.est_releve_complet({"@id": "42", "observers": [{"@id": "1"}]})
+    assert A.est_releve_complet({"@id": "42", "species": {"@id": "94"}})
+
+
+@pytest.mark.parametrize("entree, attendu", [
+    ({"id_sighting": "42"}, "42"),
+    ({"@id": "42"}, "42"),
+    ({"id_universal": "42"}, "42"),
+    ({"modification_type": "deleted"}, None),
+])
+def test_identifiant_de_diff(entree, attendu):
+    assert A.identifiant(entree) == attendu

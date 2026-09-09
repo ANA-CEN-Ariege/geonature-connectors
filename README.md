@@ -254,6 +254,12 @@ L'incrémental traite les **suppressions avant les modifications** : une observa
 supprimée puis recréée sous le même identifiant serait sinon retirée après avoir été
 réécrite.
 
+⚠️ **`observations/diff` ne livre pas les observations**, seulement la liste de ce qui a
+changé — un identifiant et un type de modification par entrée. Chaque relevé signalé est
+donc récupéré ensuite par `api_get`, soit **une requête par relevé modifié**. C'est
+acceptable pour un delta, mais c'est aussi pourquoi `--since` ne remplace pas un
+moissonnage complet : sur un intervalle large, le nombre de requêtes explose.
+
 ### Anonymat : le rattrapage a posteriori
 
 Un observateur peut demander l'anonymat après coup, ou le lever. Ce changement porte sur
