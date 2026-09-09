@@ -96,3 +96,24 @@ def supprimer_jdd(id_dataset: int) -> bool:
         text("DELETE FROM gn_meta.t_datasets WHERE id_dataset = :d"), {"d": id_dataset}
     )
     return True
+
+
+def supprimer_par_identifiants_source(id_source: int, champ: str,
+                                      identifiants: list[str]) -> int:
+    """Supprime les observations dont `additional_data->>champ` figure dans la liste.
+
+    Sert à répercuter une suppression faite à la source. Le rapprochement passe par
+    `additional_data` plutôt que par `entity_source_pk_value` : un relevé VisioNature
+    peut avoir donné plusieurs lignes de Synthèse — une par observateur —, et toutes
+    doivent partir ensemble.
+    """
+    if not identifiants:
+        return 0
+    return db.session.execute(
+        text(f"""
+            DELETE FROM gn_synthese.synthese
+            WHERE id_source = :s
+              AND additional_data->>'{champ}' = ANY(:ids)
+        """),
+        {"s": id_source, "ids": [str(i) for i in identifiants]},
+    ).rowcount

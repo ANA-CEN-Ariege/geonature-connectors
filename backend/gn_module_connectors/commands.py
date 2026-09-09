@@ -614,7 +614,8 @@ def vn_import(groupes, since, batch_size, dry_run):
     from sqlalchemy import select as sa_select
     from geonature.core.gn_meta.models import TDatasets
     from .core import (report as report_core, synthese as syn_core,
-                       datasets as ds_core, nomenclatures as nomen_core)
+                       datasets as ds_core, nomenclatures as nomen_core,
+                       purge as purge_core)
     from .sources.visionature import (api as vn_api, taxonomy as vn_taxo,
                                      transform as vn_tr, confidentialite as vn_conf)
     from .migrations.e91b4c07a2d8_source_visionature import SOURCE_NAME, CA_UUID
@@ -630,6 +631,16 @@ def vn_import(groupes, since, batch_size, dry_run):
                 f"[visionature] {cle} manquant. Les identifiants OAuth1 "
                 f"(client_key/client_secret) sont fournis par Biolovision, séparément "
                 f"du compte utilisateur.")
+
+    # Le diff de Biolovision ne remonte que 10 semaines. Au-delà, l'incrémental
+    # perdrait en silence les créations et suppressions de l'intervalle : mieux vaut
+    # refuser que produire une base incomplète sans le dire.
+    if since and not vn_api.diff_possible(since):
+        raise click.ClickException(
+            f"--since {since} dépasse les {vn_api.DIFF_MAX_SEMAINES} semaines que l'API "
+            f"Biolovision couvre en différentiel. Lancez un moissonnage complet "
+            f"(sans --since), sinon les créations et suppressions de l'intervalle "
+            f"seraient perdues sans avertissement.")
 
     batch_size = batch_size or cfg.get("batch_size", 1000)
     instance = cfg["url"].rstrip("/")
@@ -691,11 +702,25 @@ def vn_import(groupes, since, batch_size, dry_run):
     respecter = cfg.get("respecter_confidentialite", True)
     par_projet = cfg.get("jdd_par_code_projet", True)
 
-    total_lus = total_ecrits = total_maj = 0
+    total_lus = total_ecrits = total_maj = total_supprimes = 0
     jdds: dict = {}
 
     for groupe in groupes:
         if since:
+            # Les suppressions d'abord : une observation supprimée puis recréée sous le
+            # même identifiant serait sinon retirée après avoir été réécrite.
+            supprimes = vn_api.observations_supprimees(cfg, str(groupe), since)
+            if supprimes:
+                if dry_run:
+                    click.echo(f"  groupe {groupe} : {len(supprimes)} relevé(s) supprimé(s) "
+                               f"à la source (simulation)")
+                else:
+                    n = purge_core.supprimer_par_identifiants_source(
+                        id_source, "sighting_id", supprimes)
+                    db.session.commit()
+                    total_supprimes += n
+                    click.echo(f"  groupe {groupe} : {len(supprimes)} relevé(s) supprimé(s) "
+                               f"à la source -> {n} observation(s) retirée(s)")
             releves = vn_api.observations_modifiees(cfg, str(groupe), since)
         else:
             releves = vn_api.observations(cfg, str(groupe))
@@ -745,8 +770,9 @@ def vn_import(groupes, since, batch_size, dry_run):
 
     if not dry_run:
         db.session.commit()
+    suffixe = f", {total_supprimes} supprimée(s)" if total_supprimes else ""
     click.secho(f"\n{'DRY-RUN — ' if dry_run else ''}{total_lus} observation(s) lue(s), "
-                f"{total_ecrits} écrite(s), {total_maj} mise(s) à jour, "
+                f"{total_ecrits} écrite(s), {total_maj} mise(s) à jour{suffixe}, "
                 f"{len(rejets)} rejetée(s).", fg="green")
     for ligne in rejets.summary_lines():
         click.echo(ligne)

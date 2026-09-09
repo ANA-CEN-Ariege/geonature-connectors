@@ -68,6 +68,42 @@ def observations(cfg, id_taxo_group: str, **filtres) -> list[dict]:
     return _extraire(_controleur(bio.ObservationsAPI, cfg).api_list(id_taxo_group, **filtres))
 
 
+# L'API refuse un diff au-delà de cette ancienneté. Passé ce délai, l'incrémental n'est
+# plus possible : il faut un moissonnage complet, sans quoi les créations et suppressions
+# de l'intervalle seraient perdues en silence.
+DIFF_MAX_SEMAINES = 10
+
+
+def diff_possible(depuis: str) -> bool:
+    """Le diff couvre-t-il encore cette date ?"""
+    from datetime import datetime, timedelta, timezone
+    try:
+        d = datetime.fromisoformat(str(depuis).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=timezone.utc)
+    return d >= datetime.now(timezone.utc) - timedelta(weeks=DIFF_MAX_SEMAINES)
+
+
+def observations_supprimees(cfg, id_taxo_group: str, depuis: str) -> list[str]:
+    """Identifiants des relevés supprimés à la source depuis `depuis`.
+
+    C'est ce que GBIF ne sait pas faire : une occurrence retirée y devient simplement
+    absente des résultats, indiscernable d'une occurrence hors périmètre. VisioNature
+    signale explicitement la suppression, ce qui permet de la répercuter.
+    """
+    reponse = _controleur(bio.ObservationsAPI, cfg).api_diff(
+        id_taxo_group, depuis, "only_deleted")
+    identifiants = []
+    for entree in _extraire(reponse):
+        valeur = (entree.get("id_sighting") or entree.get("@id")
+                  or entree.get("id_universal"))
+        if valeur:
+            identifiants.append(str(valeur))
+    return identifiants
+
+
 def observations_modifiees(cfg, id_taxo_group: str, depuis: str,
                            type_modification: str = "all") -> list[dict]:
     """Créations, modifications et suppressions depuis `depuis` (ISO 8601).
