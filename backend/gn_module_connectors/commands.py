@@ -1184,13 +1184,39 @@ def vn_diagnostic(groupe, debug):
     # obligatoire et les dates sont au format JJ.MM.AAAA. La sonde précédente envoyait
     # de l'ISO sans `period_choice` — son 403 ne prouvait donc rien.
     hier = datetime.now(timezone.utc) - timedelta(days=1)
-    sonder("observations/search (paramètres VN)", lambda: obs.api_search(
+    sonder("observations/search (sans périmètre)", lambda: obs.api_search(
         vn_api.parametres_recherche(groupe, hier, hier), short_version="1"))
+
+    # `_store_search` de transfer_vn n'émet JAMAIS de recherche sans périmètre : sa
+    # boucle `for t_u in t_us:` pose systématiquement `location_choice` et
+    # `territorial_unit_ids`. Une recherche non bornée n'est donc pas ce qu'ils envoient,
+    # et l'API peut légitimement la refuser — c'est un balayage de toute l'instance.
+    voulus = {str(d).strip().zfill(2) for d in (cfg.get("departements") or [])}
+    try:
+        unites = vn_api.unites_territoriales(cfg)
+    except bio.BiolovisionApiException:
+        unites = []
+    territoires = [t for t in (vn_api.identifiant_territoire(u) for u in unites
+                               if not voulus or str(u.get("short_name") or "") in voulus)
+                   if t]
+    if territoires:
+        apercu = ", ".join(territoires[:3]) + ("…" if len(territoires) > 3 else "")
+        sonder(f"observations/search ({apercu})", lambda: obs.api_search(
+            vn_api.parametres_recherche(groupe, hier, hier, territoires[:1]),
+            short_version="1"))
+    else:
+        click.secho("  observations/search (avec périmètre)  ignoré — aucune unité "
+                    "territoriale exploitable", fg="yellow")
 
     click.echo("\nLa ligne « relevé complet » est décisive : si le différentiel ne livre\n"
                "que des identifiants, chaque entrée impose une requête supplémentaire.\n"
                "À 37 000 modifications par jour et par groupe, ce n'est pas tenable.\n")
+    click.echo("\nLa méthode `list` est DÉPRÉCIÉE en amont — transfer_vn journalise\n"
+               "« Download using list method is deprecated, please use search method only ».\n"
+               "Son 403 est donc attendu ; c'est `search` avec périmètre qui compte.\n")
     click.echo("\nLecture :\n"
+               "  search avec périmètre OK              -> c'était le périmètre manquant,\n"
+               "                                           pas le droit.\n"
                "  forme longue 403 mais short_version OK -> c'était le volume, pas le droit.\n"
                "  search OK                             -> moissonnage initial possible par\n"
                "                                           tranches de dates.\n"
