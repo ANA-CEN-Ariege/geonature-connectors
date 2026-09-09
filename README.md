@@ -661,6 +661,12 @@ réellement mordu pendant le développement : le faux-ami `Nymph` / « Nymphe »
 en intervalle ISO, l'asymétrie énumération/URL des licences, la distinction entre origine
 du taxon et état de l'individu, et le déterminisme de l'identifiant unique.
 
+`tests/test_noms_definis.py` passe le module à l'analyse statique. Les imports sont
+locaux aux commandes — pour ne pas charger l'API Biolovision quand on lance une commande
+GBIF —, si bien qu'un import oublié ne se voit ni à l'import du module ni à la
+compilation : il attend l'exécution, après le chargement des référentiels d'espèces et
+d'observateurs, soit plusieurs minutes avant le `NameError`. C'est arrivé deux fois.
+
 `tests/test_insert_alignement.py` mérite une mention à part : il confronte les `to_row`
 des deux sources au texte de `INSERT_SQL`, dans les deux sens. Un paramètre lié manquant
 fait échouer l'insertion d'un lot entier ; une clé produite en trop est un calcul jeté en

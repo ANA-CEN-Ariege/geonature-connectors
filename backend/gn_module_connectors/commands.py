@@ -623,7 +623,7 @@ def vn_import(groupes, since, batch_size, dry_run):
                        purge as purge_core)
     from .sources.visionature import (api as vn_api, taxonomy as vn_taxo,
                                      transform as vn_tr, confidentialite as vn_conf,
-                                     reproduction as vn_repro)
+                                     reproduction as vn_repro, perimetre as vn_perim)
     from .migrations.e91b4c07a2d8_source_visionature import SOURCE_NAME, CA_UUID
 
     cfg = (gn_config.get("CONNECTORS") or {}).get("visionature", {})
