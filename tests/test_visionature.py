@@ -768,3 +768,35 @@ def test_le_filtre_territorial_est_optionnel():
     avec = A.parametres_recherche("6", date(2026, 1, 1), date(2026, 1, 2), ["109"])
     assert avec["location_choice"] == "territorial_unit"
     assert avec["territorial_unit_ids"] == ["109"]
+
+
+# ── Découpage temporel du moissonnage complet ────────────────────────────────
+
+def test_la_tranche_retrecit_quand_le_volume_deborde():
+    """Une tranche trop large risque de heurter le plafond de pagination et de tronquer.
+
+    `transfer_vn` régule par un PID visant 10 000 observations ; on se contente d'un
+    ajustement proportionnel, plus simple à lire.
+    """
+    assert A._ajuster(30, 30_000) == 15
+    assert A._ajuster(1, 99_999) == 1          # plancher
+
+
+def test_la_tranche_selargit_quand_le_volume_est_faible():
+    assert A._ajuster(15, 10) == 30
+    assert A._ajuster(365, 0) == 365           # plafond
+
+
+def test_la_tranche_ne_bouge_pas_pres_de_la_cible():
+    assert A._ajuster(15, 9_000) == 15
+
+
+def test_une_recherche_sans_perimetre_est_refusee_avant_lappel():
+    """L'API répond 403 à une recherche non bornée ; autant le dire tout de suite.
+
+    Mesuré sur faune-occitanie.org : 403 sans `territorial_unit_ids`, 200 avec.
+    `transfer_vn` n'en émet d'ailleurs jamais sans périmètre.
+    """
+    from datetime import date
+    with pytest.raises(ValueError, match="périmètre territorial"):
+        list(A.moissonner_recherche({}, "6", date(2026, 1, 1), date(2026, 2, 1), []))

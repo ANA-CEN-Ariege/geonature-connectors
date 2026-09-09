@@ -314,6 +314,41 @@ sert jamais le référentiel de l'autre. Un fichier illisible, corrompu ou sans 
 vaut absence de cache — une optimisation n'a pas le droit de faire échouer ce qu'elle
 accélère.
 
+### Le moissonnage complet passe par `search`, borné par territoire
+
+⚠️ **`api_list` sur les observations est déprécié en amont et refusé par l'API.**
+`Client_API_VN` le journalise sans ambiguïté : *« Download using list method is
+deprecated. Please use search method only »*. Un 403 sur ce point d'entrée est donc
+attendu, et ne signale aucun droit manquant.
+
+⚠️ **Et une recherche sans périmètre territorial est refusée elle aussi.** Mesuré sur
+faune-occitanie.org : `POST /observations/search/` sans `territorial_unit_ids` renvoie
+403, avec renvoie 200. `transfer_vn` n'en émet d'ailleurs jamais sans périmètre — sa
+boucle pose systématiquement `location_choice` et `territorial_unit_ids`. Un balayage de
+toute une instance régionale n'est pas une requête que l'API sert.
+
+Ces deux constats ont coûté plusieurs heures parce qu'un 403 ressemble à un droit
+manquant. Il n'en était rien : les mêmes identifiants fonctionnent parfaitement dès que
+la requête est celle que l'API attend.
+
+```toml
+[visionature]
+departements = ["09"]        # OBLIGATOIRE en moissonnage complet
+date_debut = "2015-01-01"    # vide = tout l'historique
+tranche_jours = 15
+```
+
+Le moissonnage parcourt la période de la fin vers le début, territoire par territoire.
+La tranche est **ajustée au volume rendu** — réduite si elle déborde, élargie si elle est
+creuse — pour viser le même ordre de grandeur que `transfer_vn`, qui régule par un PID
+autour de 10 000 observations. Une interruption laisse donc un corpus utilisable, les
+données récentes étant traitées en premier.
+
+`search` renvoie des **relevés complets** (`date`, `observers`, `place`, `species`),
+contrairement au différentiel qui ne livre que des identifiants. C'est ce qui rend le
+moissonnage complet praticable là où le différentiel imposerait une requête par
+observation.
+
 ### Restreindre le périmètre
 
 Sans filtre, `vn-import` moissonne **toute l'étendue de l'instance** : treize départements

@@ -761,6 +761,42 @@ def vn_import(groupes, since, batch_size, dry_run):
                     "sera moissonnée.", fg="yellow")
     par_projet = cfg.get("jdd_par_code_projet", True)
 
+    # ── Périmètre temporel et territorial du moissonnage complet ────────────
+    # Inutile de les établir en incrémental : le différentiel s'en passe.
+    date_debut = date_fin = None
+    territoires: list[str] = []
+    tranche_jours = int(cfg.get("tranche_jours", vn_api.TRANCHE_JOURS_DEFAUT))
+    if not since:
+        from datetime import date as _date
+        brut = str(cfg.get("date_debut") or "").strip()
+        try:
+            date_debut = _date.fromisoformat(brut) if brut else _date(1900, 1, 1)
+        except ValueError:
+            raise click.ClickException(
+                f"[visionature] date_debut = {brut!r} n'est pas une date ISO (AAAA-MM-JJ).")
+        date_fin = _date.today()
+
+        # L'API refuse une recherche non bornée territorialement : 403 sans périmètre,
+        # 200 avec. L'identifiant attendu est `id_country` suivi du `short_name`, soit
+        # « 109 » pour l'Ariège — c'est ce que compose transfer_vn.
+        voulus = {str(d).strip().zfill(2) for d in (cfg.get("departements") or [])}
+        if not voulus:
+            raise click.ClickException(
+                "Un moissonnage complet exige [visionature] departements : l'API refuse "
+                "une recherche sans périmètre territorial, et sans lui vous "
+                "moissonneriez toute l'étendue de l'instance. "
+                "`vn-territoires` liste les valeurs disponibles.")
+        unites = referentiel("territoires", lambda: vn_api.unites_territoriales(cfg))
+        territoires = [t for t in (vn_api.identifiant_territoire(u) for u in unites
+                                   if str(u.get("short_name") or "") in voulus) if t]
+        if not territoires:
+            raise click.ClickException(
+                f"Aucune unité territoriale de l'instance ne correspond à "
+                f"{sorted(voulus)}. Vérifiez avec `vn-territoires`.")
+        click.echo(f"  moissonnage complet : {date_debut} → {date_fin}, "
+                   f"territoire(s) {', '.join(territoires)}, "
+                   f"tranches de {tranche_jours} jour(s) ajustées au volume")
+
     total_lus = total_ecrits = total_maj = total_supprimes = hors_perimetre = 0
     groupes_refuses: list[tuple[str, str]] = []
     jdds: dict = {}
@@ -769,83 +805,95 @@ def vn_import(groupes, since, batch_size, dry_run):
         contexte_repro.groupe_courant = groupe
         # Annoncer le groupe AVANT de l'interroger : ces requêtes durent parfois
         # plusieurs dizaines de secondes, et sans cette ligne le moissonnage paraît figé.
-        click.echo(f"  [{rang}/{len(groupes)}] groupe {groupe}…", nl=False)
+        click.echo(f"  [{rang}/{len(groupes)}] groupe {groupe}…")
         if since:
             # Les suppressions d'abord : une observation supprimée puis recréée sous le
             # même identifiant serait sinon retirée après avoir été réécrite.
             supprimes = vn_api.observations_supprimees(cfg, str(groupe), since)
             if supprimes:
                 if dry_run:
-                    click.echo(f"\n    {len(supprimes)} relevé(s) supprimé(s) à la "
-                               f"source (simulation)", nl=False)
+                    click.echo(f"    {len(supprimes)} relevé(s) supprimé(s) à la "
+                               f"source (simulation)")
                 else:
                     n = purge_core.supprimer_par_identifiants_source(
                         id_source, "sighting_id", supprimes)
                     db.session.commit()
                     total_supprimes += n
-                    click.echo(f"\n    {len(supprimes)} relevé(s) supprimé(s) à la "
-                               f"source -> {n} observation(s) retirée(s)", nl=False)
+                    click.echo(f"    {len(supprimes)} relevé(s) supprimé(s) à la "
+                               f"source -> {n} observation(s) retirée(s)")
             try:
                 releves, inaccessibles = vn_api.observations_modifiees(
                     cfg, str(groupe), since)
             except vn_api.bio.BiolovisionApiException as erreur:
                 groupes_refuses.append((str(groupe), f"diff : {erreur!r}"))
-                click.secho(f" refusé par l'API ({erreur!r})", fg="yellow")
+                click.secho(f"    refusé par l'API ({erreur!r})", fg="yellow")
                 continue
             for cle, motif in inaccessibles:
                 rejets.add("inaccessible", cle, "", motif)
+            lots = [releves]
         else:
-            try:
-                releves = vn_api.observations(cfg, str(groupe), **filtre_api)
-            except vn_api.bio.BiolovisionApiException as erreur:
-                # Un groupe que le compte n'a pas le droit de lister ne doit pas
-                # interrompre le moissonnage des autres. Le droit d'accès n'est pas
-                # uniforme d'un groupe taxonomique à l'autre chez Biolovision.
-                groupes_refuses.append((str(groupe), f"liste : {erreur!r}"))
-                click.secho(f" refusé par l'API ({erreur!r})", fg="yellow")
-                continue
-        couples = vn_tr.deplier(releves)
-        total_lus += len(couples)
-        click.echo(f" {len(releves)} relevé(s), {len(couples)} observation(s)")
+            # Moissonnage complet : par `search`, découpé en tranches de dates et borné
+            # par territoire. `api_list` est déprécié en amont et refusé par l'API, et
+            # une recherche sans périmètre l'est aussi — mesuré sur faune-occitanie.org.
+            def _tranche(territoire, debut, fin_t, n):
+                click.echo(f"    {territoire} {debut:%Y-%m-%d} → {fin_t:%Y-%m-%d} : "
+                           f"{n} relevé(s)")
+
+            lots = (releves for _d, _f, _t, releves in vn_api.moissonner_recherche(
+                cfg, str(groupe), date_debut, date_fin, territoires,
+                tranche_jours=tranche_jours, journal=_tranche))
 
         lot, ecrits, maj = [], 0, 0
-        for sighting, observation in couples:
-            if not vn_perim.dans_perimetre(sighting, departements):
-                hors_perimetre += 1
-                continue
-            if respecter:
-                motif = vn_conf.est_confidentielle(observation, sighting)
-                if motif:
-                    rejets.add("confidentielle", sighting.get("@id"),
-                               (sighting.get("species") or {}).get("name"), motif)
-                    continue
-            cd_nom = vn_taxo.resolve(sighting, index)
-            if not cd_nom:
-                espece = (sighting.get("species") or {})
-                rejets.add("no_cd_nom", sighting.get("@id"), espece.get("name"),
-                           f"species_id={espece.get('@id')}")
-                continue
-            ligne = vn_tr.to_row(sighting, observation, cd_nom=cd_nom, id_dataset=None,
-                                 id_source=id_source, id_module=id_module, srid=srid,
-                                 resolver=resolver, instance=instance,
-                                 surcharges_atlas=surcharges,
-                                 statut_validation=statut_validation,
-                                 index_anonymat=index_anonymat, secret_pseudo=secret,
-                                 forcer_anonymat=forcer_anonymat,
-                                 code_diffusion_masquee=niveau_masquees,
-                                 version_taxref=v_taxref,
-                                 repro=contexte_repro)
-            if ligne is None:
-                rejets.add("no_coordinates", sighting.get("@id"),
-                           (sighting.get("species") or {}).get("name"), "")
-                continue
-            ligne["_projet"] = vn_tr.code_projet(observation) if par_projet else None
-            lot.append(ligne)
-            if len(lot) >= batch_size and not dry_run:
-                i, u = _ecrire_lot(lot, jdds, instance, af, id_source)
-                ecrits += i; maj += u
-                db.session.commit(); lot = []
-                click.echo(f"    … {ecrits} écrites, {maj} mises à jour")
+        try:
+            for releves in lots:
+                couples = vn_tr.deplier(releves)
+                total_lus += len(couples)
+                for sighting, observation in couples:
+                    if not vn_perim.dans_perimetre(sighting, departements):
+                        hors_perimetre += 1
+                        continue
+                    if respecter:
+                        motif = vn_conf.est_confidentielle(observation, sighting)
+                        if motif:
+                            rejets.add("confidentielle", sighting.get("@id"),
+                                       (sighting.get("species") or {}).get("name"), motif)
+                            continue
+                    cd_nom = vn_taxo.resolve(sighting, index)
+                    if not cd_nom:
+                        espece = (sighting.get("species") or {})
+                        rejets.add("no_cd_nom", sighting.get("@id"), espece.get("name"),
+                                   f"species_id={espece.get('@id')}")
+                        continue
+                    ligne = vn_tr.to_row(sighting, observation, cd_nom=cd_nom,
+                                         id_dataset=None,
+                                         id_source=id_source, id_module=id_module,
+                                         srid=srid,
+                                         resolver=resolver, instance=instance,
+                                         surcharges_atlas=surcharges,
+                                         statut_validation=statut_validation,
+                                         index_anonymat=index_anonymat,
+                                         secret_pseudo=secret,
+                                         forcer_anonymat=forcer_anonymat,
+                                         code_diffusion_masquee=niveau_masquees,
+                                         version_taxref=v_taxref,
+                                         repro=contexte_repro)
+                    if ligne is None:
+                        rejets.add("no_coordinates", sighting.get("@id"),
+                                   (sighting.get("species") or {}).get("name"), "")
+                        continue
+                    ligne["_projet"] = vn_tr.code_projet(observation) if par_projet else None
+                    lot.append(ligne)
+                    if len(lot) >= batch_size and not dry_run:
+                        i, u = _ecrire_lot(lot, jdds, instance, af, id_source)
+                        ecrits += i; maj += u
+                        db.session.commit(); lot = []
+                        click.echo(f"    … {ecrits} écrites, {maj} mises à jour")
+        except vn_api.bio.BiolovisionApiException as erreur:
+            # L'exception surgit pendant l'itération, le moissonnage étant paresseux.
+            # Ce qui a déjà été lu reste acquis et sera écrit ci-dessous.
+            groupes_refuses.append((str(groupe), f"recherche : {erreur!r}"))
+            click.secho(f"    interrompu par l'API ({erreur!r})", fg="yellow")
+
         if lot and not dry_run:
             i, u = _ecrire_lot(lot, jdds, instance, af, id_source)
             ecrits += i; maj += u

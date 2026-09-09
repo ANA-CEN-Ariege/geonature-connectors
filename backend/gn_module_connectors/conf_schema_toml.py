@@ -189,6 +189,15 @@ class VisioNatureSchemaConf(Schema):
     # erreur, d'où la vérification systématique sur `departements` ci-dessus.
     # `geonature connectors vn-territoires` liste les valeurs de l'instance.
     filtre_api = fields.Dict(load_default=dict)
+    # ── Moissonnage complet ──────────────────────────────────────────────────
+    # Le moissonnage complet passe par `observations/search` : `api_list` est déprécié
+    # en amont et refusé par l'API. Une recherche sans périmètre territorial est refusée
+    # elle aussi, d'où le caractère obligatoire de `departements` dans ce mode.
+    # Début de l'historique. Vide = 1900-01-01.
+    date_debut = fields.String(load_default="")
+    # Taille de tranche initiale, ajustée automatiquement selon le volume rendu.
+    tranche_jours = fields.Integer(load_default=15)
+
     # ── Cache des référentiels ───────────────────────────────────────────────
     # Durée de validité en heures. 0 = désactivé, et c'est le défaut.
     # Un moissonnage commence par trois téléchargements — espèces, groupes, observateurs —

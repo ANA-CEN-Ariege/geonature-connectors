@@ -206,6 +206,20 @@ departements = ["09"]
 # et l'avertissement affiché en fin de moissonnage si le filtre serveur semble ignoré.
 # filtre_api = { id_territorial_unit = "..." }
 
+# ── Moissonnage complet ──────────────────────────────────────────────────────
+# Le moissonnage complet passe par `observations/search`, découpé en tranches de dates
+# et borné par territoire. La méthode `list` est dépréciée en amont (Client_API_VN) et
+# refusée par l'API ; une recherche SANS périmètre territorial l'est également.
+# `departements` est donc OBLIGATOIRE pour un moissonnage complet.
+#
+# Début de l'historique à moissonner. Vide = 1900-01-01, soit tout l'historique.
+# date_debut = "2015-01-01"
+#
+# Taille de tranche initiale, en jours. Ajustée automatiquement selon le volume rendu :
+# réduite si la tranche déborde, élargie si elle est creuse. transfer_vn régule par un
+# PID visant 10 000 observations ; on vise la même cible plus simplement.
+tranche_jours = 15
+
 # ── Cache des référentiels (mise au point) ───────────────────────────────────
 # Un moissonnage commence par trois téléchargements : espèces (63 616 sur
 # Faune-Occitanie), groupes taxonomiques, observateurs (246 699). Plusieurs minutes

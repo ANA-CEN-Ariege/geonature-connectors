@@ -174,6 +174,64 @@ def observations_recherche(cfg, id_taxo_group: str, date_debut, date_fin,
         short_version=SHORT_VERSION))
 
 
+# Cible de volume par requête, et taille de tranche initiale. `transfer_vn` régule la
+# tranche par un PID visant 10 000 observations ; on se contente d'un ajustement
+# proportionnel, plus simple à lire et suffisant pour l'usage.
+CIBLE_PAR_TRANCHE = 10_000
+TRANCHE_JOURS_DEFAUT = 15
+TRANCHE_JOURS_MIN = 1
+TRANCHE_JOURS_MAX = 365
+
+
+def _ajuster(tranche: int, obtenus: int) -> int:
+    """Nouvelle taille de tranche, d'après le volume qu'a rendu la précédente.
+
+    Une tranche trop large risque de heurter le plafond de pagination du client et de
+    tronquer en silence ; une tranche trop étroite multiplie les allers-retours.
+    """
+    if obtenus > CIBLE_PAR_TRANCHE * 1.5:
+        tranche = max(TRANCHE_JOURS_MIN, tranche // 2)
+    elif obtenus < CIBLE_PAR_TRANCHE // 4:
+        tranche = min(TRANCHE_JOURS_MAX, max(tranche * 2, tranche + 1))
+    return tranche
+
+
+def moissonner_recherche(cfg, id_taxo_group: str, date_debut, date_fin,
+                         territoires: list[str], tranche_jours: int = TRANCHE_JOURS_DEFAUT,
+                         journal=None):
+    """Parcourt une période par tranches décroissantes, et livre les relevés.
+
+    Générateur de `(debut, fin, territoire, releves)`, pour que l'appelant écrive au fil
+    de l'eau plutôt que d'accumuler des centaines de milliers d'observations en mémoire.
+
+    ⚠ `territoires` ne peut pas être vide. Une recherche non bornée territorialement est
+    **refusée par l'API** — mesuré sur faune-occitanie.org, 403 sans périmètre et 200
+    avec. `transfer_vn` n'en émet d'ailleurs jamais : sa boucle pose systématiquement
+    `location_choice` et `territorial_unit_ids`.
+
+    Le parcours va de la fin vers le début, comme `transfer_vn` : les données récentes,
+    les plus utiles, arrivent en premier, et une interruption laisse un corpus utilisable.
+    """
+    if not territoires:
+        raise ValueError(
+            "Un moissonnage par recherche exige un périmètre territorial : l'API refuse "
+            "une recherche non bornée. Renseignez [visionature] departements.")
+
+    from datetime import timedelta
+
+    for territoire in territoires:
+        fin = date_fin
+        tranche = tranche_jours
+        while fin > date_debut:
+            debut = max(date_debut, fin - timedelta(days=tranche))
+            releves = observations_recherche(cfg, id_taxo_group, debut, fin, [territoire])
+            if journal:
+                journal(territoire, debut, fin, len(releves))
+            yield (debut, fin, territoire, releves)
+            tranche = _ajuster(tranche, len(releves))
+            fin = debut - timedelta(days=1)
+
+
 def observations(cfg, id_taxo_group: str, **filtres) -> list[dict]:
     """Observations d'un groupe taxonomique.
 
