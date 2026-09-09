@@ -1224,6 +1224,24 @@ def vn_diagnostic(groupe, debug):
                            f"{', '.join(sorted(premiere)[:12])}")
                 click.echo(f"  {'':<34}        relevé complet : "
                            f"{'oui' if complet else 'NON — un api_get par entrée'}")
+                # Les sous-objets décident du sort de l'observateur et du périmètre :
+                # `@uid` identifie l'observateur, `county` et `insee` le département.
+                # Leur absence au format court a déjà produit deux défauts silencieux.
+                for cle in ("observers", "place"):
+                    valeur = premiere.get(cle)
+                    sous = valeur[0] if isinstance(valeur, list) and valeur else valeur
+                    if isinstance(sous, dict):
+                        click.echo(f"  {'':<34}        {cle}[0] : "
+                                   f"{', '.join(sorted(sous)[:14])}")
+                        if cle == "observers" and "@uid" not in sous:
+                            click.secho(f"  {'':<34}        ⚠ pas de @uid : "
+                                        f"l'observateur ne pourra pas être apparié au "
+                                        f"référentiel, donc pseudonymisé par défaut.",
+                                        fg="yellow")
+                        if cle == "place" and not {"county", "insee"} & set(sous):
+                            click.secho(f"  {'':<34}        ⚠ ni county ni insee : le "
+                                        f"département n'est pas déductible du relevé.",
+                                        fg="yellow")
         return reponse
 
     click.echo(f"Instance {cfg['url']}, groupe taxonomique {groupe} :\n")
