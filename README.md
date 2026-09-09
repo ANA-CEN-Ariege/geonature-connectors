@@ -29,6 +29,36 @@ pas relancés, `/gn_commons/modules` renvoie une erreur 500 et l'interface est i
 sudo systemctl restart geonature
 ```
 
+### Mise à jour du module
+
+⚠️ **Copier les fichiers ne suffit pas.** Si vous mettez le module à jour par `rsync`,
+`scp` ou `git pull`, le code Python change mais la métadonnée du paquet installée dans le
+venv reste celle de l'installation précédente. Les dépendances déclarées dans
+`requirements.in` ne sont donc pas résolues, et la première commande qui les utilise
+échoue par un `ModuleNotFoundError` sans rapport apparent avec la mise à jour :
+
+```
+File ".../sources/visionature/biolovision/api.py", line 31, in <module>
+    from requests_oauthlib import OAuth1
+ModuleNotFoundError: No module named 'requests_oauthlib'
+```
+
+Rejouer `install-gn-module` après chaque mise à jour, puis redémarrer le service :
+
+```bash
+source ~/geonature/backend/venv/bin/activate
+geonature install-gn-module /chemin/vers/gn_module_connectors CONNECTORS --build false
+sudo systemctl restart geonature
+```
+
+Pour débloquer une instance sans réinstaller, la dépendance manquante suffit —
+c'est un venv, donc pip s'y applique sans contournement :
+
+```bash
+source ~/geonature/backend/venv/bin/activate
+pip install requests_oauthlib
+```
+
 Vérifier :
 
 ```bash
