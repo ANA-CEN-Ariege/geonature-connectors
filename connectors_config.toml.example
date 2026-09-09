@@ -192,6 +192,16 @@ taxo_groups = []
 # rapprochement des observations d'un même contributeur.
 pseudonymisation_secret = ""
 
+# ── Robustesse du client Biolovision ─────────────────────────────────────────
+# timeout : secondes avant d'abandonner une requête. À NE PAS mettre à 0 ni retirer —
+# le client vendorisé laisse ce paramètre à None s'il n'est pas fourni, et `requests`
+# attend alors indéfiniment : un incident réseau fige le moissonnage sans message.
+timeout = 120
+# Attente après une réponse 503. Le client applique 600 s par défaut, soit jusqu'à une
+# demi-heure de gel apparent avec max_retry = 3.
+unavailable_delay = 60
+max_retry = 3
+
 # Le consentement est individuel : VisioNature porte un champ `anonymous` sur chaque
 # observateur, que le module respecte. Passer à true impose le pseudonyme à tous,
 # sans consulter le référentiel.

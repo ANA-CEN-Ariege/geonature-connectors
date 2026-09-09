@@ -13,6 +13,18 @@ from .biolovision import api as bio
 
 
 def _controleur(classe, cfg):
+    """Instancie un contrôleur Biolovision.
+
+    ⚠ `timeout` et `unavailable_delay` doivent être fournis explicitement. Dans le client
+    vendorisé, `timeout` est le seul paramètre du constructeur qui ne reçoive aucune
+    valeur par défaut : il reste à `None`, et `requests` attend alors **indéfiniment**.
+    Un incident réseau ou une API qui ne répond pas fige le moissonnage sans le moindre
+    message, puisque le client journalise dans un logger que la CLI n'affiche pas.
+
+    `unavailable_delay` vaut 600 s en amont : sur une réponse 503, le client dort dix
+    minutes avant de réessayer, jusqu'à `max_retry` fois. Une demi-heure de gel apparent
+    pour un service momentanément indisponible est disproportionné en usage interactif.
+    """
     return classe(
         user_email=cfg["user_email"],
         user_pw=cfg["user_password"],
@@ -22,6 +34,8 @@ def _controleur(classe, cfg):
         max_retry=cfg.get("max_retry", 3),
         max_requests=cfg.get("max_requests", 0),
         max_chunks=cfg.get("max_chunks", 100),
+        timeout=cfg.get("timeout", 120),
+        unavailable_delay=cfg.get("unavailable_delay", 60),
     )
 
 

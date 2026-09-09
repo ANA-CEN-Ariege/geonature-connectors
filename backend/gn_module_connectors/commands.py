@@ -727,29 +727,32 @@ def vn_import(groupes, since, batch_size, dry_run):
     total_lus = total_ecrits = total_maj = total_supprimes = 0
     jdds: dict = {}
 
-    for groupe in groupes:
+    for rang, groupe in enumerate(groupes, 1):
         contexte_repro.groupe_courant = groupe
+        # Annoncer le groupe AVANT de l'interroger : ces requêtes durent parfois
+        # plusieurs dizaines de secondes, et sans cette ligne le moissonnage paraît figé.
+        click.echo(f"  [{rang}/{len(groupes)}] groupe {groupe}…", nl=False)
         if since:
             # Les suppressions d'abord : une observation supprimée puis recréée sous le
             # même identifiant serait sinon retirée après avoir été réécrite.
             supprimes = vn_api.observations_supprimees(cfg, str(groupe), since)
             if supprimes:
                 if dry_run:
-                    click.echo(f"  groupe {groupe} : {len(supprimes)} relevé(s) supprimé(s) "
-                               f"à la source (simulation)")
+                    click.echo(f"\n    {len(supprimes)} relevé(s) supprimé(s) à la "
+                               f"source (simulation)", nl=False)
                 else:
                     n = purge_core.supprimer_par_identifiants_source(
                         id_source, "sighting_id", supprimes)
                     db.session.commit()
                     total_supprimes += n
-                    click.echo(f"  groupe {groupe} : {len(supprimes)} relevé(s) supprimé(s) "
-                               f"à la source -> {n} observation(s) retirée(s)")
+                    click.echo(f"\n    {len(supprimes)} relevé(s) supprimé(s) à la "
+                               f"source -> {n} observation(s) retirée(s)", nl=False)
             releves = vn_api.observations_modifiees(cfg, str(groupe), since)
         else:
             releves = vn_api.observations(cfg, str(groupe))
         couples = vn_tr.deplier(releves)
         total_lus += len(couples)
-        click.echo(f"  groupe {groupe} : {len(releves)} relevé(s), {len(couples)} observation(s)")
+        click.echo(f" {len(releves)} relevé(s), {len(couples)} observation(s)")
 
         lot, ecrits, maj = [], 0, 0
         for sighting, observation in couples:

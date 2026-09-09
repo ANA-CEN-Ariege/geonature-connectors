@@ -182,6 +182,13 @@ class VisioNatureSchemaConf(Schema):
     jdd_par_code_projet = fields.Boolean(load_default=True)
     max_retry = fields.Integer(load_default=3)
     max_chunks = fields.Integer(load_default=100)
+    # ⚠ Secondes. Doit être fourni : dans le client Biolovision vendorisé, `timeout` est
+    # le seul paramètre du constructeur sans valeur par défaut. Laissé à None, `requests`
+    # attend indéfiniment et un incident réseau fige le moissonnage sans message.
+    timeout = fields.Integer(load_default=120)
+    # Attente après une réponse 503, en secondes. Le client applique 600 s par défaut,
+    # soit une demi-heure de gel apparent avec max_retry = 3.
+    unavailable_delay = fields.Integer(load_default=60)
     batch_size = fields.Integer(load_default=1000)
     atlas = fields.Nested(AtlasSchemaConf, load_default=lambda: AtlasSchemaConf().load({}))
     reproduction = fields.Nested(ReproductionSchemaConf,
