@@ -14,7 +14,9 @@ observation, et installation à la portée d'un administrateur fonctionnel.
 ---
 
 ## Installation
-
+```bash
+source ~/geonature/backend/venv/bin/activate
+```
 ```bash
 geonature install-gn-module /chemin/vers/gn_module_connectors CONNECTORS --build false
 ```
@@ -24,7 +26,7 @@ mais les workers gunicorn déjà lancés n'en voient pas le code Python : tant q
 pas relancés, `/gn_commons/modules` renvoie une erreur 500 et l'interface est inutilisable.
 
 ```bash
-docker restart <conteneur-backend>     # ou : systemctl restart geonature
+sudo systemctl restart geonature
 ```
 
 Vérifier :
