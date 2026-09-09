@@ -209,7 +209,37 @@ pseudonymisation_secret = "…"   # obligatoire, voir plus bas
 geonature connectors vn-import --dry-run
 geonature connectors vn-import
 geonature connectors vn-import --since 2026-01-01   # incrémental
+geonature connectors vn-reanonymiser                # simulation
+geonature connectors vn-reanonymiser --yes
 ```
+
+⚠️ **`--since` ne remonte pas au-delà de dix semaines.** C'est la fenêtre que l'API
+Biolovision couvre en différentiel (`api_diff`). Au-delà, les créations et les
+suppressions de l'intervalle seraient perdues sans le moindre message : la commande
+refuse plutôt que de produire une base incomplète en silence, et invite à un moissonnage
+complet. Le contrôle a lieu avant tout appel réseau, faute de quoi une erreur de
+connexion masquerait le vrai problème.
+
+L'incrémental traite les **suppressions avant les modifications** : une observation
+supprimée puis recréée sous le même identifiant serait sinon retirée après avoir été
+réécrite.
+
+### Anonymat : le rattrapage a posteriori
+
+Un observateur peut demander l'anonymat après coup, ou le lever. Ce changement porte sur
+l'**observateur** et non sur l'observation : il n'entre dans aucune empreinte de contenu,
+donc ni le moissonnage incrémental ni le court-circuit sur la date de modification ne le
+rattrapent. Les observations déjà en Synthèse resteraient figées sur le consentement en
+vigueur au moment de l'import.
+
+`vn-reanonymiser` réaligne `synthese.observers` sur le référentiel courant, dans les deux
+sens. L'appariement se fait sur l'identifiant pseudonymisé conservé dans
+`additional_data.observateur` — seule clé disponible, le nom réel n'étant pas stocké pour
+les observateurs anonymisés. Les lignes dont l'observateur a disparu du référentiel sont
+laissées en l'état et signalées : leur pseudonyme est la seule information dont on
+dispose. Seules les lignes dont la valeur change sont réécrites.
+
+À passer périodiquement — le rattrapage n'a pas de déclencheur naturel.
 
 ### Résolution taxonomique
 
@@ -494,10 +524,15 @@ plutôt `METH_OBS`.
 ailleurs dans le module. « Pond », « Tandem » ou « Émergence » n'ont pas d'équivalent
 certain, et un code inventé produirait une valeur fausse mais silencieuse.
 
-`api_diff` signale les **suppressions**, mais `vn-import` ne les répercute pas encore en
-Synthèse. Un observateur qui change d'avis sur son anonymat après coup n'est pas non plus
-rattrapé : le drapeau vient de l'observateur, pas de l'observation, donc l'empreinte de
-contenu ne le détecte pas.
+`STADE_VIE` et `SEXE` restent au défaut. L'information existe (`details[].age`,
+`details[].sex`) et la décision d'agrégation est prise, mais la règle du cas ambigu reste
+à écrire : « 1 mâle et 2 femelles » n'a pas de sexe unique et doit rester au défaut.
+`gn_vn2synthese` ne les alimente pas davantage — mesuré sur un export de leur production,
+« Inconnu » sur 95 982 lignes sur 95 982.
+
+Aucun **filtre spatial**. Sur une instance régionale comme Faune-Occitanie, `vn-import`
+prend tout le territoire couvert par l'instance, département voisin compris. La LPO pose
+pour cela un trigger sur un zonage `VN_COVER` ; l'équivalent reste à faire ici.
 
 ---
 
@@ -507,10 +542,22 @@ contenu ne le détecte pas.
 python3 -m pytest tests/ -q
 ```
 
-54 tests, sans dépendance à GeoNature ni à la base. Ils couvrent les cas qui ont
+175 tests, sans dépendance à GeoNature ni à la base. Ils couvrent les cas qui ont
 réellement mordu pendant le développement : le faux-ami `Nymph` / « Nymphe », les dates
 en intervalle ISO, l'asymétrie énumération/URL des licences, la distinction entre origine
 du taxon et état de l'individu, et le déterminisme de l'identifiant unique.
+
+`tests/test_insert_alignement.py` mérite une mention à part : il confronte les `to_row`
+des deux sources au texte de `INSERT_SQL`, dans les deux sens. Un paramètre lié manquant
+fait échouer l'insertion d'un lot entier ; une clé produite en trop est un calcul jeté en
+silence. C'est ce contrôle qui manquait quand le connecteur VisioNature a été écrit avec
+huit colonnes de nomenclature là où l'INSERT en portait quatorze.
+
+⚠️ Un test écrit à partir du code plutôt que de la donnée ne prouve rien. Trois défauts
+de ce module ont vécu sous un test vert qui vérifiait l'hypothèse fausse du code qu'il
+couvrait : les champs `is_hidden` / `export_excluded` qui n'existent pas, le code atlas
+lu dans `@id`, et les paramètres manquants de l'INSERT. Écrire les cas à partir d'un
+export réel, pas de la fonction testée.
 
 ---
 
@@ -532,7 +579,8 @@ personnelle : à porter au registre de traitement.
 **Penser à filtrer `gn_profiles.v_synthese_for_profiles`** sur `id_source`, sinon les
 profils de taxons sont alimentés par de la donnée externe.
 
-**La suppression n'est pas gérée.** Une occurrence retirée de GBIF reste en base : la
+**La suppression n'est pas gérée côté GBIF** — elle l'est côté VisioNature, via
+`api_diff`. Une occurrence retirée de GBIF reste en base : la
 détecter supposerait de comparer l'ensemble des identifiants du périmètre à chaque
 passage, ce qui annulerait le bénéfice du court-circuit.
 
