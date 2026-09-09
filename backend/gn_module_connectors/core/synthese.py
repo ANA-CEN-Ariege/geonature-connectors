@@ -127,9 +127,11 @@ INSERT_SQL = text(
     -- renommer la clé des lignes GBIF déjà en base — ce qui provoquerait la réécriture
     -- inutile de tout le corpus au prochain passage.
     WHERE COALESCE(gn_synthese.synthese.additional_data->>'gbif_empreinte',
-                   gn_synthese.synthese.additional_data->>'vn_empreinte')
+                   gn_synthese.synthese.additional_data->>'vn_empreinte',
+                   gn_synthese.synthese.additional_data->>'dbchiro_empreinte')
           IS DISTINCT FROM COALESCE(EXCLUDED.additional_data->>'gbif_empreinte',
-                                    EXCLUDED.additional_data->>'vn_empreinte')
+                                    EXCLUDED.additional_data->>'vn_empreinte',
+                                    EXCLUDED.additional_data->>'dbchiro_empreinte')
        OR gn_synthese.synthese.additional_data->>'gbif_modified'
           IS DISTINCT FROM EXCLUDED.additional_data->>'gbif_modified'
     """
@@ -235,7 +237,7 @@ def get_module_id(module_code: str) -> int:
 
 
 # Clés d'empreinte connues, dans l'ordre de priorité du COALESCE de l'INSERT.
-CLES_EMPREINTE = ("gbif_empreinte", "vn_empreinte")
+CLES_EMPREINTE = ("gbif_empreinte", "vn_empreinte", "dbchiro_empreinte")
 
 
 def empreinte_de(additional_data: dict) -> str | None:
@@ -266,7 +268,8 @@ def insert_batch(lignes: list[dict]) -> tuple[int, int]:
         for u, e, m in db.session.execute(
             text("""SELECT unique_id_sinp::text,
                            COALESCE(additional_data->>'gbif_empreinte',
-                                    additional_data->>'vn_empreinte'),
+                                    additional_data->>'vn_empreinte',
+                                    additional_data->>'dbchiro_empreinte'),
                            additional_data->>'gbif_modified'
                     FROM gn_synthese.synthese
                     WHERE unique_id_sinp = ANY(CAST(:u AS uuid[]))"""),

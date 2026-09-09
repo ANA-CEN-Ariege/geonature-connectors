@@ -205,8 +205,75 @@ class VisioNatureSchemaConf(Schema):
     schedule = fields.Nested(ScheduleSchemaConf, load_default=lambda: ScheduleSchemaConf().load({}))
 
 
+class DbChiroSchemaConf(Schema):
+    """Connecteur dbChiro (dbchiroweb)."""
+
+    enabled = fields.Boolean(load_default=False)
+    # URL de l'instance, p. ex. https://dbchiroc.org
+    url = fields.String(load_default="")
+    # ⚠ Compte de service dédié. Le périmètre moissonné est **celui que ce compte voit** :
+    # `SightingListPermissionsMixin` filtre le queryset selon ses droits. Un compte
+    # `access_all_data` ramènerait les sessions confidentielles, les gîtes masqués et les
+    # études fermées. Le bon profil est un compte ordinaire sur une instance réglée
+    # `SEE_ALL_NON_SENSITIVE_DATA = True` : le tri de sensibilité est alors fait par le
+    # serveur, qui en est le seul juge légitime.
+    username = fields.String(load_default="")
+    password = fields.String(load_default="")
+
+    # ── Périmètre ────────────────────────────────────────────────────────────
+    # Identifiant de zonage dbChiro, appliqué côté serveur. **Propre à chaque instance** :
+    # `geonature connectors dbchiro-zonages` les liste. Sur l'instance mesurée, l'Ariège
+    # vaut 109 et ramène 8 007 observations sur 8 039.
+    area = fields.String(load_default="")
+    # Codes de département vérifiés sur les zonages de chaque observation. Double le
+    # filtre serveur : un paramètre inconnu de l'API DRF est ignoré **sans erreur**, et
+    # rien ne distinguerait alors un filtre appliqué d'un filtre inexistant.
+    departements = fields.List(fields.String(), load_default=list)
+    date_min = fields.String(load_default="")
+    date_max = fields.String(load_default="")
+    # Filtres bruts transmis tels quels à l'API (`specie`, `study`, `place_type`…).
+    filtre_api = fields.Dict(load_default=dict)
+
+    # ── Taxonomie ────────────────────────────────────────────────────────────
+    # Les deux codes d'absence de dbChiro — `0obs` « Aucune chauve-souris ou trace »,
+    # `0du` « Aucun contact acoustique » — ne désignent aucun taxon. Écartés par défaut :
+    # les importer produirait des présences fausses là où l'espèce a été cherchée en vain.
+    # Activé, ils sont versés en STATUT_OBS « Non observé » sur le cd_nom de l'ordre.
+    importer_absences = fields.Boolean(load_default=False)
+
+    # ── Confidentialité ──────────────────────────────────────────────────────
+    # ⚠ dbChiro ne porte **aucun marqueur de consentement par observateur**, contrairement
+    # au champ `anonymous` de VisioNature. Publier les noms suppose donc un accord de
+    # l'exploitant portant sur l'ensemble des contributeurs. Le défaut suit ce choix ;
+    # la pseudonymisation reste disponible sans modification de code.
+    pseudonymiser_observateurs = fields.Boolean(load_default=False)
+    # Clé du HMAC, obligatoire si la pseudonymisation est active. Aucune valeur par
+    # défaut : elle rendrait les pseudonymes recalculables par un tiers.
+    pseudonymisation_secret = fields.String(load_default="")
+    # Niveau de diffusion (cd_nomenclature NIV_PRECIS) appliqué à **toutes** les
+    # observations importées. La géométrie exacte est conservée en base — la flouter
+    # serait irréversible et ruinerait tout suivi de gîte — mais l'API livre les
+    # coordonnées précises de cavités nommées, et le producteur peut vouloir en
+    # restreindre la diffusion.
+    #   0 Standard   1 Commune   2 Maille   3 Département   4 Aucune   5 Précise
+    # Vide = NULL, c'est-à-dire « le producteur ne se prononce pas », ce que GeoNature
+    # interprète correctement depuis qu'il a cessé de calculer cette colonne.
+    # Le référentiel de sensibilité de GeoNature, qui couvre les chiroptères, s'applique
+    # de toute façon au déclenchement du trigger d'insertion.
+    niveau_diffusion = fields.String(load_default="")
+
+    # ── Moissonnage ──────────────────────────────────────────────────────────
+    # `LargeGeoJsonPageNumberPagination` plafonne à 5000.
+    page_size = fields.Integer(load_default=5000)
+    timeout = fields.Integer(load_default=120)
+    batch_size = fields.Integer(load_default=1000)
+    schedule = fields.Nested(ScheduleSchemaConf, load_default=lambda: ScheduleSchemaConf().load({}))
+
+
 class GnModuleSchemaConf(Schema):
     gbif = fields.Nested(GbifSchemaConf, load_default=GbifSchemaConf().load({}))
     visionature = fields.Nested(VisioNatureSchemaConf,
                                 load_default=lambda: VisioNatureSchemaConf().load({}))
+    dbchiro = fields.Nested(DbChiroSchemaConf,
+                            load_default=lambda: DbChiroSchemaConf().load({}))
     validation = fields.Nested(ValidationSchemaConf, load_default=ValidationSchemaConf().load({}))

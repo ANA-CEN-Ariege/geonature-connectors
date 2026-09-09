@@ -28,6 +28,7 @@ sys.path.insert(0, str(RACINE))
 
 from gn_module_connectors.sources.gbif import transform as gbif_tr  # noqa: E402
 from gn_module_connectors.sources.visionature import transform as vn_tr  # noqa: E402
+from gn_module_connectors.sources.dbchiro import transform as db_tr  # noqa: E402
 
 
 class ResolverFactice:
@@ -94,6 +95,48 @@ OBSERVATION_VN = {
 }
 
 
+FEATURE_DBCHIRO = {
+    "id": 62639,
+    "type": "Feature",
+    "geometry": {"type": "Point", "coordinates": [1.2106, 43.0310]},
+    "properties": {
+        "codesp": 76,
+        "total_count": 1,
+        "breed_colo": None,
+        "period": "Estivage",
+        "is_doubtful": False,
+        "comment": None,
+        "specie_data": {"codesp": "hypsav", "sci_name": "Hypsugo savii",
+                        "common_name_fr": "Vespère de Savi", "sp_true": True},
+        "creator": {"id": 4, "full_name": "Thomas CUYPERS", "label": "Thomas CUYPERS"},
+        "session_data": {
+            "id_session": 35059,
+            "name": "loc15614 2026-07-29 du tcuypers",
+            "contact": {"descr": "Contact acoustique", "code": "du"},
+            "date_start": "2026-07-29",
+            "place_data": {
+                "id_place": 15614,
+                "name": "Trou souffleur - trois frères",
+                "areas": [
+                    {"id": 109, "area_type": {"code": "dep", "name": "Département"},
+                     "code": "09", "name": "Ariège"},
+                    {"id": 1037, "area_type": {"code": "mun", "name": "Commune"},
+                     "code": "09204", "name": "Montesquieu-Avantès"},
+                ],
+            },
+            "main_observer": {"id": 4, "full_name": "Thomas CUYPERS",
+                              "label": "Thomas CUYPERS"},
+        },
+    },
+}
+
+
+def ligne_dbchiro():
+    return db_tr.to_row(FEATURE_DBCHIRO, cd_nom=60506, id_dataset=1, id_source=1,
+                        id_module=1, srid=2154, resolver=ResolverFactice(),
+                        instance="https://dbchiroc.org")
+
+
 def ligne_gbif():
     return gbif_tr.to_row(OCCURRENCE_GBIF, cd_nom=252, id_dataset=1, id_source=1,
                           id_module=1, srid=2154, resolver=ResolverFactice())
@@ -106,14 +149,16 @@ def ligne_vn():
                         index_anonymat={"7": False}, secret_pseudo="cle-de-test")
 
 
-@pytest.mark.parametrize("nom, fabrique", [("gbif", ligne_gbif), ("visionature", ligne_vn)])
+@pytest.mark.parametrize("nom, fabrique", [("gbif", ligne_gbif), ("visionature", ligne_vn),
+                                           ("dbchiro", ligne_dbchiro)])
 def test_to_row_fournit_tous_les_parametres_lies(nom, fabrique):
     """Sans quoi le premier `insert_batch` échoue, et rien n'est importé."""
     manquants = parametres_lies() - set(fabrique())
     assert not manquants, f"{nom} : paramètres absents de to_row -> {sorted(manquants)}"
 
 
-@pytest.mark.parametrize("nom, fabrique", [("gbif", ligne_gbif), ("visionature", ligne_vn)])
+@pytest.mark.parametrize("nom, fabrique", [("gbif", ligne_gbif), ("visionature", ligne_vn),
+                                           ("dbchiro", ligne_dbchiro)])
 def test_to_row_ne_produit_rien_dinutile(nom, fabrique):
     """Une clé que l'INSERT ne porte pas est un calcul jeté en silence."""
     inutiles = set(fabrique()) - parametres_lies()
@@ -130,7 +175,7 @@ def test_toutes_les_colonnes_de_nomenclature_sont_couvertes():
     """Le dictionnaire de chaque source doit couvrir les colonnes `id_nomenclature_*`."""
     attendues = {c for c in colonnes_insert()
                  if c.startswith("id_nomenclature_")} - RESOLUES_A_PART
-    for nom, module in (("gbif", gbif_tr), ("visionature", vn_tr)):
+    for nom, module in (("gbif", gbif_tr), ("visionature", vn_tr), ("dbchiro", db_tr)):
         manquantes = attendues - set(module.COLONNES_NOMENCLATURE)
         assert not manquantes, f"{nom} : {sorted(manquantes)}"
 

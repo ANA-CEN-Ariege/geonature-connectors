@@ -1022,6 +1022,230 @@ def vn_groupes():
                "par ces règles — ils affichent donc « — » sans que ce soit un manque.")
 
 
+@click.command("dbchiro-import")
+@click.option("--area", default="", help="Identifiant de zonage dbChiro (défaut : configuration).")
+@click.option("--departement", "departements", multiple=True,
+              help="Codes de département à conserver (défaut : configuration).")
+@click.option("--importer-absences/--ecarter-absences", default=None,
+              help="Verser les codes d'absence en STATUT_OBS « Non observé » "
+                   "(défaut : configuration).")
+@click.option("--batch-size", default=None, type=int)
+@click.option("--dry-run", is_flag=True)
+def dbchiro_import(area, departements, importer_absences, batch_size, dry_run):
+    """Importe des observations dbChiro dans la Synthèse."""
+    from geonature.utils.config import config as gn_config
+    from .core import (report as report_core, synthese as syn_core,
+                       datasets as ds_core, nomenclatures as nomen_core)
+    from .sources.dbchiro import (api as db_api, taxonomy as db_taxo,
+                                  transform as db_tr)
+    from .migrations.a3f6c81b0e52_source_dbchiro import SOURCE_NAME, CA_UUID
+
+    cfg = dict((gn_config.get("CONNECTORS") or {}).get("dbchiro", {}))
+    if not cfg.get("enabled"):
+        raise click.ClickException(
+            "Connecteur dbChiro désactivé. Renseignez [dbchiro] dans la configuration "
+            "et passez `enabled = true`.")
+    for cle in ("url", "username", "password"):
+        if not cfg.get(cle):
+            raise click.ClickException(
+                f"[dbchiro] {cle} manquant. L'API de dbChiro n'expose aucun jeton : "
+                f"le connecteur se connecte avec un compte de service, dont les droits "
+                f"déterminent le périmètre visible.")
+    if area:
+        cfg["area"] = area
+    if importer_absences is not None:
+        cfg["importer_absences"] = importer_absences
+
+    pseudonymiser = cfg.get("pseudonymiser_observateurs", False)
+    secret = cfg.get("pseudonymisation_secret", "")
+    if pseudonymiser and not secret:
+        raise click.ClickException(
+            "[dbchiro] pseudonymisation_secret manquant alors que "
+            "pseudonymiser_observateurs est actif. Une clé par défaut rendrait les "
+            "pseudonymes recalculables par un tiers, donc réidentifiables.")
+
+    batch_size = batch_size or cfg.get("batch_size", 1000)
+    instance = cfg["url"].rstrip("/")
+    codes_dep = {c.strip().upper().zfill(2) if c.strip().isdigit() else c.strip().upper()
+                 for c in (list(departements) or cfg.get("departements") or []) if c.strip()}
+    id_source = syn_core.get_source_id(SOURCE_NAME)
+    id_module = syn_core.get_module_id("CONNECTORS")
+    srid = syn_core.local_srid()
+    af = ds_core.get_acquisition_framework(CA_UUID)
+    v_taxref = syn_core.version_taxref()
+    click.secho(f"instance={instance} source={id_source} srid={srid} "
+                f"taxref={v_taxref or 'inconnu'}", fg="green")
+    if not v_taxref:
+        click.secho("  ⚠ paramètre `taxref_version` absent de gn_commons.t_parameters : "
+                    "meta_v_taxref restera NULL.", fg="yellow")
+
+    # `url_source` reste NULL, à dessein. Le permalien d'une observation dbChiro est
+    # `/sighting/<id>/detail` : GeoNature construit son bouton « voir la donnée source »
+    # en concaténant `url_source` et `entity_source_pk_value`, sans suffixe possible.
+    # Un lien tronqué serait pire qu'une absence de lien — il mènerait à une 404 en
+    # laissant croire que la source est injoignable.
+
+    # La table taxonomique est vérifiée contre TAXREF avant toute écriture : un cd_nom
+    # déprécié par une montée de version satisfait la clé étrangère sans qu'aucun
+    # contrôle ne le signale.
+    anomalies = db_taxo.verifier_table(journal=click.echo)
+    if anomalies:
+        raise click.ClickException(
+            "La table taxonomique dbChiro ne correspond plus au TAXREF de l'instance. "
+            "Corrigez `sources/dbchiro/taxonomy.py` avant d'importer.")
+
+    click.echo("Connexion à l'instance dbChiro…")
+    try:
+        session = db_api.connecter(cfg)
+        features = db_api.observations(session, cfg, journal=click.echo)
+    except db_api.ErreurDbChiro as exc:
+        raise click.ClickException(str(exc))
+    click.echo(f"  {len(features)} observation(s) reçue(s).")
+
+    resolver = nomen_core.Resolver()
+    cfg_valid = (gn_config.get("CONNECTORS") or {}).get("validation", {})
+    statut_validation = cfg_valid.get("status") if cfg_valid.get("enabled") else None
+    niveau_diffusion = cfg.get("niveau_diffusion", "")
+    if niveau_diffusion:
+        click.echo(f"  niveau de diffusion appliqué : NIV_PRECIS « {niveau_diffusion} »")
+    if not pseudonymiser:
+        click.secho("  observateurs publiés en clair — dbChiro ne porte aucun marqueur "
+                    "de consentement individuel, ce choix engage l'accord de "
+                    "l'exploitant.", fg="yellow")
+
+    rejets = report_core.Rejects()
+    jdd = None
+    lot, lus, ecrits, maj, hors_perimetre = [], 0, 0, 0, 0
+
+    def _ecrire(lignes):
+        nonlocal jdd
+        if not lignes:
+            return (0, 0)
+        if jdd is None:
+            jdd = _jdd_dbchiro(instance, af)
+        for ligne in lignes:
+            ligne["id_dataset"] = jdd.id_dataset
+        return syn_core.insert_batch(lignes)
+
+    for feature in features:
+        lus += 1
+        properties = feature.get("properties") or {}
+        identifiant = feature.get("id")
+        if not db_tr.dans_perimetre(properties, codes_dep):
+            hors_perimetre += 1
+            rejets.add("hors_perimetre", identifiant, db_taxo.nom_cite(properties),
+                       f"departement={db_tr.departement(properties)}")
+            continue
+        cd_nom, motif = db_taxo.resolve(
+            properties, importer_absences=cfg.get("importer_absences", False))
+        if cd_nom is None:
+            rejets.add(motif, identifiant, db_taxo.nom_cite(properties),
+                       f"codesp={db_taxo.codesp(properties)}")
+            continue
+        ligne = db_tr.to_row(
+            feature, cd_nom=cd_nom, id_dataset=None, id_source=id_source,
+            id_module=id_module, srid=srid, resolver=resolver, instance=instance,
+            absence=db_taxo.est_absence(properties),
+            statut_validation=statut_validation, pseudonymiser=pseudonymiser,
+            secret_pseudo=secret, code_diffusion=niveau_diffusion,
+            version_taxref=v_taxref)
+        if ligne is None:
+            rejets.add("no_coordinates", identifiant, db_taxo.nom_cite(properties),
+                       "géométrie ou date absente")
+            continue
+        lot.append(ligne)
+        if len(lot) >= batch_size and not dry_run:
+            i, u = _ecrire(lot)
+            ecrits += i; maj += u
+            db.session.commit(); lot = []
+            click.echo(f"    … {ecrits} écrites, {maj} mises à jour")
+
+    if lot and not dry_run:
+        i, u = _ecrire(lot)
+        ecrits += i; maj += u
+    if dry_run:
+        ecrits = len(lot)
+    else:
+        db.session.commit()
+
+    if hors_perimetre:
+        # Un rejet massif alors qu'un filtre serveur est configuré signale que l'API l'a
+        # ignoré : un paramètre inconnu de DRF est écarté sans la moindre erreur.
+        click.secho(f"  {hors_perimetre} observation(s) hors périmètre écartée(s).",
+                    fg="yellow" if cfg.get("area") else None)
+        if cfg.get("area") and hors_perimetre > lus / 10:
+            click.secho("  ⚠ le filtre serveur `area` semble ignoré : la quasi-totalité "
+                        "de l'instance a été téléchargée avant d'être écartée ici. "
+                        "Vérifiez l'identifiant avec `dbchiro-zonages`.", fg="yellow")
+
+    click.secho(f"\n{'DRY-RUN — ' if dry_run else ''}{lus} observation(s) lue(s), "
+                f"{ecrits} écrite(s), {maj} mise(s) à jour, {len(rejets)} rejetée(s).",
+                fg="green")
+    for ligne in rejets.summary_lines():
+        click.echo(ligne)
+    chemin = rejets.write_csv(Path("dbchiro_rejets.csv"))
+    if chemin:
+        click.echo(f"  Journal détaillé : {chemin}")
+
+
+def _jdd_dbchiro(instance: str, af):
+    """JDD unique de l'instance, créé à la première écriture.
+
+    ⚠ Le découpage naturel serait l'**étude** dbChiro (`management.Study`) : ce sont des
+    programmes réels, comme les codes projet de VisioNature. Le champ existe sur la
+    session et figure dans le `select_related` du queryset, mais le serializer de
+    `/api/v1/search` ne l'expose pas — couverture nulle sur les 8 039 observations
+    mesurées. Un JDD par étude deviendra possible dès que dbChiro publiera le champ.
+    """
+    from .core import datasets as ds_core
+    site = instance.replace("https://", "").replace("http://", "")
+    jdd, cree = ds_core.upsert_dataset(
+        source="dbChiro", cle=instance, licence="",
+        nom=f"Observations dbChiro — {site}",
+        description=(
+            f"Observations de chiroptères moissonnées depuis {instance}.\n\n"
+            f"La détermination d'origine est conservée dans additional_data : TAXREF ne "
+            f"propose aucun agrégat pour les chiroptères, et les déterminations "
+            f"partielles (« Myotis myotis / M. blythii », « Plecotus sp. ») portent donc "
+            f"le cd_nom du genre, de la famille ou de l'ordre. Le champ « determination » "
+            f"dit ce qui a réellement été identifié.\n\n"
+            f"Les dates sont sans heure : l'API n'expose pas l'heure de début de session."),
+        id_acquisition_framework=af.id_acquisition_framework,
+    )
+    db.session.flush()
+    if cree:
+        click.secho(f"  + JDD créé : {jdd.id_dataset}", fg="green")
+    return jdd
+
+
+@click.command("dbchiro-zonages")
+@click.option("--q", "recherche", default="", help="Filtre sur le nom du zonage.")
+def dbchiro_zonages(recherche):
+    """Liste les zonages de l'instance dbChiro, pour renseigner [dbchiro] area."""
+    from geonature.utils.config import config as gn_config
+    from .sources.dbchiro import api as db_api
+
+    cfg = (gn_config.get("CONNECTORS") or {}).get("dbchiro", {})
+    if not cfg.get("enabled"):
+        raise click.ClickException("Connecteur dbChiro désactivé.")
+    try:
+        session = db_api.connecter(cfg)
+        zonages = db_api.zonages(session, cfg, recherche)
+    except db_api.ErreurDbChiro as exc:
+        raise click.ClickException(str(exc))
+
+    if not zonages:
+        click.secho("Aucun zonage renvoyé par l'instance.", fg="yellow")
+        return
+    click.echo(f"{len(zonages)} zonage(s) :\n")
+    click.echo(f"  {'id':>8}  libellé")
+    for zone in zonages:
+        click.echo(f"  {str(zone.get('id') or ''):>8}  {zone.get('text') or ''}")
+    click.echo("\nReportez l'identifiant voulu dans [dbchiro] area. Il est propre à "
+               "cette instance : ne le recopiez pas d'une autre.")
+
+
 connectors_cli = [status, gbif_sync_datasets, gbif_import, gbif_purge, vn_import,
                   vn_reanonymiser, vn_territoires,
-                  vn_groupes]
+                  vn_groupes,
+                  dbchiro_import, dbchiro_zonages]

@@ -6,6 +6,7 @@ Module GeoNature d'alimentation de la Synthèse depuis des sources externes.
 |---|---|
 | **GBIF** (Global Biodiversity Information Facility) | fonctionnel |
 | **VisioNature / Biolovision** | fonctionnel — client Biolovision vendorisé depuis `Client_API_VN` |
+| **dbChiro** (dbchiroweb) | fonctionnel — chiroptères, une instance régionale par configuration |
 
 Le module tourne **dans** GeoNature. Il utilise donc `db.session` directement : aucun
 identifiant PostgreSQL à distribuer, insertion par lots plutôt qu'une requête HTTP par
@@ -650,19 +651,199 @@ le zonage `VN_COVER` de la LPO reste la bonne réponse, et n'est pas implément�
 
 ---
 
+## dbChiro
+
+```toml
+[dbchiro]
+enabled = true
+url = "https://dbchiroc.org"
+username = "…"          # compte de service, voir plus bas
+password = "…"
+area = "109"            # zonage Ariège de l'instance
+departements = ["09"]
+```
+
+```bash
+geonature connectors dbchiro-zonages --q ariege   # trouver l'identifiant de zonage
+geonature connectors dbchiro-import --dry-run
+geonature connectors dbchiro-import
+```
+
+### Le compte de service décide du périmètre
+
+dbChiro n'expose aucun jeton d'API : les vues sont protégées par le `LoginRequiredMixin`
+de Django et le connecteur se connecte par le formulaire, en conservant le cookie de
+session. Conséquence directe : **le périmètre moissonné est celui que voit le compte
+employé**, `SightingListPermissionsMixin` filtrant le queryset selon ses droits.
+
+| compte | ce qu'il ramène |
+|---|---|
+| `access_all_data` | tout, y compris sessions confidentielles, gîtes masqués, études fermées |
+| ordinaire, sur une instance `SEE_ALL_NON_SENSITIVE_DATA = true` | toute la donnée non sensible, gîtes masqués exclus |
+
+**Le second profil est le bon.** Le tri de sensibilité est alors fait par le serveur, qui
+en est le seul juge légitime, plutôt que par nous après coup.
+
+### Pas d'incrémental, et ce n'est pas grave
+
+Le queryset est trié par `-timestamp_update`, mais **le serializer ne l'expose pas** :
+impossible de savoir où arrêter la pagination. Mesuré sur 8 039 observations, la
+couverture du champ est nulle.
+
+La question est sans objet à cette échelle : 8 039 observations tiennent en deux pages de
+5 000 et se relisent en quelques secondes. L'empreinte de contenu fait le reste — seules
+les lignes réellement modifiées sont réécrites. Si une instance venait à grossir d'un
+ordre de grandeur, exposer `timestamp_update` en amont deviendrait la priorité.
+
+### Trois champs manquent à l'appel
+
+Tous existent en base dbChiro, aucun ne remonte dans `/api/v1/search` :
+
+| champ | ce qu'il débloquerait |
+|---|---|
+| `uuid` (sur `Sighting`) | `unique_id_sinp` natif au lieu d'un uuid5 dérivé |
+| `study` (sur `Session`) | un JDD par étude, comme les codes projet de VisioNature |
+| `timestamp_update` | le moissonnage incrémental |
+
+En attendant, l'identifiant SINP est un uuid5 de `(instance, id_sighting)` — l'URL entre
+dans la clé, `id_sighting` étant un entier propre à chaque base. Le jour où `uuid` sera
+publié, il devra primer, et les lignes déjà importées seront à réaligner via
+`core.synthese.realigner_uuid`, exactement comme pour VisioNature.
+
+L'API ne publie pas non plus `time_start` ni `date_end` : **les dates sont sans heure**.
+Une nuit d'enregistrement acoustique à cheval sur minuit est ramenée à son seul jour de
+début, et `additional_data.heure_connue` vaut « non » pour que l'ambiguïté soit lisible.
+
+### 14 % des observations ne sont pas des espèces
+
+C'est la particularité de la donnée chiroptérologique, et le cœur du travail de mapping.
+Sur 8 039 observations et 60 codes espèce :
+
+| catégorie | obs | `cd_nom` retenu |
+|---|---:|---|
+| espèces déterminées (29 codes) | 6 897 | l'espèce |
+| « sp. » explicites | 433 | le genre |
+| couples intra-genre (`Myotis myotis / blythii` : 333) | 409 | le genre |
+| couples inter-genres, même famille | 47 | Vespertilionidae |
+| couples à cheval sur deux familles | 14 | Chiroptera |
+| `Chiroptera sp.` | 64 | Chiroptera |
+| **absences** (`0obs`, `0du`) | **175** | **écartées** |
+
+⚠ **TAXREF ne propose aucun agrégat pour les chiroptères.** Vérifié sur la v16 : ni rang
+`AGES`, ni entrée à barre oblique, ni hybride — `Myotis myotis/blythii` n'existe pas. Le
+repli au rang supérieur commun est donc la seule voie, et chaque cas est un arbitrage
+explicite dans `sources/dbchiro/taxonomy.py` plutôt qu'une règle déduite du libellé.
+
+Le piège à connaître : `Nyctalus / Tadarida` ressemble à un couple de Vespertilionidae,
+mais Tadarida est un Molossidae — seul l'ordre les contient tous deux. Idem pour
+`Pipistrellus / Miniopterus`, Miniopterus ayant quitté les Vespertilionidae.
+
+La détermination d'origine est toujours conservée : dans `nom_cite`, et dans
+`additional_data.determination`. `cd_nom` dit « Myotis », seul ce champ dit « Myotis
+myotis / M. blythii ».
+
+**Un `codesp` inconnu est rejeté**, jamais versé par défaut dans l'ordre : une espèce
+nouvellement ajoutée au référentiel dbChiro doit se voir dans le journal des rejets, pas
+se dissoudre en « Chiroptera sp. ».
+
+La table est vérifiée contre TAXREF **avant** toute écriture : un `cd_nom` déprécié par
+une montée de version satisfait la clé étrangère sans qu'aucun contrôle ne le signale.
+
+### Les absences
+
+`0obs` (« Aucune chauve-souris ou trace », 171 obs) et `0du` (« Aucun contact
+acoustique », 4 obs) ne désignent aucun taxon. C'est le même piège que
+`occurrenceStatus = ABSENT` du GBIF. Écartées par défaut ; `importer_absences = true` les
+verse en `STATUT_OBS = « Non observé »` sur le `cd_nom` de l'ordre, avec un effectif de
+**zéro** et non NULL — l'ambiguïté entre « aucun individu » et « effectif non renseigné »
+fausserait toute analyse quantitative.
+
+### Les nomenclatures se transposent presque telles quelles
+
+dbChiro s'appuie sur `dj-sinp-nomenclatures` : son vocabulaire est déjà aligné sur le
+standard, ce qui change la nature du travail par rapport à VisioNature. Les 9 méthodes de
+contact couvrent 100 % du corpus :
+
+| dbChiro | METH_OBS | remarque |
+|---|---|---|
+| `du` contact acoustique (3 198) | **Ultrasons** | et non « Entendu » : c'est un détecteur |
+| `cr` cri audible (11) | Entendu | certaines espèces émettent des cris sociaux perceptibles |
+| `vv` vu (4 271), `vm` en main (360) | Vu | |
+| `gu` guano (62) | **Fèces/Guano/Epreintes** | correspondance exacte |
+| `ca` cadavre (42), `ro` restes osseux (11) | Vu / Autre | + `ETA_BIO = Trouvé mort` |
+
+Sur un guano, `ETA_BIO` reste **vide** : l'animal n'a été observé ni vivant ni mort, et
+la date est celle de l'indice, pas celle de l'animal.
+
+⚠ **Le champ `period` n'alimente jamais `STATUT_BIO`.** Deux raisons, la seconde étant un
+contresens franc : il est *calculé* par dbChiro depuis la date — en faire un statut
+biologique déduirait d'un calendrier ce que seul un observateur constate —, et surtout
+« Estivage » n'est **pas** l'estivation du SINP, qui désigne une dormance estivale. Chez
+les chiroptères d'Europe, l'été est la saison d'activité et de mise bas. La reproduction
+vient donc de `breed_colo`, qui est une observation de terrain, pas un calcul.
+
+Une détermination `is_doubtful` passe en `STATUT_VALID = Douteux`, et **prime sur la
+pré-validation globale** : annoncer « Probable » sur une donnée que la source dit
+incertaine la surclasserait.
+
+### Observateurs et gîtes : deux points de convention
+
+**Aucun marqueur de consentement individuel n'existe côté dbChiro**, contrairement au
+champ `anonymous` de VisioNature. Les 8 039 observations publient un nom complet en clair.
+Les diffuser suppose donc un accord de l'exploitant portant sur *l'ensemble* des
+contributeurs, et non le consentement de chacun. Le connecteur suit ce choix par défaut ;
+`pseudonymiser_observateurs = true` bascule sur le HMAC sans changer une ligne de code.
+Comme pour VisioNature, aucun rôle n'est créé dans `utilisateurs.t_roles`.
+
+**L'API livre les coordonnées exactes de cavités nommées** — « Trou souffleur - trois
+frères ». La géométrie est conservée telle quelle en base : la flouter serait irréversible
+et ruinerait tout suivi de gîte. La restriction se règle par `niveau_diffusion`
+(`NIV_PRECIS`), qui n'engage que la diffusion. Le référentiel de sensibilité de GeoNature
+s'applique de surcroît au déclenchement du trigger d'insertion.
+
+### Le filtre de périmètre est doublé
+
+`area` est appliqué côté serveur, mais **un paramètre inconnu de l'API DRF est ignoré
+sans erreur** : rien ne distinguerait un filtre appliqué d'un filtre inexistant. Le code
+de département est donc revérifié sur les zonages de chaque observation reçue — dbChiro
+les publie dans la réponse : département, commune INSEE, maille 10 km, ZNIEFF, parc. Un
+écart massif est signalé en fin de moissonnage.
+
+### Limites connues
+
+`url_source` reste NULL : le permalien d'une observation dbChiro est
+`/sighting/<id>/detail`, et GeoNature construit son bouton « voir la donnée source » par
+simple concaténation de `url_source` et `entity_source_pk_value`, sans suffixe possible.
+Un lien tronqué mènerait à une 404 en laissant croire que la source est injoignable.
+
+La suppression n'est pas gérée, comme pour GBIF. Les `countdetails` (sexe, âge, état
+sexuel) ne sont pas exposés par `/api/v1/search` : seul `total_count` remonte.
+
+Enfin, une instance protégée par un filtre anti-robot bloquera le connecteur —
+`demo.dbchiro.org` l'est. Le cas est détecté et signalé explicitement plutôt que de
+finir en erreur de décodage JSON.
+
+---
+
 ## Tests
 
 ```bash
 python3 -m pytest tests/ -q
 ```
 
-175 tests, sans dépendance à GeoNature ni à la base. Ils couvrent les cas qui ont
+248 tests, sans dépendance à GeoNature ni à la base. Ils couvrent les cas qui ont
 réellement mordu pendant le développement : le faux-ami `Nymph` / « Nymphe », les dates
 en intervalle ISO, l'asymétrie énumération/URL des licences, la distinction entre origine
 du taxon et état de l'individu, et le déterminisme de l'identifiant unique.
 
+Côté dbChiro, les 52 cas portent sur ce qu'un contrôle de base ne verrait pas : les codes
+d'absence qui deviendraient des présences, le couple `Nyctalus / Tadarida` qui franchit
+une frontière de famille, le contresens « Estivage » → estivation, et la primauté d'une
+détermination douteuse sur la pré-validation globale. Les données de référence viennent
+d'un sondage réel de l'instance, pas d'exemples inventés.
+
 `tests/test_insert_alignement.py` mérite une mention à part : il confronte les `to_row`
-des deux sources au texte de `INSERT_SQL`, dans les deux sens. Un paramètre lié manquant
+des trois sources au texte de `INSERT_SQL`, dans les deux sens. Un paramètre lié manquant
 fait échouer l'insertion d'un lot entier ; une clé produite en trop est un calcul jeté en
 silence. C'est ce contrôle qui manquait quand le connecteur VisioNature a été écrit avec
 huit colonnes de nomenclature là où l'INSERT en portait quatorze.

@@ -293,3 +293,90 @@ active = true
 [visionature.schedule]
 enabled = false
 crontab = "0 4 * * 1"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# dbChiro
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[dbchiro]
+# Connecteur dbChiro (dbchiroweb). Désactivé par défaut.
+enabled = false
+
+# URL de l'instance.
+url = "https://dbchiroc.org"
+
+# ⚠ Compte de service dédié. L'API de dbChiro n'expose aucun jeton : le connecteur se
+# connecte par le formulaire Django, et **le périmètre moissonné est celui que ce compte
+# voit**. `SightingListPermissionsMixin` filtre le queryset selon ses droits :
+#
+#   compte `access_all_data`  -> tout, y compris sessions confidentielles, gîtes masqués
+#                                et études fermées
+#   compte ordinaire, instance réglée SEE_ALL_NON_SENSITIVE_DATA = true
+#                             -> toute la donnée non sensible, gîtes masqués exclus
+#
+# Le second profil est le bon : le tri de sensibilité est alors fait par le serveur, qui
+# en est le seul juge légitime, et non par nous après coup.
+username = ""
+password = ""
+
+# ── Périmètre ─────────────────────────────────────────────────────────────────
+# Identifiant de zonage dbChiro, appliqué côté serveur. **Propre à chaque instance** :
+# `geonature connectors dbchiro-zonages` les liste. Ne recopiez pas la valeur d'une autre
+# instance. Sur dbchiroc.org, l'Ariège vaut 109 et ramène 8 007 observations sur 8 039.
+area = ""
+
+# Codes de département vérifiés sur les zonages de chaque observation reçue. Ce contrôle
+# double le filtre serveur à dessein : un paramètre inconnu de l'API DRF est ignoré
+# **sans erreur**, et rien ne distinguerait alors un filtre appliqué d'un filtre
+# inexistant. Un écart massif est signalé en fin de moissonnage.
+departements = ["09"]
+
+# Bornes de date, transmises à l'API (`date_min` / `date_max` portent sur la date
+# d'observation, pas sur la date de saisie).
+date_min = ""
+date_max = ""
+
+# ── Absences ──────────────────────────────────────────────────────────────────
+# Les codes `0obs` (« Aucune chauve-souris ou trace ») et `0du` (« Aucun contact
+# acoustique ») ne désignent aucun taxon : ils disent qu'on a cherché sans rien trouver.
+# 175 observations sur 8 039 dans l'instance mesurée. Écartés par défaut — les importer
+# produirait autant de fausses présences, sur des sites où l'espèce a précisément été
+# recherchée en vain.
+#
+# Activé, ils sont versés en STATUT_OBS « Non observé » sur le cd_nom de l'ordre
+# Chiroptera, ce qui conserve la trace des prospections négatives au prix de 175 lignes
+# « Chiroptera » dans les recherches par taxon.
+importer_absences = false
+
+# ── Confidentialité ───────────────────────────────────────────────────────────
+# ⚠ dbChiro ne porte **aucun marqueur de consentement par observateur**, contrairement au
+# champ `anonymous` de VisioNature. Les 8 039 observations mesurées publient un nom
+# complet en clair. Les diffuser suppose donc un accord de l'exploitant portant sur
+# l'ensemble des contributeurs, et non le consentement de chacun.
+pseudonymiser_observateurs = false
+# Obligatoire si la pseudonymisation est active. Aucune valeur par défaut : elle rendrait
+# les pseudonymes recalculables par un tiers, donc réidentifiables.
+#   python3 -c "import secrets; print(secrets.token_hex(32))"
+pseudonymisation_secret = ""
+
+# Niveau de diffusion (cd_nomenclature NIV_PRECIS) appliqué à toutes les observations.
+#   0 Standard   1 Commune   2 Maille   3 Département   4 Aucune   5 Précise
+# Vide = NULL, c'est-à-dire « le producteur ne se prononce pas ».
+#
+# La géométrie reste **exacte en base** dans tous les cas : la flouter serait
+# irréversible et ruinerait tout suivi de gîte. La restriction porte sur la diffusion.
+# À considérer sérieusement : l'API livre les coordonnées précises de cavités nommées
+# (« Trou souffleur - trois frères »), et le référentiel de sensibilité de GeoNature ne
+# couvre pas nécessairement tous les sites que l'exploitant juge sensibles.
+niveau_diffusion = ""
+
+# ── Moissonnage ───────────────────────────────────────────────────────────────
+# Plafonné à 5000 par la pagination de dbChiro. À 8 039 observations, deux pages.
+page_size = 5000
+timeout = 120
+batch_size = 1000
+
+[dbchiro.schedule]
+enabled = false
+crontab = "0 5 * * 1"

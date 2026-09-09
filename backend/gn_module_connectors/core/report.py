@@ -33,6 +33,8 @@ REASONS = {
     "taxon_exclu": "taxon exclu par la configuration",
     "confidentielle": "observation confidentielle à la source",
     "espece_non_resolue": "espèce sans correspondance TAXREF",
+    "absence": "absence déclarée à la source (aucun taxon observé)",
+    "codesp_inconnu": "code espèce absent de la table dbChiro",
 }
 
 
