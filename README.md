@@ -306,6 +306,7 @@ d'éviter de **télécharger** ce qu'on va jeter. Découvrir les valeurs de l'in
 
 ```bash
 geonature connectors vn-territoires
+geonature connectors vn-groupes        # groupes taxonomiques et couverture reproduction
 ```
 
 Le `short_name` qu'affiche cette commande est le code employé par `Client_API_VN` — sa

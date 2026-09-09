@@ -988,5 +988,40 @@ def vn_territoires():
                "périmètre : un paramètre inconnu de l'API est ignoré sans erreur.")
 
 
+@click.command("vn-groupes")
+def vn_groupes():
+    """Liste les groupes taxonomiques de l'instance VisioNature.
+
+    Sert à renseigner `--taxo-group`, et à vérifier la correspondance employée par le
+    dispositif de reproduction : celui-ci s'appuie sur le **code** du groupe
+    (`TAXO_GROUP_REPTILIAN`…), stable d'une instance à l'autre, et non sur l'identifiant
+    numérique dont rien ne garantit la stabilité.
+    """
+    from geonature.utils.config import config as gn_config
+    from .sources.visionature import api as vn_api, reproduction as vn_repro
+
+    cfg = (gn_config.get("CONNECTORS") or {}).get("visionature", {})
+    if not cfg.get("enabled"):
+        raise click.ClickException("Connecteur VisioNature désactivé.")
+
+    groupes = vn_api.groupes_taxonomiques(cfg)
+    if not groupes:
+        click.secho("Aucun groupe taxonomique renvoyé par l'instance.", fg="yellow")
+        return
+
+    couverts = set(vn_repro.REGLES)
+    click.echo(f"{len(groupes)} groupe(s) taxonomique(s) :\n")
+    click.echo(f"  {'id':>4}  {'code':<26}  {'repro':<6}  nom")
+    for g in groupes:
+        identifiant = str(g.get("id") or g.get("@id") or "")
+        code = str(g.get("name") or "")
+        repro = "oui" if code in couverts else "—"
+        click.echo(f"  {identifiant:>4}  {code:<26}  {repro:<6}  {g.get('latin_name') or ''}")
+    click.echo("\nColonne « repro » : le groupe dispose-t-il de règles de déduction du "
+               "statut de reproduction ?\nLes oiseaux passent par les codes atlas, pas "
+               "par ces règles — ils affichent donc « — » sans que ce soit un manque.")
+
+
 connectors_cli = [status, gbif_sync_datasets, gbif_import, gbif_purge, vn_import,
-                  vn_reanonymiser, vn_territoires]
+                  vn_reanonymiser, vn_territoires,
+                  vn_groupes]
