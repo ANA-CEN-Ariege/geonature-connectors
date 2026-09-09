@@ -620,7 +620,7 @@ def vn_import(groupes, since, batch_size, dry_run):
     from geonature.core.gn_meta.models import TDatasets
     from .core import (report as report_core, synthese as syn_core,
                        datasets as ds_core, nomenclatures as nomen_core,
-                       purge as purge_core)
+                       purge as purge_core, cache as cache_core)
     from .sources.visionature import (api as vn_api, taxonomy as vn_taxo,
                                      transform as vn_tr, confidentialite as vn_conf,
                                      reproduction as vn_repro, perimetre as vn_perim)
@@ -667,8 +667,26 @@ def vn_import(groupes, since, batch_size, dry_run):
                 "WHERE id_source = :s AND url_source IS DISTINCT FROM :u"),
         {"u": f"{instance}/index.php?m_id=54&id=", "s": id_source})
 
+    # Cache des référentiels : outil de mise au point, désactivé par défaut. Voir
+    # `core/cache.py` — le référentiel des observateurs contient des noms de personnes.
+    heures = float(cfg.get("cache_heures", 0) or 0)
+    dossier_cache = cfg.get("cache_dir") or None
+
+    def referentiel(nom, chargeur, personnel=False):
+        contenu = cache_core.charger(nom, instance, heures, dossier_cache)
+        if contenu is not None:
+            click.echo(f"  {nom} : depuis le cache ({heures:g} h)")
+            return contenu
+        contenu = chargeur()
+        fichier = cache_core.enregistrer(nom, instance, contenu, heures, dossier_cache)
+        if fichier and personnel:
+            click.secho(f"  ⚠ {nom} mis en cache dans {fichier} — il contient des noms "
+                        f"de personnes. Fichier en 0600 ; `vn-vider-cache` l'efface.",
+                        fg="yellow")
+        return contenu
+
     click.echo("Chargement du référentiel d'espèces…")
-    especes = vn_api.especes(cfg)
+    especes = referentiel("especes", lambda: vn_api.especes(cfg))
     index, non_resolues = vn_taxo.construire_index(especes, journal=click.echo)
     if not index:
         raise click.ClickException(
@@ -685,7 +703,8 @@ def vn_import(groupes, since, batch_size, dry_run):
     # et le désigner par son code (`TAXO_GROUP_BAT`) plutôt que par son identifiant
     # numérique est ce qui rend la table de correspondance transposable d'une instance à
     # l'autre. Sans cet index, le module retombe sur les identifiants de Faune-France.
-    index_groupes = vn_repro.index_groupes(vn_api.groupes_taxonomiques(cfg))
+    index_groupes = vn_repro.index_groupes(
+        referentiel("groupes", lambda: vn_api.groupes_taxonomiques(cfg)))
     groupes = list(groupes) or cfg.get("taxo_groups") or list(index_groupes)
     click.echo(f"{len(groupes)} groupe(s) taxonomique(s) à traiter.")
 
@@ -710,7 +729,8 @@ def vn_import(groupes, since, batch_size, dry_run):
     # nom peut être diffusé. Un interrupteur global écraserait ce choix.
     index_anonymat = {}
     if not forcer_anonymat:
-        obs_ref = vn_api.observateurs(cfg)
+        obs_ref = referentiel("observateurs", lambda: vn_api.observateurs(cfg),
+                              personnel=True)
         index_anonymat = vn_conf.index_anonymat(obs_ref)
         anonymes = sum(1 for v in index_anonymat.values() if v)
         click.echo(f"  référentiel des observateurs : {len(index_anonymat)} inscrit(s), "
@@ -1046,6 +1066,22 @@ def vn_groupes():
                "par ces règles — ils affichent donc « — » sans que ce soit un manque.")
 
 
+@click.command("vn-vider-cache")
+def vn_vider_cache():
+    """Efface le cache disque des référentiels.
+
+    À faire dès que la mise au point est terminée : le cache des observateurs contient
+    des noms de personnes, et un référentiel périmé produit des correspondances fausses
+    sans rien signaler.
+    """
+    from geonature.utils.config import config as gn_config
+    from .core import cache as cache_core
+
+    cfg = (gn_config.get("CONNECTORS") or {}).get("visionature", {})
+    n = cache_core.vider(cfg.get("cache_dir") or None)
+    click.secho(f"{n} fichier(s) de cache supprimé(s).", fg="green" if n else None)
+
+
 connectors_cli = [status, gbif_sync_datasets, gbif_import, gbif_purge, vn_import,
                   vn_reanonymiser, vn_territoires,
-                  vn_groupes]
+                  vn_groupes, vn_vider_cache]

@@ -206,6 +206,22 @@ departements = ["09"]
 # et l'avertissement affiché en fin de moissonnage si le filtre serveur semble ignoré.
 # filtre_api = { id_territorial_unit = "..." }
 
+# ── Cache des référentiels (mise au point) ───────────────────────────────────
+# Un moissonnage commence par trois téléchargements : espèces (63 616 sur
+# Faune-Occitanie), groupes taxonomiques, observateurs (246 699). Plusieurs minutes
+# avant la première observation traitée. Le cache les évite pendant la mise au point.
+#
+# 0 = désactivé (défaut). Mettre 24 pour itérer, puis vider :
+#     geonature connectors vn-vider-cache
+#
+# ⚠ Le référentiel des observateurs contient des NOMS DE PERSONNES. L'activer les écrit
+#   sur disque — en 0600, mais en clair — alors que tout le dispositif d'anonymisation
+#   vise à ne pas les conserver.
+# ⚠ Un référentiel périmé produit des correspondances taxonomiques fausses et des
+#   consentements obsolètes, sans rien signaler. Ne pas laisser actif en production.
+cache_heures = 0
+# cache_dir = "/chemin/vers/un/cache"    # défaut : ~/.cache/gn_module_connectors
+
 # ── Robustesse du client Biolovision ─────────────────────────────────────────
 # timeout : secondes avant d'abandonner une requête. À NE PAS mettre à 0 ni retirer —
 # le client vendorisé laisse ce paramètre à None s'il n'est pas fourni, et `requests`

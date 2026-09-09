@@ -284,6 +284,36 @@ dispose. Seules les lignes dont la valeur change sont réécrites.
 
 À passer périodiquement — le rattrapage n'a pas de déclencheur naturel.
 
+### Accélérer la mise au point : le cache des référentiels
+
+Un moissonnage commence par trois téléchargements — espèces (63 616 sur
+Faune-Occitanie), groupes taxonomiques, observateurs (246 699) — soit plusieurs minutes
+avant que la première observation ne soit traitée. Pénible quand on règle un import.
+
+```toml
+[visionature]
+cache_heures = 24        # 0 = désactivé, et c'est le défaut
+# cache_dir = "…"        # défaut : ~/.cache/gn_module_connectors
+```
+
+```bash
+geonature connectors vn-vider-cache
+```
+
+⚠️ **Désactivé par défaut, et à laisser désactivé en production**, pour deux raisons
+distinctes :
+
+- le référentiel des observateurs contient des **noms de personnes**. L'activer les écrit
+  sur disque — en 0600, mais en clair — alors que tout le dispositif d'anonymisation vise
+  précisément à ne pas les conserver. Le module l'avertit explicitement à l'écriture ;
+- un référentiel périmé produit des correspondances taxonomiques fausses et des
+  consentements obsolètes, **sans que rien ne le signale**.
+
+La clé de cache inclut l'URL de l'instance : passer de Faune-France à Faune-Occitanie ne
+sert jamais le référentiel de l'autre. Un fichier illisible, corrompu ou sans horodatage
+vaut absence de cache — une optimisation n'a pas le droit de faire échouer ce qu'elle
+accélère.
+
 ### Restreindre le périmètre
 
 Sans filtre, `vn-import` moissonne **toute l'étendue de l'instance** : treize départements
