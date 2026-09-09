@@ -733,6 +733,7 @@ def vn_import(groupes, since, batch_size, dry_run):
     par_projet = cfg.get("jdd_par_code_projet", True)
 
     total_lus = total_ecrits = total_maj = total_supprimes = hors_perimetre = 0
+    groupes_refuses: list[tuple[str, str]] = []
     jdds: dict = {}
 
     for rang, groupe in enumerate(groupes, 1):
@@ -755,11 +756,25 @@ def vn_import(groupes, since, batch_size, dry_run):
                     total_supprimes += n
                     click.echo(f"\n    {len(supprimes)} relevé(s) supprimé(s) à la "
                                f"source -> {n} observation(s) retirée(s)", nl=False)
-            releves, inaccessibles = vn_api.observations_modifiees(cfg, str(groupe), since)
+            try:
+                releves, inaccessibles = vn_api.observations_modifiees(
+                    cfg, str(groupe), since)
+            except vn_api.bio.BiolovisionApiException as erreur:
+                groupes_refuses.append((str(groupe), f"diff : {erreur!r}"))
+                click.secho(f" refusé par l'API ({erreur!r})", fg="yellow")
+                continue
             for cle, motif in inaccessibles:
                 rejets.add("inaccessible", cle, "", motif)
         else:
-            releves = vn_api.observations(cfg, str(groupe), **filtre_api)
+            try:
+                releves = vn_api.observations(cfg, str(groupe), **filtre_api)
+            except vn_api.bio.BiolovisionApiException as erreur:
+                # Un groupe que le compte n'a pas le droit de lister ne doit pas
+                # interrompre le moissonnage des autres. Le droit d'accès n'est pas
+                # uniforme d'un groupe taxonomique à l'autre chez Biolovision.
+                groupes_refuses.append((str(groupe), f"liste : {erreur!r}"))
+                click.secho(f" refusé par l'API ({erreur!r})", fg="yellow")
+                continue
         couples = vn_tr.deplier(releves)
         total_lus += len(couples)
         click.echo(f" {len(releves)} relevé(s), {len(couples)} observation(s)")
@@ -812,6 +827,15 @@ def vn_import(groupes, since, batch_size, dry_run):
 
     if not dry_run:
         db.session.commit()
+    if groupes_refuses:
+        click.secho(f"\n  {len(groupes_refuses)} groupe(s) refusé(s) par l'API :", fg="yellow")
+        for groupe, motif in groupes_refuses:
+            click.echo(f"    groupe {groupe} — {motif}")
+        click.secho("  Un 403 signale que le compte n'a pas ce droit sur ce groupe. Si "
+                    "TOUS les groupes sont refusés en moissonnage complet alors que "
+                    "--since fonctionne, c'est l'accès à la liste complète qui manque, "
+                    "pas les groupes : demandez-le à l'administrateur de l'instance.",
+                    fg="yellow")
     if hors_perimetre:
         # Un rejet massif alors qu'un filtre serveur est configuré signale que l'API l'a
         # ignoré : le paramètre n'existe pas, ou ne porte pas ce nom sur cette instance.

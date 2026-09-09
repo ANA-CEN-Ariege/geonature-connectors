@@ -1,7 +1,16 @@
 """Accès à l'API Biolovision, au-dessus du client vendorisé.
 
-Le client de `biolovision/` n'est pas modifié : cette couche l'adapte aux besoins du
-module — construction depuis la configuration, dépliage des relevés, et incrémental.
+Cette couche adapte le client aux besoins du module — construction depuis la
+configuration, dépliage des relevés, incrémental, et tolérance aux refus de l'API.
+
+Le client de `biolovision/` ne porte qu'une seule divergence avec l'amont, documentée
+dans le README : la transmission de `timeout` par les sous-classes, sans laquelle
+`requests` attendait indéfiniment. Toute autre adaptation va ici.
+
+⚠ Les droits d'accès ne sont pas uniformes : un compte peut avoir le différentiel sans
+avoir la liste complète, et un groupe taxonomique peut être refusé quand les autres
+passent. Un 403 est donc une information, pas une panne — il est remonté à l'appelant,
+jamais laissé interrompre le moissonnage des autres groupes.
 
 L'incrémental mérite d'être souligné : `api_diff` renvoie les créations, les
 modifications **et les suppressions** depuis une date. VisioNature sait donc dire ce qui
