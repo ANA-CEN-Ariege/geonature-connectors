@@ -1082,6 +1082,68 @@ def vn_vider_cache():
     click.secho(f"{n} fichier(s) de cache supprimé(s).", fg="green" if n else None)
 
 
+@click.command("vn-diagnostic")
+@click.option("--taxo-group", "groupe", default="1", help="Groupe à sonder (défaut : 1).")
+def vn_diagnostic(groupe):
+    """Sonde les points d'entrée de l'API et rapporte ce que le compte peut faire.
+
+    Les droits Biolovision ne sont pas uniformes : `observations/diff` peut fonctionner
+    quand `observations` en liste est refusé — c'est l'appel le plus lourd de la
+    plateforme, fréquemment restreint. Le code HTTP est ce qui distingue un droit
+    manquant (403) d'un appel mal formé (400), et cette distinction commande la suite :
+    demander une ouverture de droit, ou corriger la requête.
+    """
+    from datetime import datetime, timedelta, timezone
+    from geonature.utils.config import config as gn_config
+    from .sources.visionature import api as vn_api
+    from .sources.visionature.biolovision import api as bio
+
+    cfg = (gn_config.get("CONNECTORS") or {}).get("visionature", {})
+    if not cfg.get("enabled"):
+        raise click.ClickException("Connecteur VisioNature désactivé.")
+
+    recent = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    obs = vn_api._controleur(bio.ObservationsAPI, cfg)
+
+    def sonder(intitule, appel):
+        try:
+            reponse = appel()
+        except bio.HTTPError as erreur:
+            code = erreur.args[0] if erreur.args else "?"
+            sens = {403: "droit manquant", 404: "point d'entrée absent",
+                    400: "requête refusée (l'accès, lui, existe)"}.get(code, "")
+            click.secho(f"  {intitule:<34} HTTP {code}  {sens}", fg="yellow")
+            return None
+        except bio.BiolovisionApiException as erreur:
+            click.secho(f"  {intitule:<34} échec  {erreur!r}", fg="yellow")
+            return None
+        n = len(vn_api._extraire(reponse))
+        click.secho(f"  {intitule:<34} OK     {n} entrée(s)", fg="green")
+        return reponse
+
+    click.echo(f"Instance {cfg['url']}, groupe taxonomique {groupe} :\n")
+    sonder("taxo_groups (liste)", lambda: bio.TaxoGroupsAPI(
+        user_email=cfg["user_email"], user_pw=cfg["user_password"],
+        base_url=cfg["url"].rstrip("/") + "/", client_key=cfg["client_key"],
+        client_secret=cfg["client_secret"], timeout=60).api_list())
+    sonder("observations (liste complète)", lambda: obs.api_list(groupe))
+    sonder("observations/diff (modifiées)",
+           lambda: obs.api_diff(groupe, recent, "only_modified"))
+    sonder("observations/diff (supprimées)",
+           lambda: obs.api_diff(groupe, recent, "only_deleted"))
+    sonder("observations/search", lambda: obs.api_search(
+        {"id_taxo_group": str(groupe), "date_from": recent, "date_to": recent}))
+
+    click.echo("\nLecture :\n"
+               "  liste complète OK              -> moissonnage initial possible tel quel.\n"
+               "  liste 403 mais search OK       -> le moissonnage initial doit passer par\n"
+               "                                   search, par tranches de dates.\n"
+               "  liste 403 et search 403        -> demander l'ouverture du droit à\n"
+               "                                   l'administrateur de l'instance.\n"
+               "  search 400                     -> l'accès existe, ce sont les paramètres\n"
+               "                                   à ajuster ; envoyez-moi la sortie.")
+
+
 connectors_cli = [status, gbif_sync_datasets, gbif_import, gbif_purge, vn_import,
                   vn_reanonymiser, vn_territoires,
-                  vn_groupes, vn_vider_cache]
+                  vn_groupes, vn_vider_cache, vn_diagnostic]
