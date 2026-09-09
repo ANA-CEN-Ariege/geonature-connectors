@@ -134,9 +134,24 @@ class VisioNatureSchemaConf(Schema):
     # une valeur par défaut, qui rendrait les pseudonymes recalculables par un tiers.
     # `gn_vn2synthese` a sa clé en clair dans un dépôt public : c'est à éviter.
     pseudonymisation_secret = fields.String(load_default="")
-    # Respecter is_hidden et export_excluded : les ignorer publierait ce que le
-    # producteur a explicitement choisi de retenir.
+    # Écarter les observations refusées par un modérateur (`admin_hidden_type` =
+    # « refused »). Les importer republierait ce qu'un modérateur a explicitement rejeté.
+    # ⚠ Ne concerne PAS les observations masquées (`hidden`) : celles-ci sont importées,
+    # avec le niveau de diffusion ci-dessous.
     respecter_confidentialite = fields.Boolean(load_default=True)
+    # Niveau de diffusion (cd_nomenclature NIV_PRECIS) appliqué aux observations masquées
+    # à la source. On masque dans VisioNature pour protéger une espèce ou un site — nid
+    # de rapace, station d'orchidée, gîte à chiroptères — donc la donnée est importée,
+    # mais marquée non diffusable.
+    # Référentiel NIV_PRECIS :
+    #   0 Standard   1 Commune   2 Maille   3 Département   4 Aucune   5 Précise
+    #   « 4 » (Aucune) : aucune diffusion. Code employé par GeoNature pour
+    #                    `diffusable = false` dans sa migration v1 -> v2.
+    #   « 2 » (Maille) : alimente les cartes de répartition sans livrer la localisation
+    #                    précise. C'est le choix de gn_vn2synthese, moins restrictif.
+    # Les observations non masquées gardent un niveau NULL : GeoNature ne calcule plus
+    # cette colonne, et NULL y signifie « le producteur ne se prononce pas ».
+    niveau_diffusion_masquees = fields.String(load_default="4")
 
     # ── Jeux de données ──────────────────────────────────────────────────────
     # Un JDD par code projet VisioNature, comme le fait gn_vn2synthese : les projets

@@ -54,10 +54,19 @@ STATUT_SOURCE = "Te"          # Terrain
 # ⚠ `ETA_BIO` reste au défaut « Non renseigné ». Le connecteur antérieur imposait
 # « Observé vivant », ce qui est faux pour les données de mortalité — collisions
 # routières, prédation — que VisioNature sait justement enregistrer.
+#
+# TODO : l'information EXISTE dans `observers[0].extended_info.mortality` (avec
+# `death_cause2` : ROAD_VEHICLE, ELECTRIC, EOLIEN, POISONING, HUNTING, PREDATION…), et
+# `gn_vn2synthese` en tire `ETA_BIO '3'` (Trouvé mort). Tant qu'on ne lit pas ce champ,
+# on ne distingue pas non plus la mortalité — on s'abstient simplement au lieu de mentir.
 ETA_BIO = None
 
-# ⚠ `METH_OBS` reste au défaut « Inconnu » : l'API n'expose pas la technique
-# d'observation. La déduire serait l'inventer.
+# ⚠ `METH_OBS` reste au défaut « Inconnu » — non pas faute d'information, mais faute de
+# correspondance écrite. `details[].condition` existe et porte une énumération
+# (VIEW, FLY, LAID, HAND, OBSIND, MAGNIFYING, AUDIO, U…) que `gn_vn2synthese` mappe vers
+# METH_OBS et TECHNIQUE_OBS par une table de synonymes d'une trentaine d'entrées.
+# Une version antérieure de ce commentaire affirmait que « l'API n'expose pas la
+# technique d'observation » : c'est faux, et cela a masqué le chantier.
 METH_OBS = None
 
 
@@ -157,6 +166,16 @@ def cd_nomenclatures(sighting: dict, observation: dict,
         "OBJ_DENBR": obj_denbr,
         "TYP_DENBR": typ_denbr,
         "STATUT_OBS": "No" if est_absence(observation, absence) else "Pr",
-        # VisioNature ne livre ni sexe, ni stade de vie, ni preuve d'existence dans le
-        # noyau de l'API : ces colonnes restent au défaut.
+        # NATURALITE, STADE_VIE, SEXE, STAT_BIOGEO et PREUVE_EXIST ne sont pas produits
+        # ici : la clé absente vaut None chez le résolveur, qui applique le défaut de la
+        # colonne. Elles doivent tout de même figurer dans COLONNES_NOMENCLATURE, car
+        # l'INSERT les porte (cf. transform.COLONNES_NOMENCLATURE).
+        #
+        # TODO : STADE_VIE et SEXE sont accessibles — `details[].age` (AD, SUBAD,
+        # JUVENILE, IMM, PULL, EXUVIE, IMAGO, 1Y…5Y) et `details[].sex` (U, M, F, FT).
+        # Un commentaire antérieur affirmait ici que « VisioNature ne livre ni sexe, ni
+        # stade de vie » : c'est faux. Le vrai obstacle est que `details[]` ventile un
+        # relevé en plusieurs classes d'âge et de sexe, alors que nous produisons une
+        # ligne unique — il faut décider comment agréger avant de mapper.
+        # PREUVE_EXIST se déduirait de la présence de `medias`.
     }

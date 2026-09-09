@@ -185,18 +185,86 @@ def test_index_anonymat_lit_les_chaines():
 
 # ── Confidentialité à la source ──────────────────────────────────────────────
 
-@pytest.mark.parametrize("champ", ["is_hidden", "export_excluded"])
-def test_marqueurs_de_confidentialite(champ):
-    """VisioNature marque ce qui ne doit pas sortir : l'ignorer publierait ce que le
-    producteur a choisi de retenir."""
-    assert C.est_confidentielle({champ: "1"}) is not None
-    assert C.est_confidentielle({champ: "0"}) is None
+def test_observation_masquee_nest_pas_ecartee():
+    """`hidden` protège l'espèce ou le site, il ne met pas la donnée au rebut.
+
+    Nid de rapace, station d'orchidée, gîte à chiroptères : c'est la donnée à enjeu,
+    celle que l'accès à l'API est censé apporter. Elle est importée, avec un niveau de
+    diffusion restreint.
+    """
+    assert C.est_confidentielle({"hidden": "1"}) is None
+
+
+def test_observation_masquee_est_reperee():
+    """Le champ s'appelle `hidden`, et non `is_hidden`.
+
+    Ce module a lu pendant un temps `is_hidden` et `export_excluded`, qui n'existent dans
+    aucune réponse de l'API : le filtre annoncé au README ne voyait donc rien, et les
+    tests d'alors reprenaient les mêmes noms inventés et passaient au vert.
+    """
+    assert C.est_masquee({"hidden": "1"}) is True
+    assert C.est_masquee({"hidden": "0"}) is False
+    assert C.est_masquee({}, {"hidden": "1"}) is True
+
+
+def test_champs_inexistants_ne_masquent_rien():
+    """Garde-fou contre le retour des noms inventés."""
+    assert C.est_masquee({"is_hidden": "1", "export_excluded": "1"}) is False
+
+
+def test_niveau_de_diffusion_restreint_si_masquee():
+    assert C.niveau_diffusion({"hidden": "1"}) == C.NIV_PRECIS_MASQUEE
+    assert C.niveau_diffusion({"hidden": "1"}, code_masquee="2") == "2"
+
+
+def test_niveau_de_diffusion_nul_par_defaut():
+    """NULL signifie « le producteur ne se prononce pas ».
+
+    GeoNature a retiré le DEFAULT de `id_nomenclature_diffusion_level` et ne la calcule
+    plus : y inscrire une valeur sans que la source l'exprime serait une affirmation.
+    """
+    assert C.niveau_diffusion({"hidden": "0"}) is None
+    assert C.niveau_diffusion({}) is None
+
+
+def test_refus_du_moderateur_ecarte_lobservation():
+    assert C.est_confidentielle({"admin_hidden_type": "refused"}) is not None
+
+
+@pytest.mark.parametrize("motif", ["incomplete", "question"])
+def test_verification_en_cours_nest_pas_un_refus(motif):
+    """`incomplete` et `question` signalent une vérification, pas un rejet : écarter ces
+    observations amputerait l'import de tout ce qu'un modérateur a simplement ouvert."""
+    assert C.est_confidentielle({"admin_hidden": "1", "admin_hidden_type": motif}) is None
+
+
+def test_refus_lu_aussi_sur_le_releve():
+    assert C.est_confidentielle({}, {"admin_hidden_type": "refused"}) is not None
 
 
 def test_booleens_en_chaines():
     """L'API renvoie « 1 »/« 0 », pas des booléens : comparer à True échouerait."""
-    assert C.est_confidentielle({"is_hidden": "1"}) is not None
-    assert C.est_confidentielle({}) is None
+    assert C.est_masquee({"hidden": "1"}) is True
+    assert C.est_masquee({}) is False
+
+
+# ── Donnée rapportée par un tiers ────────────────────────────────────────────
+
+def test_second_hand_nattribue_pas_lobservation():
+    """Le nom porté par une saisie `second_hand` est celui du saisisseur.
+
+    L'écrire dans `observers` désignerait comme observateur quelqu'un qui ne l'est pas.
+    `gn_vn2synthese` met le champ à NULL ; on fait de même.
+    """
+    valeur, motif = C.observateur(
+        {"@uid": "7", "name": "Untel", "second_hand": "1"}, {"7": False}, "cle")
+    assert valeur is None
+    assert "tiers" in motif
+
+
+def test_sans_second_hand_le_nom_est_publie():
+    valeur, _ = C.observateur({"@uid": "7", "name": "Untel"}, {"7": False}, "cle")
+    assert valeur == "Untel"
 
 
 def test_commentaire_prive_non_repris():
@@ -210,3 +278,31 @@ def test_code_projet_deux_formes():
     assert T.code_projet({"project_code": "ATLAS09"}) == "ATLAS09"
     assert T.code_projet({"project_code": {"@id": "ATLAS09"}}) == "ATLAS09"
     assert T.code_projet({}) is None
+
+
+# ── Fenêtre du différentiel ──────────────────────────────────────────────────
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from gn_module_connectors.sources.visionature import api as A  # noqa: E402
+
+
+def test_diff_refuse_au_dela_de_dix_semaines():
+    """L'API ne couvre que 10 semaines. Au-delà, un incrémental perdrait en silence
+    les créations et suppressions de l'intervalle."""
+    vieux = (datetime.now(timezone.utc) - timedelta(weeks=12)).isoformat()
+    assert A.diff_possible(vieux) is False
+
+
+def test_diff_accepte_une_date_recente():
+    recent = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+    assert A.diff_possible(recent) is True
+
+
+def test_diff_refuse_une_date_illisible():
+    assert A.diff_possible("pas une date") is False
+
+
+def test_diff_tolere_une_date_sans_fuseau():
+    recent = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%d")
+    assert A.diff_possible(recent) is True

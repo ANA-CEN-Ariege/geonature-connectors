@@ -192,9 +192,25 @@ pseudonymisation_secret = ""
 # sans consulter le référentiel.
 forcer_anonymat = false
 
-# Respecter is_hidden et export_excluded. Les ignorer publierait ce que le producteur
-# a explicitement retiré de la diffusion.
+# Écarter les observations qu'un modérateur a refusées (admin_hidden_type = "refused").
+# Les importer republierait ce qu'un modérateur a explicitement rejeté.
+# ⚠ Ne concerne pas les observations masquées (hidden) : voir ci-dessous.
 respecter_confidentialite = true
+
+# Niveau de diffusion (cd_nomenclature NIV_PRECIS) des observations masquées à la source.
+# Dans VisioNature, on masque une observation pour protéger l'espèce ou le site — nid de
+# rapace, station d'orchidée, gîte à chiroptères — et non pour la retirer du circuit :
+# elle est donc importée, mais marquée non diffusable.
+# Référentiel NIV_PRECIS :
+#   0 Standard   1 Commune   2 Maille   3 Département   4 Aucune   5 Précise
+#   "4" (Aucune) : aucune diffusion. Code employé par GeoNature pour diffusable = false,
+#                  et le plus proche du comportement de VisioNature, où une observation
+#                  masquée n'apparaît pas publiquement, même dégradée.
+#   "2" (Maille) : alimente les cartes de répartition sans livrer la localisation
+#                  précise. C'est le choix de gn_vn2synthese, moins restrictif.
+# Les observations non masquées gardent un niveau NULL, GeoNature ne calculant plus
+# cette colonne : NULL y signifie « le producteur ne se prononce pas ».
+niveau_diffusion_masquees = "4"
 
 # ── Jeux de données ──────────────────────────────────────────────────────────
 # Un JDD par code projet VisioNature : les projets correspondent à des programmes

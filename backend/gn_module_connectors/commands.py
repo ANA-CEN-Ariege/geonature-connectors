@@ -700,6 +700,7 @@ def vn_import(groupes, since, batch_size, dry_run):
     else:
         click.echo("  anonymat forcé pour tous les observateurs")
     respecter = cfg.get("respecter_confidentialite", True)
+    niveau_masquees = cfg.get("niveau_diffusion_masquees", "4")
     par_projet = cfg.get("jdd_par_code_projet", True)
 
     total_lus = total_ecrits = total_maj = total_supprimes = 0
@@ -748,7 +749,8 @@ def vn_import(groupes, since, batch_size, dry_run):
                                  surcharges_atlas=surcharges,
                                  statut_validation=statut_validation,
                                  index_anonymat=index_anonymat, secret_pseudo=secret,
-                                 forcer_anonymat=forcer_anonymat)
+                                 forcer_anonymat=forcer_anonymat,
+                                 code_diffusion_masquee=niveau_masquees)
             if ligne is None:
                 rejets.add("no_coordinates", sighting.get("@id"),
                            (sighting.get("species") or {}).get("name"), "")

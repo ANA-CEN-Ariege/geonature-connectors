@@ -241,8 +241,48 @@ rapprochables sans qu'il soit identifiable. **La clé est obligatoire et vient d
 configuration** — jamais une valeur par défaut, qui rendrait les pseudonymes recalculables
 par un tiers, donc réidentifiables.
 
-Le module respecte aussi les marqueurs de confidentialité de la source : `is_hidden`,
-`export_excluded`, et n'importe jamais `private_comment`.
+#### Observations masquées : importées, pas écartées
+
+Dans VisioNature, on masque une observation (`hidden`) pour protéger **l'espèce ou le
+site** — nid de rapace, station d'orchidée, gîte à chiroptères. Ce n'est pas une donnée
+personnelle, et ce n'est pas une mise au rebut : c'est précisément la donnée à enjeu,
+celle que l'accès à l'API est censé apporter. L'écarter reviendrait à ne moissonner que
+le banal.
+
+Ces observations sont donc importées, avec `id_nomenclature_diffusion_level` positionné à
+`NIV_PRECIS 4` — « Aucune ». Le référentiel complet :
+
+| cd | libellé | |
+|----|---------|---|
+| 0 | Standard | |
+| 1 | Commune | |
+| 2 | Maille | choix de `gn_vn2synthese` |
+| 3 | Département | |
+| 4 | Aucune | **défaut de ce module** |
+| 5 | Précise | |
+
+« Aucune » est retenu parce que c'est le code que GeoNature emploie pour traduire
+`diffusable = false`, et parce qu'il correspond au comportement de VisioNature, où une
+observation masquée n'apparaît pas publiquement — même dégradée. `gn_vn2synthese` préfère
+« Maille », qui laisse l'observation alimenter les cartes de répartition sans livrer la
+localisation précise : c'est défendable, et le réglage `niveau_diffusion_masquees` y donne
+accès. Le bon choix dépend de la convention passée avec le producteur. Le fait qu'une observation était masquée
+à la source est en outre conservé dans `additional_data.masquee_source`, pour que
+l'information survive à une modification manuelle du niveau de diffusion.
+
+Les observations **non** masquées gardent un niveau de diffusion NULL. Depuis la migration
+« Do not auto-compute diffusion_level », GeoNature a retiré le DEFAULT de cette colonne et
+ne la calcule plus : NULL y signifie « le producteur ne se prononce pas », ce qui est
+exact. Y inscrire une valeur serait une affirmation que la source ne fait pas.
+
+Un seul motif écarte réellement une observation : `admin_hidden_type = refused`, le rejet
+explicite d'un modérateur. Les motifs `incomplete` et `question` signalent une vérification
+en cours, pas un refus — la donnée est importée. Les commentaires réservés aux modérateurs
+(`hidden_comment`) ne sortent jamais de l'outil.
+
+Une observation portant `second_hand` — saisie rapportant l'observation d'un tiers — est
+importée sans observateur : le nom enregistré est celui du saisisseur, et le porter dans
+`observers` attribuerait l'observation à quelqu'un qui ne l'a pas faite.
 
 ### Les observateurs ne sont pas créés dans `utilisateurs.t_roles`
 

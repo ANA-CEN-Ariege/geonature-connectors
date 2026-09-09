@@ -33,7 +33,13 @@ from geonature.utils.env import db
 #
 # `id_nomenclature_sensitivity` reste volontairement absente : le trigger
 # `tri_insert_calculate_sensitivity` la calcule après l'insertion, et l'écrire ici
-# serait de toute façon écrasé.
+# serait de toute façon écrasé. C'est le défaut du traitement de `gn_vn2synthese`, qui
+# y écrit une valeur aussitôt perdue.
+#
+# `id_nomenclature_diffusion_level`, en revanche, est laissée au producteur : GeoNature
+# a retiré son DEFAULT et cessé de la calculer (migration « Do not auto-compute
+# diffusion_level »). NULL y signifie « le producteur ne se prononce pas », et c'est une
+# valeur légitime — on ne la renseigne que lorsque la source exprime une restriction.
 INSERT_SQL = text(
     """
     INSERT INTO gn_synthese.synthese (
@@ -47,7 +53,8 @@ INSERT_SQL = text(
         id_nomenclature_life_stage, id_nomenclature_sex,
         id_nomenclature_obj_count, id_nomenclature_type_count,
         id_nomenclature_biogeo_status, id_nomenclature_exist_proof,
-        id_nomenclature_valid_status,
+        id_nomenclature_valid_status, id_nomenclature_behaviour,
+        id_nomenclature_diffusion_level, comment_description,
         the_geom_4326, the_geom_point, the_geom_local,
         last_action
     ) VALUES (
@@ -61,7 +68,8 @@ INSERT_SQL = text(
         :id_nomenclature_life_stage, :id_nomenclature_sex,
         :id_nomenclature_obj_count, :id_nomenclature_type_count,
         :id_nomenclature_biogeo_status, :id_nomenclature_exist_proof,
-        :id_nomenclature_valid_status,
+        :id_nomenclature_valid_status, :id_nomenclature_behaviour,
+        :id_nomenclature_diffusion_level, :comment_description,
         ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
         ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
         ST_Transform(ST_SetSRID(ST_MakePoint(:lon, :lat), 4326), :local_srid),
@@ -90,6 +98,9 @@ INSERT_SQL = text(
         id_nomenclature_biogeo_status = EXCLUDED.id_nomenclature_biogeo_status,
         id_nomenclature_exist_proof = EXCLUDED.id_nomenclature_exist_proof,
         id_nomenclature_valid_status = EXCLUDED.id_nomenclature_valid_status,
+        id_nomenclature_behaviour = EXCLUDED.id_nomenclature_behaviour,
+        id_nomenclature_diffusion_level = EXCLUDED.id_nomenclature_diffusion_level,
+        comment_description = EXCLUDED.comment_description,
         the_geom_4326 = EXCLUDED.the_geom_4326,
         the_geom_point = EXCLUDED.the_geom_point,
         the_geom_local = EXCLUDED.the_geom_local,
@@ -101,8 +112,14 @@ INSERT_SQL = text(
     -- jeux publiés par l'INPN (mesuré : 0 % sur SICEN, Faune Occitanie, INPN flore CBN,
     -- contre 100 % sur iNaturalist), soit 76 % du corpus ariégeois. La date reste un
     -- critère complémentaire pour les producteurs qui la renseignent.
-    WHERE gn_synthese.synthese.additional_data->>'gbif_empreinte'
-          IS DISTINCT FROM EXCLUDED.additional_data->>'gbif_empreinte'
+    -- La clé d'empreinte est propre à chaque connecteur (`gbif_empreinte`,
+    -- `vn_empreinte`) : un COALESCE permet de partager ce statement entre sources sans
+    -- renommer la clé des lignes GBIF déjà en base — ce qui provoquerait la réécriture
+    -- inutile de tout le corpus au prochain passage.
+    WHERE COALESCE(gn_synthese.synthese.additional_data->>'gbif_empreinte',
+                   gn_synthese.synthese.additional_data->>'vn_empreinte')
+          IS DISTINCT FROM COALESCE(EXCLUDED.additional_data->>'gbif_empreinte',
+                                    EXCLUDED.additional_data->>'vn_empreinte')
        OR gn_synthese.synthese.additional_data->>'gbif_modified'
           IS DISTINCT FROM EXCLUDED.additional_data->>'gbif_modified'
     """
@@ -136,6 +153,19 @@ def get_module_id(module_code: str) -> int:
     ).scalar()
 
 
+# Clés d'empreinte connues, dans l'ordre de priorité du COALESCE de l'INSERT.
+CLES_EMPREINTE = ("gbif_empreinte", "vn_empreinte")
+
+
+def empreinte_de(additional_data: dict) -> str | None:
+    """Empreinte d'une ligne, quelle que soit la source qui l'a produite."""
+    for cle in CLES_EMPREINTE:
+        valeur = additional_data.get(cle)
+        if valeur:
+            return valeur
+    return None
+
+
 def insert_batch(lignes: list[dict]) -> tuple[int, int]:
     """Écrit un lot. Retourne (insérées, mises à jour).
 
@@ -148,10 +178,15 @@ def insert_batch(lignes: list[dict]) -> tuple[int, int]:
         return (0, 0)
 
     uuids = [l["unique_id_sinp"] for l in lignes]
+    # Le décompte doit refléter exactement la clause WHERE de l'ON CONFLICT, sinon le
+    # bilan annonce des mises à jour que la base n'a pas faites — ou l'inverse.
     deja = {
-        str(u): m
-        for u, m in db.session.execute(
-            text("""SELECT unique_id_sinp::text, additional_data->>'gbif_empreinte'
+        str(u): (e, m)
+        for u, e, m in db.session.execute(
+            text("""SELECT unique_id_sinp::text,
+                           COALESCE(additional_data->>'gbif_empreinte',
+                                    additional_data->>'vn_empreinte'),
+                           additional_data->>'gbif_modified'
                     FROM gn_synthese.synthese
                     WHERE unique_id_sinp = ANY(CAST(:u AS uuid[]))"""),
             {"u": uuids},
@@ -159,12 +194,14 @@ def insert_batch(lignes: list[dict]) -> tuple[int, int]:
     }
 
     import json as _json
-    maj = sum(
-        1 for l in lignes
-        if str(l["unique_id_sinp"]) in deja
-        and deja[str(l["unique_id_sinp"])]
-            != (_json.loads(l["additional_data"]).get("gbif_empreinte") or None)
-    )
+
+    def _change(ligne) -> bool:
+        avant = deja[str(ligne["unique_id_sinp"])]
+        apres = _json.loads(ligne["additional_data"])
+        return (avant[0] != (empreinte_de(apres) or None)
+                or avant[1] != (apres.get("gbif_modified") or None))
+
+    maj = sum(1 for l in lignes if str(l["unique_id_sinp"]) in deja and _change(l))
     inserees = len(lignes) - len(deja)
 
     db.session.execute(INSERT_SQL, lignes)

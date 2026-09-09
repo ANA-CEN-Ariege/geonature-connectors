@@ -162,6 +162,10 @@ COLONNES_NOMENCLATURE = {
     "id_nomenclature_biogeo_status": "STAT_BIOGEO",
     "id_nomenclature_exist_proof": "PREUVE_EXIST",
     "id_nomenclature_valid_status": "STATUT_VALID",
+    # GBIF expose `behavior` en Darwin Core, mais en texte libre et sans vocabulaire
+    # contrôlé : aucune correspondance fiable vers OCC_COMPORTEMENT. La colonne reste au
+    # défaut, et doit tout de même être fournie puisque l'INSERT la porte.
+    "id_nomenclature_behaviour": "OCC_COMPORTEMENT",
 }
 
 
@@ -208,6 +212,11 @@ def to_row(occ: dict, *, cd_nom: int, id_dataset: int, id_source: int,
         "count_min": int(effectif) if effectif else None,
         "count_max": int(effectif) if effectif else None,
         "observers": (occ.get("recordedBy") or "")[:1000] or None,
+        "comment_description": (occ.get("occurrenceRemarks") or "").strip() or None,
+        # GBIF ne publie que ce qui est déjà diffusable : une occurrence sensible est
+        # floutée ou retenue en amont par le producteur. Rien à restreindre ici, et NULL
+        # est la bonne façon de ne pas se prononcer.
+        "id_nomenclature_diffusion_level": None,
         "precision": int(incertitude) if incertitude else None,
         "additional_data": json.dumps(
             {**gbif_api.provenance(occ, download_doi), "gbif_empreinte": empreinte(occ)},
