@@ -1,1 +1,3 @@
 requests
+# Signature OAuth1, exigée par l'API Biolovision (VisioNature).
+requests_oauthlib

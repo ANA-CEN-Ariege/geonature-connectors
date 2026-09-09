@@ -160,3 +160,67 @@ crontab = "0 3 * * 1"
 enabled = false
 status = "2"
 comment = "Validation automatique — données importées depuis une source externe"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+[visionature]
+# Connecteur VisioNature (Biolovision). Désactivé par défaut.
+enabled = false
+
+# URL de l'instance. Chaque site VisioNature est distinct : ses identifiants OAuth1,
+# son référentiel d'espèces et ses identifiants d'observation lui sont propres.
+url = "https://www.faune-ariege.fr"
+
+user_email = ""
+user_password = ""
+# Fournis par Biolovision sur demande, séparément du compte utilisateur.
+client_key = ""
+client_secret = ""
+
+# Groupes taxonomiques à moissonner. Vide = tous.
+taxo_groups = []
+
+# ── Confidentialité ──────────────────────────────────────────────────────────
+# Clé du HMAC de pseudonymisation. OBLIGATOIRE, même si peu d'observateurs demandent
+# l'anonymat : sans elle on ne peut traiter ni ceux qui l'ont demandé, ni ceux que le
+# référentiel ne connaît pas. Ne jamais la publier — un pseudonyme dont la clé est
+# connue se recalcule, donc se réidentifie.
+pseudonymisation_secret = ""
+
+# Le consentement est individuel : VisioNature porte un champ `anonymous` sur chaque
+# observateur, que le module respecte. Passer à true impose le pseudonyme à tous,
+# sans consulter le référentiel.
+forcer_anonymat = false
+
+# Respecter is_hidden et export_excluded. Les ignorer publierait ce que le producteur
+# a explicitement retiré de la diffusion.
+respecter_confidentialite = true
+
+# ── Jeux de données ──────────────────────────────────────────────────────────
+# Un JDD par code projet VisioNature : les projets correspondent à des programmes
+# réels (atlas, suivis, plans d'action). À défaut, un JDD unique par instance.
+jdd_par_code_projet = true
+
+batch_size = 1000
+
+
+[visionature.atlas]
+# Interprétation des codes atlas de nidification (standard EOAC), surchargeable pour
+# un atlas régional qui emploierait ses propres codes.
+#
+# Seuil à partir duquel un code vaut « Reproduction ». Le code 1 — « vu en période de
+# nidification dans un milieu favorable » — n'est pas un indice de reproduction.
+reproduction_min = 2
+
+# Code signalant une absence : espèce recherchée, non trouvée. Versé en
+# STATUT_OBS = « Non observé », et exclu de la comparaison au seuil — sans quoi 99,
+# dépassant le seuil, vaudrait reproduction certaine.
+absence = 99
+
+# code atlas -> cd_nomenclature OCC_COMPORTEMENT. Vide = table par défaut du module.
+# comportement = { 2 = "18", 5 = "19" }
+
+
+[visionature.schedule]
+enabled = false
+crontab = "0 4 * * 1"

@@ -31,6 +31,8 @@ REASONS = {
     "metadonnees_illisibles": "métadonnées GBIF du jeu illisibles",
     "jeu_maille": "jeu de données publié à la maille",
     "taxon_exclu": "taxon exclu par la configuration",
+    "confidentielle": "observation confidentielle à la source",
+    "espece_non_resolue": "espèce sans correspondance TAXREF",
 }
 
 

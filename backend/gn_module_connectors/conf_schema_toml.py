@@ -89,6 +89,69 @@ class ValidationSchemaConf(Schema):
     )
 
 
+class AtlasSchemaConf(Schema):
+    """Interprétation des codes atlas de nidification.
+
+    Surchargeable car ces codes, s'ils suivent le standard EOAC, peuvent être enrichis
+    localement par un atlas régional. `gn_vn2synthese` stocke l'équivalent dans une table
+    de synonymes administrable en SQL ; faute d'étendre le schéma, on passe par ici.
+    """
+
+    # Code à partir duquel un indice de nidification vaut « Reproduction ». Le code 1,
+    # « vu en période de nidification dans un milieu favorable », n'est pas un indice.
+    reproduction_min = fields.Integer(load_default=2)
+    # Code signalant une absence : espèce recherchée, non trouvée.
+    absence = fields.Integer(load_default=99)
+    # code atlas -> cd_nomenclature OCC_COMPORTEMENT. Vide = table par défaut du module.
+    comportement = fields.Dict(keys=fields.String(), values=fields.String(), load_default={})
+
+
+class VisioNatureSchemaConf(Schema):
+    """Connecteur VisioNature (Biolovision)."""
+
+    enabled = fields.Boolean(load_default=False)
+    # URL de l'instance, p. ex. https://www.faune-ariege.fr — chaque site VisioNature a
+    # ses propres identifiants OAuth1 et son propre référentiel d'espèces.
+    url = fields.String(load_default="")
+    user_email = fields.String(load_default="")
+    user_password = fields.String(load_default="")
+    # Fournis par Biolovision, séparément du compte utilisateur.
+    client_key = fields.String(load_default="")
+    client_secret = fields.String(load_default="")
+    # Groupes taxonomiques à moissonner. Vide = tous.
+    taxo_groups = fields.List(fields.String(), load_default=[])
+
+    # ── Confidentialité ──────────────────────────────────────────────────────
+    # Le consentement à la diffusion du nom est **individuel** : VisioNature porte un
+    # champ `anonymous` sur chaque observateur. Le module le respecte, plutôt que
+    # d'appliquer un choix global qui écraserait celui de chacun.
+    #   anonymous = 0            -> nom publié (aucune demande d'anonymat)
+    #   anonymous = 1            -> pseudonyme
+    #   observateur inconnu      -> pseudonyme : l'ignorance ne vaut pas consentement
+    # Passer à true impose le pseudonyme à tous, sans consulter le référentiel.
+    forcer_anonymat = fields.Boolean(load_default=False)
+    # ⚠ Clé du HMAC. Sans elle, la pseudonymisation est refusée — et non remplacée par
+    # une valeur par défaut, qui rendrait les pseudonymes recalculables par un tiers.
+    # `gn_vn2synthese` a sa clé en clair dans un dépôt public : c'est à éviter.
+    pseudonymisation_secret = fields.String(load_default="")
+    # Respecter is_hidden et export_excluded : les ignorer publierait ce que le
+    # producteur a explicitement choisi de retenir.
+    respecter_confidentialite = fields.Boolean(load_default=True)
+
+    # ── Jeux de données ──────────────────────────────────────────────────────
+    # Un JDD par code projet VisioNature, comme le fait gn_vn2synthese : les projets
+    # correspondent à des programmes réels (atlas, suivis, plans d'action). À défaut,
+    # un JDD unique par instance.
+    jdd_par_code_projet = fields.Boolean(load_default=True)
+    max_retry = fields.Integer(load_default=3)
+    max_chunks = fields.Integer(load_default=100)
+    batch_size = fields.Integer(load_default=1000)
+    atlas = fields.Nested(AtlasSchemaConf, load_default=lambda: AtlasSchemaConf().load({}))
+    schedule = fields.Nested(ScheduleSchemaConf, load_default=lambda: ScheduleSchemaConf().load({}))
+
+
 class GnModuleSchemaConf(Schema):
     gbif = fields.Nested(GbifSchemaConf, load_default=GbifSchemaConf().load({}))
+    visionature = fields.Nested(VisioNatureSchemaConf,
+                                load_default=lambda: VisioNatureSchemaConf().load({}))
     validation = fields.Nested(ValidationSchemaConf, load_default=ValidationSchemaConf().load({}))

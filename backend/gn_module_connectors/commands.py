@@ -3,6 +3,9 @@
 import click
 from sqlalchemy import func, select
 
+from pathlib import Path
+
+from sqlalchemy import text as db_text
 from geonature.utils.env import db
 
 
@@ -596,4 +599,207 @@ def gbif_purge(reference, taxon, max_uncertainty, drop_empty_datasets, yes):
         click.secho(f"{len(vides)} JDD supprimé(s).", fg="green")
 
 
-connectors_cli = [status, gbif_sync_datasets, gbif_import, gbif_purge]
+@click.command("vn-import")
+@click.option("--taxo-group", "groupes", multiple=True,
+              help="Groupes taxonomiques à moissonner (défaut : configuration, sinon tous).")
+@click.option("--since", default="",
+              help="Date ISO 8601 : ne moissonner que les créations, modifications et "
+                   "suppressions depuis. VisioNature sait signaler les suppressions, "
+                   "ce que GBIF ne fait pas.")
+@click.option("--batch-size", default=None, type=int)
+@click.option("--dry-run", is_flag=True)
+def vn_import(groupes, since, batch_size, dry_run):
+    """Importe des observations VisioNature dans la Synthèse."""
+    from geonature.utils.config import config as gn_config
+    from sqlalchemy import select as sa_select
+    from geonature.core.gn_meta.models import TDatasets
+    from .core import (report as report_core, synthese as syn_core,
+                       datasets as ds_core, nomenclatures as nomen_core)
+    from .sources.visionature import (api as vn_api, taxonomy as vn_taxo,
+                                     transform as vn_tr, confidentialite as vn_conf)
+    from .migrations.e91b4c07a2d8_source_visionature import SOURCE_NAME, CA_UUID
+
+    cfg = (gn_config.get("CONNECTORS") or {}).get("visionature", {})
+    if not cfg.get("enabled"):
+        raise click.ClickException(
+            "Connecteur VisioNature désactivé. Renseignez [visionature] dans la "
+            "configuration et passez `enabled = true`.")
+    for cle in ("url", "user_email", "user_password", "client_key", "client_secret"):
+        if not cfg.get(cle):
+            raise click.ClickException(
+                f"[visionature] {cle} manquant. Les identifiants OAuth1 "
+                f"(client_key/client_secret) sont fournis par Biolovision, séparément "
+                f"du compte utilisateur.")
+
+    batch_size = batch_size or cfg.get("batch_size", 1000)
+    instance = cfg["url"].rstrip("/")
+    id_source = syn_core.get_source_id(SOURCE_NAME)
+    id_module = syn_core.get_module_id("CONNECTORS")
+    srid = syn_core.local_srid()
+    af = ds_core.get_acquisition_framework(CA_UUID)
+    click.secho(f"instance={instance} source={id_source} srid={srid}", fg="green")
+
+    # L'URL de la source ne peut être connue qu'ici : elle dépend de l'instance.
+    db.session.execute(
+        db_text("UPDATE gn_synthese.t_sources SET url_source = :u "
+                "WHERE id_source = :s AND url_source IS DISTINCT FROM :u"),
+        {"u": f"{instance}/index.php?m_id=54&id=", "s": id_source})
+
+    click.echo("Chargement du référentiel d'espèces…")
+    especes = vn_api.especes(cfg)
+    index, non_resolues = vn_taxo.construire_index(especes, journal=click.echo)
+    if not index:
+        raise click.ClickException(
+            "Aucune espèce résolue : la correspondance se fait par nom scientifique "
+            "contre TAXREF, vérifiez que le référentiel est bien chargé.")
+
+    rejets = report_core.Rejects()
+    for e in non_resolues:
+        rejets.add("espece_non_resolue", e["id"], e["latin_name"] or e["french_name"],
+                   e["motif"])
+
+    groupes = list(groupes) or cfg.get("taxo_groups") or [
+        g.get("id") for g in vn_api.groupes_taxonomiques(cfg)]
+    click.echo(f"{len(groupes)} groupe(s) taxonomique(s) à traiter.")
+
+    resolver = nomen_core.Resolver()
+    cfg_valid = (gn_config.get("CONNECTORS") or {}).get("validation", {})
+    statut_validation = cfg_valid.get("status") if cfg_valid.get("enabled") else None
+    surcharges = cfg.get("atlas") or {}
+    secret = cfg.get("pseudonymisation_secret", "")
+    if not secret:
+        raise click.ClickException(
+            "[visionature] pseudonymisation_secret manquant. Il est requis même si peu "
+            "d'observateurs demandent l'anonymat : une clé par défaut rendrait les "
+            "pseudonymes recalculables par un tiers, donc réidentifiables.")
+    forcer_anonymat = cfg.get("forcer_anonymat", False)
+
+    # Le consentement est individuel : chaque observateur déclare dans VisioNature si son
+    # nom peut être diffusé. Un interrupteur global écraserait ce choix.
+    index_anonymat = {}
+    if not forcer_anonymat:
+        obs_ref = vn_api.observateurs(cfg)
+        index_anonymat = vn_conf.index_anonymat(obs_ref)
+        anonymes = sum(1 for v in index_anonymat.values() if v)
+        click.echo(f"  référentiel des observateurs : {len(index_anonymat)} inscrit(s), "
+                   f"{anonymes} ayant demandé l'anonymat")
+        if not index_anonymat:
+            click.secho("  ⚠ référentiel vide : tous les observateurs seront "
+                        "pseudonymisés, l'ignorance ne valant pas consentement.", fg="yellow")
+    else:
+        click.echo("  anonymat forcé pour tous les observateurs")
+    respecter = cfg.get("respecter_confidentialite", True)
+    par_projet = cfg.get("jdd_par_code_projet", True)
+
+    total_lus = total_ecrits = total_maj = 0
+    jdds: dict = {}
+
+    for groupe in groupes:
+        if since:
+            releves = vn_api.observations_modifiees(cfg, str(groupe), since)
+        else:
+            releves = vn_api.observations(cfg, str(groupe))
+        couples = vn_tr.deplier(releves)
+        total_lus += len(couples)
+        click.echo(f"  groupe {groupe} : {len(releves)} relevé(s), {len(couples)} observation(s)")
+
+        lot, ecrits, maj = [], 0, 0
+        for sighting, observation in couples:
+            if respecter:
+                motif = vn_conf.est_confidentielle(observation, sighting)
+                if motif:
+                    rejets.add("confidentielle", sighting.get("@id"),
+                               (sighting.get("species") or {}).get("name"), motif)
+                    continue
+            cd_nom = vn_taxo.resolve(sighting, index)
+            if not cd_nom:
+                espece = (sighting.get("species") or {})
+                rejets.add("no_cd_nom", sighting.get("@id"), espece.get("name"),
+                           f"species_id={espece.get('@id')}")
+                continue
+            ligne = vn_tr.to_row(sighting, observation, cd_nom=cd_nom, id_dataset=None,
+                                 id_source=id_source, id_module=id_module, srid=srid,
+                                 resolver=resolver, instance=instance,
+                                 surcharges_atlas=surcharges,
+                                 statut_validation=statut_validation,
+                                 index_anonymat=index_anonymat, secret_pseudo=secret,
+                                 forcer_anonymat=forcer_anonymat)
+            if ligne is None:
+                rejets.add("no_coordinates", sighting.get("@id"),
+                           (sighting.get("species") or {}).get("name"), "")
+                continue
+            ligne["_projet"] = vn_tr.code_projet(observation) if par_projet else None
+            lot.append(ligne)
+            if len(lot) >= batch_size and not dry_run:
+                i, u = _ecrire_lot(lot, jdds, instance, af)
+                ecrits += i; maj += u
+                db.session.commit(); lot = []
+                click.echo(f"    … {ecrits} écrites, {maj} mises à jour")
+        if lot and not dry_run:
+            i, u = _ecrire_lot(lot, jdds, instance, af)
+            ecrits += i; maj += u
+            db.session.commit()
+        elif dry_run:
+            ecrits = len(lot)
+        total_ecrits += ecrits; total_maj += maj
+
+    if not dry_run:
+        db.session.commit()
+    click.secho(f"\n{'DRY-RUN — ' if dry_run else ''}{total_lus} observation(s) lue(s), "
+                f"{total_ecrits} écrite(s), {total_maj} mise(s) à jour, "
+                f"{len(rejets)} rejetée(s).", fg="green")
+    for ligne in rejets.summary_lines():
+        click.echo(ligne)
+    chemin = rejets.write_csv(Path("vn_rejets.csv"))
+    if chemin:
+        click.echo(f"  Journal détaillé : {chemin}")
+
+
+def _ecrire_lot(lot, jdds, instance, af):
+    """Écrit un lot en le répartissant par code projet.
+
+    Les JDD sont créés à la demande : un projet dont toutes les observations sont
+    rejetées ne laisse pas de jeu vide dans le module Métadonnées.
+    """
+    from .core import synthese as syn_core
+
+    par_jdd: dict = {}
+    for ligne in lot:
+        par_jdd.setdefault(ligne.pop("_projet", None), []).append(ligne)
+
+    inserees = maj = 0
+    for projet, lignes in par_jdd.items():
+        if projet not in jdds:
+            jdds[projet] = _jdd_visionature(instance, af, projet)
+        for ligne in lignes:
+            ligne["id_dataset"] = jdds[projet].id_dataset
+        i, u = syn_core.insert_batch(lignes)
+        inserees += i; maj += u
+    return inserees, maj
+
+
+def _jdd_visionature(instance: str, af, projet: str | None = None):
+    """JDD unique de l'instance, créé à la première écriture.
+
+    Contrairement à GBIF, VisioNature n'agrège pas plusieurs producteurs : une instance
+    est un jeu de données. Le découpage par producteur n'aurait donc pas de sens ici.
+    """
+    from .core import datasets as ds_core
+    site = instance.replace("https://", "").replace("http://", "")
+    nom = (f"{projet} — {site}" if projet
+           else f"Observations VisioNature — {site}")
+    jdd, cree = ds_core.upsert_dataset(
+        source="VisioNature", cle=f"{instance}:{projet or ''}", licence="",
+        nom=nom,
+        description=(f"Observations moissonnées depuis {instance} via l'API Biolovision.\n\n"
+                     f"Les codes atlas de nidification sont conservés dans additional_data : "
+                     f"le SINP ne connaît pas leur gradation possible/probable/certaine."),
+        id_acquisition_framework=af.id_acquisition_framework,
+    )
+    db.session.flush()
+    if cree:
+        click.secho(f"  + JDD créé : {jdd.id_dataset}", fg="green")
+    return jdd
+
+
+connectors_cli = [status, gbif_sync_datasets, gbif_import, gbif_purge, vn_import]

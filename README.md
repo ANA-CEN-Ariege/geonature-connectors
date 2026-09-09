@@ -5,7 +5,7 @@ Module GeoNature d'alimentation de la Synthèse depuis des sources externes.
 | Source | État |
 |---|---|
 | **GBIF** (Global Biodiversity Information Facility) | fonctionnel |
-| **VisioNature / Biolovision** | à porter — code d'origine dans le dépôt d'archive `geonature-connecteurs-autonomes` |
+| **VisioNature / Biolovision** | fonctionnel — client Biolovision vendorisé depuis `Client_API_VN` |
 
 Le module tourne **dans** GeoNature. Il utilise donc `db.session` directement : aucun
 identifiant PostgreSQL à distribuer, insertion par lots plutôt qu'une requête HTTP par
@@ -51,7 +51,7 @@ source » de la fiche d'observation : l'interface concatène `url_source` et
 
 ---
 
-## Configuration
+## Configuration — GBIF
 
 Copier `connectors_config.toml.example` en `connectors_config.toml`, **à côté de
 `geonature_config.toml`**. Le fichier est facultatif : sans lui, les valeurs par défaut
@@ -79,7 +79,7 @@ Emplacements recherchés, dans l'ordre :
 
 ---
 
-## Utilisation
+## Utilisation — GBIF
 
 ### 1. Prévisualiser (facultatif)
 
@@ -190,6 +190,122 @@ modifié, mais les données doivent tout de même être réécrites.
 
 ---
 
+## VisioNature
+
+```toml
+[visionature]
+enabled = true
+url = "https://www.faune-ariege.fr"
+user_email = "…"
+user_password = "…"
+client_key = "…"          # fournis par Biolovision, séparément du compte utilisateur
+client_secret = "…"
+pseudonymisation_secret = "…"   # obligatoire, voir plus bas
+```
+
+```bash
+geonature connectors vn-import --dry-run
+geonature connectors vn-import
+geonature connectors vn-import --since 2026-01-01   # incrémental
+```
+
+### Résolution taxonomique
+
+**L'API Biolovision n'expose aucune correspondance vers TAXREF.** Vérifié :
+`/api/species/?id=94` renvoie `{"latin_name": "Anas crecca", …}`, sans `cd_nom`.
+L'identifiant d'espèce est purement interne — l'espèce 94 est une Sarcelle d'hiver,
+quand le `cd_nom` 94 de TAXREF désigne *Lacerta salamandra*.
+
+Le rapprochement se fait donc sur `latin_name` contre `taxref.lb_nom`, restreint aux
+taxons valides (`cd_nom = cd_ref`), et construit **une fois au démarrage**. C'est viable :
+sur 300 377 taxons valides, TAXREF compte 299 065 noms distincts, soit 0,4 % d'homonymes.
+
+⚠️ Une homonymie est traitée comme un **échec**, pas comme un choix par défaut : départager
+au hasard deux taxons valides produirait une erreur que rien ne signalerait.
+
+### Observateurs : consentement individuel
+
+VisioNature porte un champ `anonymous` sur **chaque observateur**. Le module le respecte
+plutôt que d'appliquer un réglage global :
+
+| cas | résultat |
+|---|---|
+| `anonymous = 0` | nom publié — aucune demande d'anonymat n'a été exprimée |
+| `anonymous = 1` | pseudonyme |
+| observateur absent du référentiel | pseudonyme — l'ignorance ne vaut pas consentement |
+
+Le pseudonyme est un HMAC-SHA256 stable : les observations d'un même contributeur restent
+rapprochables sans qu'il soit identifiable. **La clé est obligatoire et vient de la
+configuration** — jamais une valeur par défaut, qui rendrait les pseudonymes recalculables
+par un tiers, donc réidentifiables.
+
+Le module respecte aussi les marqueurs de confidentialité de la source : `is_hidden`,
+`export_excluded`, et n'importe jamais `private_comment`.
+
+### Les observateurs ne sont pas créés dans `utilisateurs.t_roles`
+
+**Choix explicite.** Le module renseigne `synthese.observers` en texte libre et ne crée
+ni rôle, ni lien `cor_observer_synthese`.
+
+Trois raisons. D'abord la cohérence : sur une instance de référence, 536 948 observations
+renseignent `observers` en texte et `cor_observer_synthese` est vide — c'est déjà le
+fonctionnement de l'import SINP et d'Occtax. Ensuite le volume : une instance VisioNature
+régionale compte des milliers de contributeurs, quand l'annuaire GeoNature en compte
+quelques dizaines ; `t_roles` est un référentiel de **comptes**, pas de personnes citées.
+Enfin la cohérence avec l'anonymisation : pseudonymiser dans la Synthèse tout en créant
+une fiche nominative dans l'annuaire n'aurait pas de sens.
+
+Conséquence assumée : le filtre CRUVED « mes observations » ne fonctionne pas sur ces
+données — ce qui est sans objet pour des contributeurs qui n'ont pas de compte GeoNature.
+
+Si le besoin se présentait, la bonne approche serait de ne rapprocher que les observateurs
+**disposant déjà d'un compte**, par courriel — ciblé plutôt que massif.
+
+### Jeux de données par code projet
+
+VisioNature rattache les observations à des **codes projet**, qui correspondent à des
+programmes réels : atlas, suivis, plans d'action. Le module en fait un JDD chacun, comme
+`gn_vn2synthese`. Les observations sans code projet vont dans un JDD général par instance.
+
+Les JDD restent créés à la première écriture : un projet dont toutes les observations
+sont rejetées ne laisse pas de jeu vide.
+
+### Codes atlas de nidification
+
+Les codes EOAC alimentent `STATUT_BIO` au-delà du seuil configuré — par défaut 2, car le
+code 1 (« vu en période de nidification dans un milieu favorable ») n'est pas un indice de
+reproduction. Certains codes alimentent en plus `OCC_COMPORTEMENT` : chant, accouplement,
+territorial, nourrissage.
+
+⚠️ **Le code 99 signale une absence**, pas une reproduction certaine — espèce recherchée,
+non trouvée. Il est versé en `STATUT_OBS = No` et exclu de la comparaison au seuil. Un
+effectif nul déclaré `EXACT_VALUE` est traité de même ; un zéro sans cette mention est une
+donnée incomplète, pas une absence.
+
+Le code atlas brut est conservé dans `additional_data` : le SINP ignore la gradation
+possible / probable / certaine, qui est pourtant le cœur de la donnée pour un atlas.
+
+Le seuil, le code d'absence et la table des comportements sont surchargeables :
+
+```toml
+[visionature.atlas]
+reproduction_min = 2
+absence = 99
+```
+
+### Limites connues
+
+Les codes atlas ne concernent que **les oiseaux**. Pour les autres groupes,
+`gn_vn2synthese` déduit un statut de reproduction du groupe taxonomique et du champ
+`details[].condition` ; ce repli n'est pas implémenté ici.
+
+`api_diff` signale les **suppressions**, mais `vn-import` ne les répercute pas encore en
+Synthèse. Un observateur qui change d'avis sur son anonymat après coup n'est pas non plus
+rattrapé : le drapeau vient de l'observateur, pas de l'observation, donc l'empreinte de
+contenu ne le détecte pas.
+
+---
+
 ## Tests
 
 ```bash
@@ -243,6 +359,13 @@ trimestrielle est une précaution raisonnable.
 
 `sync-to-docker.sh` déploie le module vers une instance GeoNature docker de
 développement, le dépôt vivant hors du volume monté.
+
+`sources/visionature/biolovision/` est une **copie** du client de
+[Client_API_VN](https://github.com/dthonon/Client_API_VN) (Daniel Thonon, GPL-3.0),
+révision `376c2e1b`. Copié plutôt que dépendu : le paquet complet déclare vingt
+dépendances dont aucune n'est utilisée par la couche API, qui ne demande que `requests`
+et `requests_oauthlib`. Ne pas éditer ces fichiers — toute adaptation va dans
+`sources/visionature/api.py`.
 
 ```
 backend/gn_module_connectors/
