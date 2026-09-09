@@ -703,9 +703,18 @@ def vn_import(groupes, since, batch_size, dry_run):
     # et le désigner par son code (`TAXO_GROUP_BAT`) plutôt que par son identifiant
     # numérique est ce qui rend la table de correspondance transposable d'une instance à
     # l'autre. Sans cet index, le module retombe sur les identifiants de Faune-France.
-    index_groupes = vn_repro.index_groupes(
-        referentiel("groupes", lambda: vn_api.groupes_taxonomiques(cfg)))
-    groupes = list(groupes) or cfg.get("taxo_groups") or list(index_groupes)
+    groupes_bruts = referentiel("groupes", lambda: vn_api.groupes_taxonomiques(cfg))
+    index_groupes = vn_repro.index_groupes(groupes_bruts)
+    # `access_mode` vaut « full », « limited » ou « none ». `transfer_vn` saute les
+    # groupes fermés au compte ; les interroger ne peut produire qu'un refus, et sur
+    # une instance qui en compte quarante-neuf ce sont autant d'appels perdus.
+    fermes = {str(g.get("id") or g.get("@id") or "").strip()
+              for g in groupes_bruts if str(g.get("access_mode") or "") == "none"}
+    groupes = list(groupes) or cfg.get("taxo_groups") or [
+        identifiant for identifiant in index_groupes if identifiant not in fermes]
+    if fermes and not cfg.get("taxo_groups"):
+        click.echo(f"  {len(fermes)} groupe(s) fermé(s) au compte (access_mode = none), "
+                   f"écarté(s) : {', '.join(sorted(fermes))}")
     click.echo(f"{len(groupes)} groupe(s) taxonomique(s) à traiter.")
 
     resolver = nomen_core.Resolver()
