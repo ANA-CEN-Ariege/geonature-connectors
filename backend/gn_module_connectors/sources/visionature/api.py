@@ -108,6 +108,72 @@ def unites_territoriales(cfg) -> list[dict]:
     return _extraire(_controleur(bio.TerritorialUnitsAPI, cfg).api_list())
 
 
+# `short_version=1` demande la forme réduite du JSON. `transfer_vn` la passe à TOUS ses
+# appels d'observations, et la configuration de `gn_vn2synthese` la retient
+# (`json_format: short`). Son absence est la première suspecte des 403 obtenus sur
+# `GET /api/observations` : la forme longue d'un groupe taxonomique entier représente un
+# volume que l'API peut légitimement refuser de servir.
+#
+# La forme réduite suffit : c'est elle qui alimente la table de transit de la LPO, dont
+# le SQL lit `observers[0].details`, `behaviours`, `place` et le reste.
+SHORT_VERSION = "1"
+
+
+def parametres_recherche(id_taxo_group: str, date_debut, date_fin,
+                         territoires: list[str] | None = None,
+                         type_date: str | None = None) -> dict:
+    """Corps de requête de `observations/search`, au format qu'attend Biolovision.
+
+    Relevé sur `transfer_vn` (`download_vn.py`, `_store_search`) plutôt que deviné. Deux
+    pièges qui font échouer une requête bricolée :
+
+    - les dates sont au format **`JJ.MM.AAAA`**, pas ISO ;
+    - `period_choice` est obligatoire, sans quoi les dates sont ignorées ou la requête
+      refusée.
+
+    `territoires` attend des identifiants déjà composés — `id_country` suivi du
+    `short_name`, soit « 109 » pour l'Ariège sur un portail français. C'est la forme que
+    `transfer_vn` construit à partir du contrôleur `territorial_units`.
+    """
+    parametres = {
+        "period_choice": "range",
+        "date_from": date_debut.strftime("%d.%m.%Y"),
+        "date_to": date_fin.strftime("%d.%m.%Y"),
+        "species_choice": "all",
+        "taxonomic_group": str(id_taxo_group),
+    }
+    if type_date is not None:
+        parametres["entry_date"] = "1" if type_date == "entry" else "0"
+    if territoires:
+        parametres["location_choice"] = "territorial_unit"
+        parametres["territorial_unit_ids"] = list(territoires)
+    return parametres
+
+
+def identifiant_territoire(unite: dict) -> str | None:
+    """Identifiant de territoire pour `search` : `id_country` + `short_name`.
+
+    Ni l'`id` ni le `short_name` seuls ne conviennent — c'est leur concaténation que
+    `transfer_vn` envoie.
+    """
+    pays = str(unite.get("id_country") or "").strip()
+    court = str(unite.get("short_name") or "").strip()
+    return f"{pays}{court}" if pays and court else None
+
+
+def observations_recherche(cfg, id_taxo_group: str, date_debut, date_fin,
+                           territoires: list[str] | None = None) -> list[dict]:
+    """Observations sur une plage de dates, via `observations/search`.
+
+    C'est la voie du moissonnage initial : `api_list` ne sait pas borner par date, et le
+    différentiel ne remonte que dix semaines. Le découpage en tranches est à la charge de
+    l'appelant, comme pour le connecteur GBIF.
+    """
+    return _extraire(_controleur(bio.ObservationsAPI, cfg).api_search(
+        parametres_recherche(id_taxo_group, date_debut, date_fin, territoires),
+        short_version=SHORT_VERSION))
+
+
 def observations(cfg, id_taxo_group: str, **filtres) -> list[dict]:
     """Observations d'un groupe taxonomique.
 
@@ -121,6 +187,7 @@ def observations(cfg, id_taxo_group: str, **filtres) -> list[dict]:
     `place.county`. Le décompte des rejets « hors périmètre » dit alors si le filtre
     serveur a mordu : proche de zéro, il a fonctionné ; élevé, il a été ignoré.
     """
+    filtres.setdefault("short_version", SHORT_VERSION)
     return _extraire(_controleur(bio.ObservationsAPI, cfg).api_list(id_taxo_group, **filtres))
 
 

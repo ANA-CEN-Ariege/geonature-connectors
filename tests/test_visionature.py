@@ -734,3 +734,37 @@ def test_un_lieu_indeterminable_est_ecarte_quand_un_filtre_est_actif():
     """
     assert not P.dans_perimetre({}, P.normaliser(["09"]))
     assert not P.dans_perimetre({"place": {"name": "quelque part"}}, P.normaliser(["09"]))
+
+
+# ── Paramètres de recherche, relevés sur transfer_vn ─────────────────────────
+
+def test_les_dates_de_recherche_ne_sont_pas_en_iso():
+    """Biolovision attend JJ.MM.AAAA, et `period_choice` est obligatoire.
+
+    Relevé sur `Client_API_VN`, `download_vn.py:_store_search`. Une sonde envoyant de
+    l'ISO sans `period_choice` a reçu un 403 dont on a conclu à tort qu'un droit
+    manquait — alors que la requête était simplement malformée.
+    """
+    from datetime import date
+    p = A.parametres_recherche("6", date(2026, 1, 1), date(2026, 3, 15))
+    assert p["date_from"] == "01.01.2026"
+    assert p["date_to"] == "15.03.2026"
+    assert p["period_choice"] == "range"
+    assert p["taxonomic_group"] == "6"
+    assert p["species_choice"] == "all"
+
+
+def test_le_territoire_est_le_pays_suivi_du_code_court():
+    """Ni l'`id` ni le `short_name` seuls : c'est leur concaténation."""
+    assert A.identifiant_territoire({"id_country": "1", "short_name": "09"}) == "109"
+    assert A.identifiant_territoire({"short_name": "09"}) is None
+    assert A.identifiant_territoire({}) is None
+
+
+def test_le_filtre_territorial_est_optionnel():
+    from datetime import date
+    sans = A.parametres_recherche("6", date(2026, 1, 1), date(2026, 1, 2))
+    assert "location_choice" not in sans
+    avec = A.parametres_recherche("6", date(2026, 1, 1), date(2026, 1, 2), ["109"])
+    assert avec["location_choice"] == "territorial_unit"
+    assert avec["territorial_unit_ids"] == ["109"]

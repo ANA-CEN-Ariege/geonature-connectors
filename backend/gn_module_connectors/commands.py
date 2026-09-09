@@ -1138,25 +1138,33 @@ def vn_diagnostic(groupe):
         user_email=cfg["user_email"], user_pw=cfg["user_password"],
         base_url=cfg["url"].rstrip("/") + "/", client_key=cfg["client_key"],
         client_secret=cfg["client_secret"], timeout=60).api_list())
-    sonder("observations (liste complète)", lambda: obs.api_list(groupe))
+    # Deux variantes : `transfer_vn` passe TOUJOURS short_version. Son absence est la
+    # première suspecte d'un 403 sur la forme longue d'un groupe entier.
+    sonder("observations (liste, forme longue)", lambda: obs.api_list(groupe))
+    sonder("observations (liste, short_version)",
+           lambda: obs.api_list(groupe, short_version="1"))
     sonder("observations/diff (modifiées)",
            lambda: obs.api_diff(groupe, recent, "only_modified"))
     sonder("observations/diff (supprimées)",
            lambda: obs.api_diff(groupe, recent, "only_deleted"))
-    sonder("observations/search", lambda: obs.api_search(
-        {"id_taxo_group": str(groupe), "date_from": recent, "date_to": recent}))
+    # Paramètres relevés sur `transfer_vn`, et non devinés : `period_choice` est
+    # obligatoire et les dates sont au format JJ.MM.AAAA. La sonde précédente envoyait
+    # de l'ISO sans `period_choice` — son 403 ne prouvait donc rien.
+    hier = datetime.now(timezone.utc) - timedelta(days=1)
+    sonder("observations/search (paramètres VN)", lambda: obs.api_search(
+        vn_api.parametres_recherche(groupe, hier, hier), short_version="1"))
 
     click.echo("\nLa ligne « relevé complet » est décisive : si le différentiel ne livre\n"
                "que des identifiants, chaque entrée impose une requête supplémentaire.\n"
                "À 37 000 modifications par jour et par groupe, ce n'est pas tenable.\n")
     click.echo("\nLecture :\n"
-               "  liste complète OK              -> moissonnage initial possible tel quel.\n"
-               "  liste 403 mais search OK       -> le moissonnage initial doit passer par\n"
-               "                                   search, par tranches de dates.\n"
-               "  liste 403 et search 403        -> demander l'ouverture du droit à\n"
-               "                                   l'administrateur de l'instance.\n"
-               "  search 400                     -> l'accès existe, ce sont les paramètres\n"
-               "                                   à ajuster ; envoyez-moi la sortie.")
+               "  forme longue 403 mais short_version OK -> c'était le volume, pas le droit.\n"
+               "  search OK                             -> moissonnage initial possible par\n"
+               "                                           tranches de dates.\n"
+               "  tout en 403                           -> alors seulement, demander\n"
+               "                                           l'ouverture du droit.\n"
+               "\n`access_mode` de vn-groupes indique par ailleurs les groupes fermés au\n"
+               "compte : `transfer_vn` saute ceux dont il vaut « none ».")
 
 
 @click.command("vn-volumetrie")
