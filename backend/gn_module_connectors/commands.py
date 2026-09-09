@@ -1157,6 +1157,72 @@ def vn_diagnostic(groupe):
                "                                   à ajuster ; envoyez-moi la sortie.")
 
 
+@click.command("vn-volumetrie")
+@click.option("--jours", default=1, help="Fenêtre de mesure, en jours (défaut : 1).")
+def vn_volumetrie(jours):
+    """Mesure le nombre de modifications quotidiennes, groupe par groupe.
+
+    Question à laquelle elle répond : quels groupes peut-on réellement moissonner ?
+
+    Le différentiel ne renvoie que des identifiants — `id_sighting`, `id_universal`,
+    `modification_type` — donc chaque entrée impose ensuite un `api_get`. Le coût d'un
+    moissonnage incrémental est ainsi d'une requête HTTP par observation modifiée.
+    Mesuré sur Faune-Occitanie : 37 246 modifications en vingt-quatre heures pour les
+    seuls oiseaux, ce qui est hors de portée. D'autres groupes seront très en deçà.
+
+    Le total par groupe est donc le chiffre qui décide de ce qui est faisable, et il
+    n'est connaissable que sur l'instance visée.
+    """
+    from datetime import datetime, timedelta, timezone
+    from geonature.utils.config import config as gn_config
+    from .sources.visionature import api as vn_api, reproduction as vn_repro
+    from .sources.visionature.biolovision import api as bio
+
+    cfg = (gn_config.get("CONNECTORS") or {}).get("visionature", {})
+    if not cfg.get("enabled"):
+        raise click.ClickException("Connecteur VisioNature désactivé.")
+
+    depuis = (datetime.now(timezone.utc) - timedelta(days=jours)).strftime("%Y-%m-%d")
+    groupes = vn_api.groupes_taxonomiques(cfg)
+    obs = vn_api._controleur(bio.ObservationsAPI, cfg)
+    couverts = set(vn_repro.REGLES)
+
+    click.echo(f"Modifications sur {jours} jour(s), depuis {depuis}.")
+    click.echo("Une requête api_get sera nécessaire par entrée.\n")
+    click.echo(f"  {'id':>4}  {'code':<26}  {'modifiées':>10}  {'/jour':>8}  repro")
+
+    total = 0
+    mesures = []
+    for g in groupes:
+        identifiant = str(g.get("id") or g.get("@id") or "")
+        code = str(g.get("name") or "")
+        try:
+            n = len(vn_api._extraire(obs.api_diff(identifiant, depuis, "only_modified")))
+        except bio.BiolovisionApiException as erreur:
+            click.secho(f"  {identifiant:>4}  {code:<26}  {'refusé':>10}  {erreur!r}",
+                        fg="yellow")
+            continue
+        total += n
+        mesures.append((n, identifiant, code))
+        couleur = "red" if n > 5000 else ("yellow" if n > 500 else None)
+        click.secho(f"  {identifiant:>4}  {code:<26}  {n:>10}  {n / jours:>8.0f}  "
+                    f"{'oui' if code in couverts else '—'}", fg=couleur)
+
+    click.echo(f"\n  Total : {total} modification(s), soit {total / jours:.0f} par jour")
+    click.echo("  Donc autant de requêtes api_get par moissonnage incrémental quotidien.")
+    if mesures:
+        mesures.sort(reverse=True)
+        gros = [c for n, _, c in mesures[:3]]
+        part = sum(n for n, _, _ in mesures[:3]) / total * 100 if total else 0
+        click.echo(f"  Les trois premiers groupes ({', '.join(gros)}) pèsent "
+                   f"{part:.0f} % du total.")
+    click.echo("\nRestreindre le moissonnage aux groupes utiles, "
+               "dans connectors_config.toml :\n"
+               "  [visionature]\n"
+               "  taxo_groups = [\"2\", \"6\", \"7\"]   # identifiants ci-dessus")
+
+
 connectors_cli = [status, gbif_sync_datasets, gbif_import, gbif_purge, vn_import,
                   vn_reanonymiser, vn_territoires,
-                  vn_groupes, vn_vider_cache, vn_diagnostic]
+                  vn_groupes, vn_vider_cache, vn_diagnostic,
+                  vn_volumetrie]
