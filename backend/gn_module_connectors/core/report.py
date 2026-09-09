@@ -36,6 +36,14 @@ REASONS = {
 }
 
 
+# Motifs qui ne concernent PAS une observation, mais un référentiel chargé au démarrage.
+# Les compter parmi les rejets d'observations fausse le bilan de façon spectaculaire :
+# un import de 472 observations a affiché « 30191 rejetée(s) », ce qui laissait croire à
+# un échec massif de résolution taxonomique alors qu'il s'agissait des espèces du
+# référentiel VisioNature absentes de TAXREF — dont l'immense majorité ne sera jamais
+# observée sur le territoire moissonné.
+MOTIFS_REFERENTIEL = frozenset({"espece_non_resolue"})
+
 class Rejects:
     """Collecte les rejets d'un import, avec leur cause.
 
@@ -60,8 +68,25 @@ class Rejects:
         for r in records:
             self.add(reason, r.get(id_key, ""), r.get(label_key, ""), detail)
 
+
     def __len__(self) -> int:
         return len(self.rows)
+
+    def nombre_observations(self) -> int:
+        """Rejets portant réellement sur des observations."""
+        return sum(1 for r in self.rows if r["reason"] not in MOTIFS_REFERENTIEL)
+
+    def nombre_referentiel(self) -> int:
+        """Rejets portant sur un référentiel chargé au démarrage."""
+        return sum(1 for r in self.rows if r["reason"] in MOTIFS_REFERENTIEL)
+
+    def summary_lines_observations(self) -> list[str]:
+        """Résumé des seuls rejets d'observations."""
+        return [
+            f"  {n:>7}  {REASONS.get(reason, reason)}"
+            for reason, n in self.counts().most_common()
+            if reason not in MOTIFS_REFERENTIEL
+        ]
 
     def counts(self) -> Counter:
         return Counter(r["reason"] for r in self.rows)

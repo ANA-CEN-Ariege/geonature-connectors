@@ -849,7 +849,11 @@ def vn_import(groupes, since, batch_size, dry_run):
                 couples = vn_tr.deplier(releves)
                 total_lus += len(couples)
                 for sighting, observation in couples:
-                    if not vn_perim.dans_perimetre(sighting, departements):
+                    # Le moissonnage complet est déjà borné par l'API
+                    # (`territorial_unit_ids`) : sa garantie vaut la nôtre, et le
+                    # format court ne porte pas toujours le rattachement administratif.
+                    if not vn_perim.dans_perimetre(sighting, departements,
+                                                   borne_serveur=not since):
                         hors_perimetre += 1
                         continue
                     if respecter:
@@ -925,9 +929,17 @@ def vn_import(groupes, since, batch_size, dry_run):
     suffixe = f", {total_supprimes} supprimée(s)" if total_supprimes else ""
     click.secho(f"\n{'DRY-RUN — ' if dry_run else ''}{total_lus} observation(s) lue(s), "
                 f"{total_ecrits} écrite(s), {total_maj} mise(s) à jour{suffixe}, "
-                f"{len(rejets)} rejetée(s).", fg="green")
-    for ligne in rejets.summary_lines():
+                f"{rejets.nombre_observations()} rejetée(s).", fg="green")
+    for ligne in rejets.summary_lines_observations():
         click.echo(ligne)
+    # Les espèces du référentiel absentes de TAXREF sont journalisées mais comptées à
+    # part : les mêler aux rejets d'observations laisse croire à un échec massif. Un
+    # import de 472 observations a affiché « 30191 rejetée(s) », alors qu'il s'agissait
+    # d'espèces dont l'immense majorité ne sera jamais observée sur le territoire.
+    if rejets.nombre_referentiel():
+        click.echo(f"  ({rejets.nombre_referentiel()} espèce(s) du référentiel "
+                   f"VisioNature sans correspondance TAXREF — sans rapport avec les "
+                   f"observations ci-dessus, voir le journal)")
     # Un code d'âge, de sexe ou de comportement absent de la table n'est pas une erreur —
     # l'énumération VisioNature est localement extensible — mais c'est le seul signal
     # qu'une règle manque, et donc que des indices de reproduction passent à la trappe.

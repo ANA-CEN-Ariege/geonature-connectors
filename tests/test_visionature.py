@@ -800,3 +800,22 @@ def test_une_recherche_sans_perimetre_est_refusee_avant_lappel():
     from datetime import date
     with pytest.raises(ValueError, match="périmètre territorial"):
         list(A.moissonner_recherche({}, "6", date(2026, 1, 1), date(2026, 2, 1), []))
+
+
+def test_un_perimetre_borne_par_le_serveur_accepte_un_lieu_indetermine():
+    """La réponse au format court ne porte pas toujours le rattachement administratif.
+
+    Le moissonnage complet borne le territoire côté API (`territorial_unit_ids`). Écarter
+    en plus ce qu'on ne sait pas situer conduisait à rejeter la totalité de ce qu'on
+    venait de télécharger : 472 relevés lus, 472 écartés, mesuré sur faune-occitanie.org.
+    """
+    codes = P.normaliser(["09"])
+    court = {"place": {"@id": "1", "name": "Étang de Lers", "coord_lat": "42.8"}}
+    assert P.dans_perimetre(court, codes, borne_serveur=True)
+    assert not P.dans_perimetre(court, codes)
+
+
+def test_la_borne_serveur_ne_couvre_pas_un_departement_explicite():
+    """On ne fait confiance au serveur que lorsqu'on ne sait pas trancher soi-même."""
+    codes = P.normaliser(["09"])
+    assert not P.dans_perimetre({"place": {"county": "31"}}, codes, borne_serveur=True)
