@@ -1095,7 +1095,9 @@ def vn_vider_cache():
 
 @click.command("vn-diagnostic")
 @click.option("--taxo-group", "groupe", default="1", help="Groupe à sonder (défaut : 1).")
-def vn_diagnostic(groupe):
+@click.option("--debug", is_flag=True,
+              help="Journalise la requête réelle, pour comparer avec transfer_vn.")
+def vn_diagnostic(groupe, debug):
     """Sonde les points d'entrée de l'API et rapporte ce que le compte peut faire.
 
     Les droits Biolovision ne sont pas uniformes : `observations/diff` peut fonctionner
@@ -1112,6 +1114,28 @@ def vn_diagnostic(groupe):
     cfg = (gn_config.get("CONNECTORS") or {}).get("visionature", {})
     if not cfg.get("enabled"):
         raise click.ClickException("Connecteur VisioNature désactivé.")
+
+    # Les versions comptent : une signature OAuth1 dépend de l'implémentation qui la
+    # produit. Client_API_VN exige requests>=2.32 et requests-oauthlib>=2.0 ; tourner
+    # avec une version antérieure peut produire une signature que l'API refuse, ce qui
+    # donne un 403 indiscernable d'un droit manquant. Comparer avec le venv qui fait
+    # tourner transfer_vn est le premier réflexe quand les habilitations sont identiques.
+    import requests as _requests
+    import requests_oauthlib as _oauthlib
+    click.echo(f"requests {_requests.__version__}, "
+               f"requests_oauthlib {getattr(_oauthlib, '__version__', 'inconnue')} "
+               f"(Client_API_VN exige >= 2.32 et >= 2.0)\n")
+
+    if debug:
+        # `_clean_params` masque le compte et le mot de passe : la sortie est
+        # communicable telle quelle.
+        import logging as _logging
+        _logging.basicConfig(level=_logging.DEBUG)
+        _logging.getLogger("gn_module_connectors.sources.visionature.biolovision.api"
+                           ).setLevel(_logging.DEBUG)
+        for nom in list(_logging.root.manager.loggerDict):
+            if "biolovision" in nom:
+                _logging.getLogger(nom).setLevel(_logging.DEBUG)
 
     recent = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
     obs = vn_api._controleur(bio.ObservationsAPI, cfg)
