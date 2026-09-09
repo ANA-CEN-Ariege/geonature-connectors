@@ -45,28 +45,57 @@ def load_index() -> dict[str, int]:
     return {str(sp): int(cd) for sp, cd in lignes}
 
 
-def resolve_via_gbif(taxon_key, cache: dict) -> int | None:
+# Délai d'attente volontairement court. Ce repli est un confort, pas une nécessité :
+# mieux vaut renoncer à résoudre un taxon que suspendre l'import. Avec 20 secondes et
+# quelques centaines de taxons inconnus, un import peut sembler figé plus d'une heure
+# sans rien afficher.
+TIMEOUT_REPLI = 5
+
+# Au-delà, on cesse d'interroger GBIF pour le reste de l'exécution : un tel taux d'échec
+# signale une indisponibilité ou une limitation de débit, et s'obstiner ne ferait
+# qu'allonger l'import sans rien résoudre.
+ECHECS_AVANT_ABANDON = 20
+
+
+def resolve_via_gbif(taxon_key, cache: dict, journal=None) -> int | None:
     """Repli : cd_nom via le référentiel TAXREF publié sur GBIF.
 
     Un appel réseau par taxonKey inconnu, mis en cache — le nombre de taxons distincts
     est très inférieur au nombre d'occurrences, donc le surcoût reste marginal.
+
+    Le cache porte aussi un compteur d'échecs consécutifs : au-delà d'un seuil, le repli
+    se désactive de lui-même pour le reste de l'exécution.
     """
     cle = str(taxon_key)
     if cle in cache:
         return cache[cle]
+    if cache.get("__abandon__"):
+        return None
+
     resultat = None
+    echec = False
     try:
         url = (f"https://api.gbif.org/v1/species/{cle}/related"
                f"?datasetKey={GBIF_TAXREF_DATASET}")
-        with urllib.request.urlopen(url, timeout=20) as r:
+        with urllib.request.urlopen(url, timeout=TIMEOUT_REPLI) as r:
             for item in json.load(r).get("results", []):
                 taxon_id = str(item.get("taxonID", ""))
                 if taxon_id.isdigit():
                     resultat = int(taxon_id)
                     break
     except Exception:
-        resultat = None
-    cache[cle] = resultat
+        echec = True
+
+    if echec:
+        cache["__echecs__"] = cache.get("__echecs__", 0) + 1
+        if cache["__echecs__"] >= ECHECS_AVANT_ABANDON:
+            cache["__abandon__"] = True
+            if journal:
+                journal(f"  ⚠ {ECHECS_AVANT_ABANDON} échecs consécutifs sur le référentiel "
+                        f"TAXREF de GBIF — repli désactivé pour cette exécution.")
+    else:
+        cache["__echecs__"] = 0
+        cache[cle] = resultat
     return resultat
 
 
@@ -81,7 +110,8 @@ def existe_dans_taxref(cd_nom: int) -> bool:
     ).first())
 
 
-def resolve(occ: dict, index: dict[str, int], cache_gbif: dict | None = None) -> int | None:
+def resolve(occ: dict, index: dict[str, int], cache_gbif: dict | None = None,
+            journal=None) -> int | None:
     """cd_nom d'une occurrence GBIF, ou None si non résolue.
 
     `taxonKey` d'abord, puis repli sur `acceptedTaxonKey` et `speciesKey` : GBIF distingue
@@ -102,7 +132,7 @@ def resolve(occ: dict, index: dict[str, int], cache_gbif: dict | None = None) ->
     if cache_gbif is None:
         return None
     for valeur in cles:
-        cd_nom = resolve_via_gbif(valeur, cache_gbif)
+        cd_nom = resolve_via_gbif(valeur, cache_gbif, journal)
         if cd_nom and existe_dans_taxref(cd_nom):
             # Mémorisé dans l'index pour ne pas réinterroger le réseau sur ce lot.
             index[str(valeur)] = cd_nom

@@ -9,7 +9,7 @@ rsync -a --delete \
   --exclude '.git' --exclude 'data/' --exclude 'TAXREF_v17_2024/' \
   --exclude '.backup-*' --exclude '__pycache__' --exclude 'config.toml' \
   --exclude 'gbif2geonature/' --exclude 'vn2geonature/' --exclude 'docs/data/' \
-  --exclude '*.egg-info' \
+  --exclude '*.egg-info' --exclude '.pytest_cache' \
   "$SRC/" "$DST/"
 
 echo "→ synchronisé vers $DST"

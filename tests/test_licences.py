@@ -65,3 +65,35 @@ def test_provenance_porte_l_attribution():
 def test_provenance_sans_doi_pour_l_api_search():
     """L'API `search` ne délivre aucun DOI : ne pas en inventer."""
     assert "gbif_download_doi" not in api.provenance({"gbifID": "1"})
+
+
+# ── Exclusions taxonomiques ──────────────────────────────────────────────────
+
+def _occ(nom, **cles):
+    return {"gbifID": "1", "scientificName": nom, **cles}
+
+
+def test_exclusion_dun_ordre_atteint_ses_especes():
+    """Exclure Chiroptera (734) doit écarter une espèce identifiée au rang de l'espèce.
+
+    L'occurrence ne porte l'ordre que dans `orderKey` : tester le seul `taxonKey` ne
+    verrait rien.
+    """
+    chiro = _occ("Miniopterus schreibersii", taxonKey=2432509, orderKey=734,
+                 classKey=359, kingdomKey=1)
+    autre = _occ("Bufo bufo", taxonKey=2422832, orderKey=952, classKey=131, kingdomKey=1)
+    garde = api.filter_by_taxa([chiro, autre], {734})
+    assert [o["scientificName"] for o in garde] == ["Bufo bufo"]
+
+
+def test_exclusion_selective_au_genre():
+    """Le filtre ne doit pas écarter tout ce qui partage un rang supérieur."""
+    a = _occ("Miniopterus schreibersii", genusKey=2432501, orderKey=734)
+    b = _occ("Rhinolophus hipposideros", genusKey=2432605, orderKey=734)
+    garde = api.filter_by_taxa([a, b], {2432501})
+    assert [o["scientificName"] for o in garde] == ["Rhinolophus hipposideros"]
+
+
+def test_sans_exclusion_rien_nest_ecarte():
+    occ = [_occ("Bufo bufo", taxonKey=2422832)]
+    assert api.filter_by_taxa(occ, set()) == occ

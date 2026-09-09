@@ -30,6 +30,7 @@ REASONS = {
     "no_date": "date indéterminable",
     "metadonnees_illisibles": "métadonnées GBIF du jeu illisibles",
     "jeu_maille": "jeu de données publié à la maille",
+    "taxon_exclu": "taxon exclu par la configuration",
 }
 
 

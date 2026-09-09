@@ -45,19 +45,53 @@ def status():
 
 
 @click.command("gbif-sync-datasets")
-@click.option("--gadm-gid", default="", help="Périmètre GADM (ex. FRA.11.1_1 pour l'Ariège).")
-@click.option("--country", default="FR", show_default=True)
+@click.option("--gadm-gid", default=None, help="Périmètre GADM (défaut : configuration).")
+@click.option("--country", default=None, help="Pays (défaut : configuration).")
 @click.option("--dataset-key", "dataset_keys", multiple=True,
               help="Limiter à ces jeux ; sinon, tous ceux du périmètre.")
-@click.option("--license", "licenses", multiple=True, default=("CC0_1_0", "CC_BY_4_0"),
-              show_default=True, help="Licences retenues.")
+@click.option("--license", "licenses", multiple=True,
+              help="Licences retenues (défaut : configuration).")
 @click.option("--limit", default=0, help="Ne traiter que les N plus gros jeux (0 = tous).")
+@click.option("--ignore-exclusions", is_flag=True,
+              help="Créer un JDD même pour les jeux exclus par la configuration.")
 @click.option("--dry-run", is_flag=True, help="N'écrit rien, affiche ce qui serait fait.")
-def gbif_sync_datasets(gadm_gid, country, dataset_keys, licenses, limit, dry_run):
+def gbif_sync_datasets(gadm_gid, country, dataset_keys, licenses, limit,
+                       ignore_exclusions, dry_run):
     """Crée ou met à jour un JDD GeoNature par jeu de données GBIF du périmètre."""
+    from geonature.utils.config import config as gn_config
     from .core import datasets as ds_core
     from .sources.gbif import metadata as gbif_meta
     from .migrations.b2d7e9f31a04_cadre_acquisition_gbif import CA_UUID
+
+    # Mêmes défauts que gbif-import : sans cela, la commande créerait un JDD pour chaque
+    # jeu du périmètre — y compris ceux que la configuration exclut, et, faute de
+    # gadm_gid, pour la France entière.
+    cfg_gbif = (gn_config.get("CONNECTORS") or {}).get("gbif", {})
+    def choisi(valeur_cli, cle, defaut=None):
+        return valeur_cli if valeur_cli not in (None, (), "") else cfg_gbif.get(cle, defaut)
+
+    gadm_gid = choisi(gadm_gid, "gadm_gid", "")
+    country = choisi(country, "country", "FR")
+    licenses = tuple(choisi(licenses, "licenses", ("CC0_1_0", "CC_BY_4_0")))
+    statut = cfg_gbif.get("occurrence_status", "PRESENT")
+
+    # Exclusions taxonomiques : celles sans `dataset` valent partout, les autres ne
+    # s'appliquent qu'au jeu désigné — par son datasetKey GBIF ou par l'unique_dataset_id
+    # du JDD GeoNature, les deux étant acceptés pour éviter d'avoir à les traduire.
+    exclusions_taxons = cfg_gbif.get("exclude_taxa") or []
+    taxons_globaux = {
+        int(t) for e in exclusions_taxons if not e.get("dataset")
+        for t in (e.get("taxon_keys") or [])
+    }
+    exclus_cles = set() if ignore_exclusions else set(cfg_gbif.get("exclude_dataset_keys") or [])
+    exclus_termes = [] if ignore_exclusions else [
+        t.lower() for t in (cfg_gbif.get("exclude_dataset_terms") or [])]
+    exclus_orgs = set() if ignore_exclusions else set(cfg_gbif.get("exclude_publishing_orgs") or [])
+
+    if not gadm_gid:
+        click.secho(
+            "  ⚠ Aucun gadm_gid : le périmètre est le pays entier. Renseignez "
+            "`gadm_gid` dans la configuration, ou passez --gadm-gid.", fg="yellow")
 
     af = ds_core.get_acquisition_framework(CA_UUID)
     click.secho(f"Cadre d'acquisition : {af.acquisition_framework_name} "
@@ -66,7 +100,7 @@ def gbif_sync_datasets(gadm_gid, country, dataset_keys, licenses, limit, dry_run
     if dataset_keys:
         cles = [{"key": k, "count": None} for k in dataset_keys]
     else:
-        filtres = {"country": country}
+        filtres = {"country": country, "occurrenceStatus": statut}
         if gadm_gid:
             filtres["gadmGid"] = gadm_gid
         click.echo(f"Recherche des jeux GBIF ({filtres})...")
@@ -79,8 +113,28 @@ def gbif_sync_datasets(gadm_gid, country, dataset_keys, licenses, limit, dry_run
     cree = maj = ignore = 0
     orgs: dict[str, str] = {}
 
+    ignore_excl = 0
     for i, item in enumerate(cles, 1):
-        meta = gbif_meta.fetch_dataset(item["key"])
+        if item["key"] in exclus_cles:
+            # Afficher l'exclusion plutôt que la sauter en silence : un trou dans la
+            # numérotation ressemble à un dysfonctionnement.
+            ignore_excl += 1
+            click.echo(f"  [{i}/{len(cles)}] – {item['key']} — exclu par configuration "
+                       f"(datasetKey, {item['count'] or '?'} occ.)")
+            continue
+        try:
+            meta = gbif_meta.fetch_dataset(item["key"])
+        except Exception as e:
+            click.secho(f"  [{i}/{len(cles)}] ✗ {item['key']} — métadonnées illisibles "
+                        f"({type(e).__name__})", fg="red")
+            continue
+        titre_bas = (meta["title"] or "").lower()
+        terme = next((t for t in exclus_termes if t in titre_bas), None)
+        if terme or meta["publishing_org_key"] in exclus_orgs:
+            ignore_excl += 1
+            motif = f"terme « {terme} »" if terme else "publicateur exclu"
+            click.echo(f"  [{i}/{len(cles)}] – {meta['title'][:46]} — {motif}")
+            continue
         lic = meta["license"]
         if lic not in licences_ok:
             ignore += 1
@@ -116,12 +170,56 @@ def gbif_sync_datasets(gadm_gid, country, dataset_keys, licenses, limit, dry_run
         click.echo(f"  [{i}/{len(cles)}] {'+' if est_nouveau else '~'} {meta['title'][:56]} ({lic})")
 
     if dry_run:
-        click.secho(f"\nDry-run : {len(cles) - ignore} JDD seraient créés ou mis à jour, "
-                    f"{ignore} ignorés (licence).", fg="yellow")
+        click.secho(f"\nDry-run : {len(cles) - ignore - ignore_excl} JDD seraient créés ou "
+                    f"mis à jour, {ignore} ignorés (licence), "
+                    f"{ignore_excl} exclus par la configuration.", fg="yellow")
         return
     db.session.commit()
-    click.secho(f"\nTerminé : {cree} créé(s), {maj} mis à jour, {ignore} ignoré(s) (licence).",
-                fg="green")
+    click.secho(f"\nTerminé : {cree} créé(s), {maj} mis à jour, {ignore} ignoré(s) (licence), "
+                f"{ignore_excl} exclu(s) par la configuration.", fg="green")
+
+
+
+def _description_jdd(meta: dict, producteur: str) -> str:
+    """Description d'un JDD à partir des métadonnées GBIF.
+
+    La citation officielle GBIF EST la chaîne d'attribution qu'exigent CC BY et CC BY-NC :
+    la porter ici satisfait l'obligation par la métadonnée elle-même, visible dans le
+    module Métadonnées, et non par un champ JSON qu'aucune interface n'affiche.
+    """
+    lic = meta.get("license") or "licence inconnue"
+    morceaux = (
+        meta.get("citation") or "",
+        f"Producteur : {producteur}" if producteur else "",
+        f"Licence : {lic}",
+        f"DOI du jeu : https://doi.org/{meta['doi']}" if meta.get("doi") else "",
+        f"Source : {meta.get('url', '')}",
+        meta.get("description") or "",
+    )
+    return "\n\n".join(x for x in morceaux if x)
+
+
+def creer_jdd(meta, licence, uid, af, orgs_cache):
+    """Crée le JDD d'un jeu GBIF, à la demande.
+
+    Appelée seulement quand des occurrences ont survécu aux filtres : un jeu maillé ou
+    entièrement écarté ne doit pas laisser de JDD vide dans le module Métadonnées.
+    """
+    from .core import datasets as ds_core
+    from .sources.gbif import metadata as gbif_meta
+
+    org = meta.get("publishing_org_key") or ""
+    if org not in orgs_cache:
+        orgs_cache[org] = gbif_meta.fetch_organization(org)
+    jdd, cree = ds_core.upsert_dataset(
+        source="GBIF", cle=meta["key"], licence=licence,
+        nom=meta["title"], description=_description_jdd(meta, orgs_cache[org]),
+        id_acquisition_framework=af.id_acquisition_framework,
+    )
+    db.session.flush()
+    if cree:
+        click.secho(f"  + JDD créé : {jdd.id_dataset}", fg="green")
+    return jdd
 
 
 @click.command("gbif-import")
@@ -196,6 +294,15 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
     exclus_termes = [t.lower() for t in (cfg_gbif.get("exclude_dataset_terms") or [])]
     exclus_orgs = set(cfg_gbif.get("exclude_publishing_orgs") or [])
     statut = cfg_gbif.get("occurrence_status", "PRESENT")
+
+    # Exclusions taxonomiques : celles sans `dataset` valent partout, les autres ne
+    # s'appliquent qu'au jeu désigné — par son datasetKey GBIF ou par l'unique_dataset_id
+    # du JDD GeoNature, les deux étant acceptés pour éviter d'avoir à les traduire.
+    exclusions_taxons = cfg_gbif.get("exclude_taxa") or []
+    taxons_globaux = {
+        int(t) for e in exclusions_taxons if not e.get("dataset")
+        for t in (e.get("taxon_keys") or [])
+    }
     cfg_valid = (gn_config.get("CONNECTORS") or {}).get("validation", {})
     statut_validation = cfg_valid.get("status") if cfg_valid.get("enabled") else None
     if statut_validation:
@@ -222,6 +329,7 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
 
     rejets = report_core.Rejects()
     resolver = nomen_core.Resolver()
+    orgs_cache: dict = {}
     cache_gbif: dict = {} if taxref_fallback else None
     total_lus = total_ecrits = total_maj = 0
 
@@ -274,16 +382,16 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
         uid = ds_core.dataset_uuid("GBIF", cle, lic)
         from geonature.core.gn_meta.models import TDatasets
         from sqlalchemy import select as sa_select
+        # Le JDD n'est pas créé ici : il le sera seulement si des occurrences survivent
+        # aux filtres. Créer d'abord reviendrait à peupler le module Métadonnées de JDD
+        # vides pour les jeux maillés ou entièrement écartés.
         jdd = db.session.scalar(sa_select(TDatasets).where(TDatasets.unique_dataset_id == uid))
-        if jdd is None:
-            click.secho(f"✗ {meta['title'][:50]} — JDD absent, lancer gbif-sync-datasets", fg="red")
-            continue
 
         # Court-circuit : si GBIF n'a pas touché au jeu depuis notre dernier passage,
         # inutile d'en relire les occurrences. Mesuré sur un périmètre départemental,
         # aucun des 60 plus gros jeux n'avait bougé en sept jours — le moissonnage
         # hebdomadaire se réduit alors à une requête de métadonnées par jeu.
-        if not force and meta.get("modified"):
+        if not force and jdd is not None and meta.get("modified"):
             dernier = ds_core.dernier_moissonnage(jdd.id_dataset, id_source)
             if dernier is not None:
                 from datetime import timezone
@@ -299,7 +407,8 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
                             f"{ref.date()} (jeu modifié le {modif.date()})", fg="cyan")
                         continue
 
-        click.secho(f"\n{meta['title'][:64]}  (JDD {jdd.id_dataset}, {lic})", bold=True)
+        etiquette = f"JDD {jdd.id_dataset}" if jdd is not None else "JDD à créer"
+        click.secho(f"\n{meta['title'][:64]}  ({etiquette}, {lic})", bold=True)
         cfg = SimpleNamespace(country=country, state_province="", has_coordinate=True,
                               has_geospatial_issue=False, max_results=max_results or None,
                               extra={"datasetKey": cle, **({"gadmGid": gadm_gid} if gadm_gid else {})})
@@ -308,12 +417,21 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
                                date_min="", date_max="",
                                coordinate_uncertainty_max=max_uncertainty or None,
                                keep_unknown_uncertainty=keep_unknown_uncertainty,
-                               licenses=list(licenses))
+                               licenses=list(licenses), exclude_taxon_keys=set())
         # Les absences GBIF (occurrenceStatus=ABSENT) deviendraient des présences fausses
         # en Synthèse : un seul jeu ariégeois en compte 116 799.
         cfg.extra["occurrenceStatus"] = statut
 
-        occurrences = gbif_api.fetch(cfg, fcfg)
+        taxons_exclus = set(taxons_globaux)
+        for e in exclusions_taxons:
+            reference = str(e.get("dataset") or "")
+            if reference and reference in (cle, str(uid)):
+                taxons_exclus |= {int(t) for t in (e.get("taxon_keys") or [])}
+        fcfg.exclude_taxon_keys = taxons_exclus
+        if taxons_exclus:
+            click.echo(f"  taxons exclus : {sorted(taxons_exclus)}")
+
+        occurrences = gbif_api.fetch_par_tranches(cfg, fcfg, journal=click.echo)
         occurrences = gbif_api.apply_local_filters(occurrences, fcfg, rejets)
         total_lus += len(occurrences)
 
@@ -323,12 +441,12 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
                 rejets.add("hors_perimetre", occ.get("gbifID"), occ.get("scientificName"),
                            occ.get("basisOfRecord"))
                 continue
-            cd_nom = gbif_taxo.resolve(occ, index, cache_gbif)
+            cd_nom = gbif_taxo.resolve(occ, index, cache_gbif, journal=click.echo)
             if not cd_nom:
                 rejets.add("no_cd_nom", occ.get("gbifID"), occ.get("scientificName"),
                            f"taxonKey={occ.get('taxonKey')}")
                 continue
-            ligne = gbif_tr.to_row(occ, cd_nom=cd_nom, id_dataset=jdd.id_dataset,
+            ligne = gbif_tr.to_row(occ, cd_nom=cd_nom, id_dataset=None,
                                    id_source=id_source, id_module=id_module, srid=srid,
                                    resolver=resolver, download_doi=download_doi,
                                    statut_validation=statut_validation)
@@ -339,11 +457,17 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
                 continue
             lot.append(ligne)
             if len(lot) >= batch_size and not dry_run:
+                jdd = jdd or creer_jdd(meta, lic, uid, af, orgs_cache)
+                for l in lot:
+                    l["id_dataset"] = jdd.id_dataset
                 i, u = syn_core.insert_batch(lot)
                 ecrits += i; maj += u
                 db.session.commit(); lot = []
                 click.echo(f"  ... {ecrits} écrites, {maj} mises à jour")
         if lot and not dry_run:
+            jdd = jdd or creer_jdd(meta, lic, uid, af, orgs_cache)
+            for l in lot:
+                l["id_dataset"] = jdd.id_dataset
             i, u = syn_core.insert_batch(lot)
             ecrits += i; maj += u
             db.session.commit()
@@ -351,8 +475,11 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
             ecrits = len(lot)
         total_ecrits += ecrits
         total_maj += maj
-        suffixe = f", {maj} mise(s) à jour" if maj else ""
-        click.echo(f"  {'(simulation) ' if dry_run else ''}{ecrits} écrite(s){suffixe}")
+        if ecrits == 0 and maj == 0 and jdd is None:
+            click.secho("  aucune occurrence retenue — aucun JDD créé", fg="cyan")
+        else:
+            suffixe = f", {maj} mise(s) à jour" if maj else ""
+            click.echo(f"  {'(simulation) ' if dry_run else ''}{ecrits} écrite(s){suffixe}")
 
     if cache_gbif:
         rattrapes = sum(1 for v in cache_gbif.values() if v)
@@ -366,4 +493,107 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
         click.echo(l)
 
 
-connectors_cli = [status, gbif_sync_datasets, gbif_import]
+@click.command("gbif-purge")
+@click.option("--dataset", "reference", default="",
+              help="Jeu visé : datasetKey GBIF, unique_dataset_id du JDD, ou son "
+                   "id_dataset. Sans cette option, la purge porte sur toutes les "
+                   "observations GBIF.")
+@click.option("--taxon", default="",
+              help="Groupe taxonomique à retirer, par son nom TAXREF : règne, phylum, "
+                   "classe, ordre, famille, ou début de nom scientifique. "
+                   "Exemple : --taxon Chiroptera")
+@click.option("--max-uncertainty", default=0, type=int,
+              help="Retirer les observations dont l'incertitude dépasse N mètres.")
+@click.option("--drop-empty-datasets", is_flag=True,
+              help="Supprimer ensuite les JDD du cadre GBIF devenus vides.")
+@click.option("--yes", is_flag=True,
+              help="Exécuter réellement. Sans ce drapeau, la commande se contente "
+                   "d'afficher ce qu'elle supprimerait.")
+def gbif_purge(reference, taxon, max_uncertainty, drop_empty_datasets, yes):
+    """Supprime des observations GBIF déjà importées.
+
+    Utile après coup : une exclusion ajoutée à la configuration ne rattrape pas ce qui
+    est déjà en base. La suppression est toujours bornée à la source GBIF — jamais aux
+    données saisies localement ni à un autre import.
+    """
+    from sqlalchemy import select as sa_select
+    from geonature.core.gn_meta.models import TDatasets
+    from .core import purge as purge_core, synthese as syn_core, datasets as ds_core
+    from .migrations.c4e8a2b95d16_source_gbif import SOURCE_NAME
+    from .migrations.b2d7e9f31a04_cadre_acquisition_gbif import CA_UUID
+
+    id_source = syn_core.get_source_id(SOURCE_NAME)
+
+    id_dataset = None
+    if reference:
+        jdd = None
+        if reference.isdigit():
+            jdd = db.session.get(TDatasets, int(reference))
+        if jdd is None:
+            # Un datasetKey GBIF se traduit en unique_dataset_id ; on essaie les trois
+            # licences, l'appelant n'ayant pas à savoir laquelle a servi de clé.
+            # Les candidats non-UUID sont écartés : la colonne est typée, et les passer
+            # à PostgreSQL ferait échouer la requête sur une erreur de cast illisible.
+            import uuid as _uuid
+            candidats = [
+                str(ds_core.dataset_uuid("GBIF", reference, lic))
+                for lic in ("CC_BY_4_0", "CC0_1_0", "CC_BY_NC_4_0")
+            ]
+            try:
+                candidats.append(str(_uuid.UUID(reference)))
+            except (ValueError, AttributeError):
+                pass
+            jdd = db.session.scalar(
+                sa_select(TDatasets).where(TDatasets.unique_dataset_id.in_(candidats)))
+        if jdd is None:
+            raise click.ClickException(f"Aucun JDD ne correspond à « {reference} ».")
+        id_dataset = jdd.id_dataset
+        click.echo(f"Jeu visé : {jdd.dataset_name[:60]} (id_dataset={id_dataset})")
+
+    if not (taxon or max_uncertainty or reference):
+        raise click.ClickException(
+            "Aucun critère : précisez au moins --dataset, --taxon ou --max-uncertainty. "
+            "Purger toute la source GBIF sans le dire explicitement serait trop facile.")
+
+    n = purge_core.compter(id_source, id_dataset, taxon or None, max_uncertainty or None)
+    criteres = " · ".join(x for x in (
+        f"jeu {id_dataset}" if id_dataset else "",
+        f"taxon « {taxon} »" if taxon else "",
+        f"incertitude > {max_uncertainty} m" if max_uncertainty else "",
+    ) if x) or "toute la source GBIF"
+    click.echo(f"{n} observation(s) concernée(s) — {criteres}")
+
+    if not n:
+        click.secho("Rien à supprimer.", fg="green")
+    elif not yes:
+        click.secho(f"\nSimulation : {n} observation(s) seraient supprimées, ainsi que "
+                    f"leurs rattachements aux zonages. Relancez avec --yes pour exécuter.",
+                    fg="yellow")
+        return
+    else:
+        supprimees = purge_core.supprimer(id_source, id_dataset, taxon or None,
+                                          max_uncertainty or None)
+        db.session.commit()
+        click.secho(f"{supprimees} observation(s) supprimée(s).", fg="green")
+
+    if drop_empty_datasets:
+        af = ds_core.get_acquisition_framework(CA_UUID)
+        vides = purge_core.jdd_vides(af.id_acquisition_framework)
+        if not vides:
+            click.echo("Aucun JDD vide dans le cadre d'acquisition GBIF.")
+            return
+        click.echo(f"\n{len(vides)} JDD vide(s) :")
+        for i, nom in vides[:10]:
+            click.echo(f"  {i} — {nom[:62]}")
+        if len(vides) > 10:
+            click.echo(f"  … et {len(vides) - 10} autre(s)")
+        if not yes:
+            click.secho("Relancez avec --yes pour les supprimer.", fg="yellow")
+            return
+        for i, _ in vides:
+            purge_core.supprimer_jdd(i)
+        db.session.commit()
+        click.secho(f"{len(vides)} JDD supprimé(s).", fg="green")
+
+
+connectors_cli = [status, gbif_sync_datasets, gbif_import, gbif_purge]

@@ -81,10 +81,10 @@ Emplacements recherchés, dans l'ordre :
 
 ## Utilisation
 
-### 1. Choisir les jeux de données
+### 1. Prévisualiser (facultatif)
 
 ```bash
-geonature connectors gbif-sync-datasets --gadm-gid FRA.11.1_1 --dry-run
+geonature connectors gbif-sync-datasets --dry-run
 ```
 
 Crée ou met à jour **un JDD GeoNature par jeu de données GBIF**, rattaché au cadre
@@ -97,7 +97,15 @@ L'opération est idempotente : l'`unique_dataset_id` est dérivé en `uuid5` du 
 `(GBIF, datasetKey, licence)`. La licence entre dans la clé à dessein — sur iNaturalist
 elle varie observation par observation, et un JDD doit rester homogène.
 
-Restreindre à une sélection avec `--dataset-key` (répétable).
+⚠️ **Cette commande n'est pas un préalable.** `gbif-import` crée le JDD lui-même, au
+moment de la première écriture. C'est délibéré : un jeu publié à la maille, écarté pour
+sa licence, ou dont toutes les occurrences tombent au filtre de précision ne doit pas
+laisser un JDD vide dans le module Métadonnées. Sur un périmètre départemental, 43 des
+200 jeux sont taggés « grillés » par GBIF et n'auraient jamais reçu la moindre
+observation.
+
+`gbif-sync-datasets` reste utile pour prévisualiser le périmètre, et pour rafraîchir les
+métadonnées — titre, citation, DOI — quand un producteur les corrige.
 
 ### 2. Importer les occurrences
 
@@ -110,7 +118,8 @@ geonature connectors gbif-import \
 Options utiles : `--max-results` pour plafonner, `--batch-size`, `--download-doi`,
 `--keep-unknown-uncertainty` / `--drop-unknown-uncertainty`.
 
-L'import est **idempotent** : `unique_id_sinp` est déterministe, et réutilise l'UUID
+Le JDD est créé à la volée si des occurrences survivent aux filtres. L'import est
+**idempotent** : `unique_id_sinp` est déterministe, et réutilise l'UUID
 contenu dans l'`occurrenceID` quand il y en a un. Pour les données republiées par l'INPN,
 c'est l'identifiant permanent DEE — les observations importées portent donc leur identité
 SINP d'origine. Une seconde exécution n'écrit rien.
@@ -136,12 +145,41 @@ date de modification du jeu côté GBIF à celle des observations déjà en base
 (`meta_create_date` / `meta_update_date`, entretenues par un trigger de la Synthèse —
 aucune table de suivi n'est nécessaire).
 
-| situation | durée observée sur un périmètre départemental |
+| situation | ordre de grandeur |
 |---|---|
-| premier import (~735 000 occurrences) | ~4 h |
 | semaine sans republication | **3-5 min** |
-| semaine où un gros jeu republie | ~40 min |
-| après une évolution du mapping (`--force`) | ~4 h |
+| semaine où un gros jeu republie | quelques dizaines de minutes |
+| premier import d'un périmètre départemental | plusieurs heures |
+
+### Le seuil de pagination GBIF
+
+Au-delà de l'**offset 10 000**, l'API `occurrence/search` bascule sur un chemin de
+pagination profonde. Mesuré sur un jeu réel :
+
+| offset | durée par page de 300 |
+|---:|---:|
+| 0 · 2 000 · 5 000 · 8 000 | ~0,8 s |
+| **10 000** et au-delà | **~36 s** |
+
+Un facteur 45, sur un seuil franc. Sans traitement, un jeu de 90 000 occurrences
+demanderait près de trois heures pour ses seules pages profondes.
+
+Le module **découpe donc automatiquement les gros jeux par tranches d'années**. Une
+requête de facettes donne la distribution, puis les années consécutives sont regroupées
+tant que le cumul reste sous le seuil ; chaque tranche se pagine alors dans la zone
+rapide.
+
+```
+total : 29 163 — découpage en 4 tranches d'années
+  1973,2019     9 690 occ.
+  2020,2022     8 878 occ.
+  2023,2023     4 750 occ.
+  2024,2024     5 845 occ.
+```
+
+Si un jeu n'expose aucune année exploitable, le découpage est impossible : le module lit
+les 10 000 premières occurrences et **le signale**, plutôt que de subir la pagination
+profonde en silence.
 
 Une cadence plus fine ne rapporterait rien : aucun des 60 plus gros jeux d'un périmètre
 départemental n'avait été modifié dans les 7 derniers jours, et la dernière modification

@@ -14,6 +14,16 @@ class ScheduleSchemaConf(Schema):
     crontab = fields.String(load_default="0 3 * * 1")
 
 
+class ExclusionTaxonSchemaConf(Schema):
+    """Exclusion de taxons, globale ou restreinte à un jeu de données."""
+
+    # `datasetKey` GBIF ou `unique_dataset_id` GeoNature. Absent = exclusion globale.
+    dataset = fields.String(load_default="")
+    # taxonKey GBIF, descendants compris : 734 = ordre Chiroptera.
+    # Se résolvent via https://api.gbif.org/v1/species/match?name=<nom>&rank=<rang>
+    taxon_keys = fields.List(fields.Integer(), load_default=[])
+
+
 class GbifSchemaConf(Schema):
     """Paramètres du connecteur GBIF."""
 
@@ -40,6 +50,10 @@ class GbifSchemaConf(Schema):
     exclude_dataset_terms = fields.List(fields.String(), load_default=[])
     exclude_publishing_orgs = fields.List(fields.String(), load_default=[])
     include_observers = fields.List(fields.String(), load_default=[])
+    # Exclusions taxonomiques. Le filtre est local : GBIF n'offre pas de négation sur
+    # `taxonKey`. Il teste toute la hiérarchie de l'occurrence, donc exclure un ordre
+    # écarte bien toutes ses espèces.
+    exclude_taxa = fields.List(fields.Nested(ExclusionTaxonSchemaConf), load_default=[])
     date_min = fields.String(load_default="")
     date_max = fields.String(load_default="")
     # Incertitude géographique maximale, en mètres. None ou 0 = pas de filtre.

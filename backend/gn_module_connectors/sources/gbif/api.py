@@ -1,4 +1,6 @@
+import copy
 import time
+
 import requests
 
 GBIF_SEARCH_URL = "https://api.gbif.org/v1/occurrence/search"
@@ -201,6 +203,135 @@ def fetch(cfg, filter_cfg=None) -> list[dict]:
     return results
 
 
+# Au-delà de cet offset, GBIF bascule sur un chemin de pagination profonde : mesuré,
+# 0,8 s par page en deçà, 36 s au-delà — un facteur 45. Découper la requête pour rester
+# sous ce seuil n'est pas une optimisation, c'est ce qui rend un gros jeu importable.
+OFFSET_LIMITE = 10_000
+
+
+def facette(cfg, filter_cfg, champ: str, limite: int = 300) -> list[tuple[str, int]]:
+    """Répartition des occurrences selon un champ, sans les rapatrier."""
+    filtres = build_filters(cfg, filter_cfg)
+    filtres.update({"limit": 0, "facet": champ, "facetLimit": limite})
+    r = _get(GBIF_SEARCH_URL, filtres)
+    facettes = r.json().get("facets") or []
+    if not facettes:
+        return []
+    return [(c["name"], c["count"]) for c in facettes[0].get("counts", [])]
+
+
+def _regroupe(valeurs: list[tuple[int, int]], plafond: int) -> list[tuple[int, int, int]]:
+    """Regroupe des valeurs consécutives en tranches dont le cumul reste sous `plafond`.
+
+    Retourne [(début, fin, cumul)]. Une valeur qui dépasse à elle seule le plafond forme
+    sa propre tranche : c'est à l'appelant de la subdiviser au niveau inférieur.
+    """
+    tranches, debut, cumul, precedent = [], None, 0, None
+    for valeur, n in sorted(valeurs):
+        if debut is None:
+            debut, cumul, precedent = valeur, n, valeur
+            continue
+        if cumul + n > plafond:
+            tranches.append((debut, precedent, cumul))
+            debut, cumul, precedent = valeur, n, valeur
+        else:
+            cumul += n
+            precedent = valeur
+    if debut is not None:
+        tranches.append((debut, precedent, cumul))
+    return tranches
+
+
+def _facette_int(cfg, filter_cfg, champ: str, extra: dict) -> list[tuple[int, int]]:
+    cfg_local = copy.copy(cfg)
+    cfg_local.extra = {**(cfg.extra or {}), **extra}
+    return [(int(v), n) for v, n in facette(cfg_local, filter_cfg, champ) if str(v).lstrip("-").isdigit()]
+
+
+def tranches(cfg, filter_cfg, plafond: int = OFFSET_LIMITE) -> list[dict]:
+    """Découpe le jeu en requêtes dont aucune ne dépasse `plafond` résultats.
+
+    Découpage par années, puis par mois pour les années trop volumineuses, puis par jours
+    pour les mois qui le seraient encore. Deux niveaux suffisent en pratique — mesuré,
+    l'année la plus chargée d'un gros jeu ariégeois compte 37 440 occurrences, dont le
+    mois le plus fourni n'en fait que 4 582 — mais le troisième évite d'échouer en
+    silence sur un jeu atypique.
+
+    Retourne une liste de filtres additionnels à appliquer, par exemple
+    `{"year": "1973,2019"}` ou `{"year": "2022", "month": "1,6"}`.
+    """
+    resultat: list[dict] = []
+    annees = _facette_int(cfg, filter_cfg, "year", {})
+    if not annees:
+        return []
+
+    for a_debut, a_fin, cumul in _regroupe(annees, plafond):
+        if cumul <= plafond:
+            resultat.append({"year": f"{a_debut},{a_fin}"})
+            continue
+
+        # Une seule année dépasse le plafond : on descend au mois.
+        mois = _facette_int(cfg, filter_cfg, "month", {"year": str(a_debut)})
+        if not mois:
+            resultat.append({"year": f"{a_debut},{a_fin}"})
+            continue
+
+        for m_debut, m_fin, cumul_mois in _regroupe(mois, plafond):
+            if cumul_mois <= plafond:
+                resultat.append({"year": str(a_debut), "month": f"{m_debut},{m_fin}"})
+                continue
+
+            # Un seul mois dépasse encore : on descend au jour.
+            jours = _facette_int(cfg, filter_cfg, "day",
+                                 {"year": str(a_debut), "month": str(m_debut)})
+            if not jours:
+                resultat.append({"year": str(a_debut), "month": f"{m_debut},{m_fin}"})
+                continue
+            for j_debut, j_fin, _ in _regroupe(jours, plafond):
+                resultat.append({"year": str(a_debut), "month": str(m_debut),
+                                 "day": f"{j_debut},{j_fin}"})
+    return resultat
+
+
+def fetch_par_tranches(cfg, filter_cfg=None, journal=None) -> list[dict]:
+    """Récupère toutes les occurrences en restant sous le plafond de pagination.
+
+    En dessous du plafond, une pagination simple suffit. Au-delà, la requête est
+    découpée par années : chaque tranche se pagine alors dans la zone rapide.
+    """
+    total = count(cfg, filter_cfg)
+    if total <= OFFSET_LIMITE:
+        return fetch(cfg, filter_cfg)
+
+    decoupe = tranches(cfg, filter_cfg)
+    if not decoupe:
+        # Sans année exploitable, on ne peut pas découper : on rapatrie ce qui est
+        # accessible dans la zone rapide plutôt que de subir la pagination profonde.
+        if journal:
+            journal(f"  ⚠ {total} occurrences sans année exploitable : seules les "
+                    f"{OFFSET_LIMITE} premières seront lues.")
+        cfg_plafonne = copy.copy(cfg)
+        cfg_plafonne.max_results = OFFSET_LIMITE
+        return fetch(cfg_plafonne, filter_cfg)
+
+    if journal:
+        journal(f"  {total} occurrences — découpage en {len(decoupe)} tranche(s) "
+                f"pour rester sous le plafond de pagination")
+
+    resultats: list[dict] = []
+    for filtres_tranche in decoupe:
+        cfg_tranche = copy.copy(cfg)
+        cfg_tranche.extra = {**(cfg.extra or {}), **filtres_tranche}
+        lot = fetch(cfg_tranche, filter_cfg)
+        resultats.extend(lot)
+        if journal:
+            libelle = " ".join(f"{k}={v}" for k, v in filtres_tranche.items())
+            journal(f"    {libelle} : {len(lot)} occurrence(s)")
+        if cfg.max_results and len(resultats) >= cfg.max_results:
+            return resultats[: cfg.max_results]
+    return resultats
+
+
 def list_datasets(cfg, filter_cfg=None, with_titles: bool = False) -> list[dict]:
     """Liste les jeux de données GBIF avec leur nombre d'occurrences (facette datasetKey)."""
     filters = build_filters(cfg, filter_cfg)
@@ -338,6 +469,42 @@ def filter_by_license(occurrences: list[dict], allowed: list[str], rejects=None)
     return filtered
 
 
+# Champs portant la position du taxon dans la hiérarchie GBIF. Exclure un ordre suppose
+# de le reconnaître aussi bien sur l'occurrence elle-même que sur ses rangs supérieurs :
+# une observation identifiée à l'espèce ne porte pas l'ordre dans `taxonKey`.
+CLES_TAXONOMIQUES = (
+    "taxonKey", "acceptedTaxonKey", "speciesKey", "genusKey", "familyKey",
+    "orderKey", "classKey", "phylumKey", "kingdomKey",
+)
+
+
+def filter_by_taxa(occurrences: list[dict], exclus: set, rejects=None) -> list[dict]:
+    """Écarte les occurrences appartenant à l'un des taxons exclus, descendants compris.
+
+    GBIF n'offre pas de négation sur `taxonKey` : le filtre est donc local. Il teste
+    toute la hiérarchie de l'occurrence, si bien qu'exclure l'ordre Chiroptera (734)
+    écarte aussi bien un *Rhinolophus ferrumequinum* identifié à l'espèce qu'une
+    observation restée au rang du genre.
+    """
+    if not exclus:
+        return occurrences
+    exclus = {int(x) for x in exclus}
+
+    def _exclu(o):
+        return any(o.get(c) in exclus for c in CLES_TAXONOMIQUES)
+
+    gardees = [o for o in occurrences if not _exclu(o)]
+    ecartees = len(occurrences) - len(gardees)
+    if ecartees:
+        print(f"  Filtre taxonomique : {ecartees} écartée(s), reste {len(gardees)}.")
+        if rejects is not None:
+            for o in occurrences:
+                if _exclu(o):
+                    rejects.add("taxon_exclu", o.get("gbifID"), o.get("scientificName"),
+                                f"taxonKey={o.get('taxonKey')}")
+    return gardees
+
+
 def apply_local_filters(occurrences: list[dict], filter_cfg, rejects=None) -> list[dict]:
     """Applique tous les filtres locaux (post-fetch) appliqués à l'import :
     termes de dataset exclus, datasetKey exclus, observateurs inclus, incertitude GPS,
@@ -350,4 +517,5 @@ def apply_local_filters(occurrences: list[dict], filter_cfg, rejects=None) -> li
         keep_unknown=getattr(filter_cfg, "keep_unknown_uncertainty", True),
     )
     occurrences = filter_by_license(occurrences, filter_cfg.licenses, rejects)
+    occurrences = filter_by_taxa(occurrences, getattr(filter_cfg, "exclude_taxon_keys", None) or set(), rejects)
     return occurrences

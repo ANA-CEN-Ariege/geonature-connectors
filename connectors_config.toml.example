@@ -103,6 +103,31 @@ download_doi = ""
 batch_size = 1000
 
 
+# ── Exclusions taxonomiques ──────────────────────────────────────────────────
+# Écarter certains taxons, globalement ou pour un seul jeu de données.
+#
+# Les `taxon_keys` sont des taxonKey GBIF, **descendants compris** : exclure l'ordre
+# Chiroptera (734) écarte aussi bien un Rhinolophus identifié à l'espèce qu'une
+# observation restée au genre. Le filtre teste toute la hiérarchie de l'occurrence,
+# car GBIF n'offre pas de négation sur `taxonKey` — il est donc appliqué localement,
+# après récupération.
+#
+# Résoudre une clé :
+#   https://api.gbif.org/v1/species/match?name=Chiroptera&rank=ORDER   -> usageKey 734
+#
+# `dataset` accepte indifféremment le datasetKey GBIF ou l'unique_dataset_id du JDD
+# GeoNature. Omettre la clé rend l'exclusion globale.
+
+# Exclusion globale — ici, aucune par défaut :
+# [[gbif.exclude_taxa]]
+# taxon_keys = [734]
+
+# Exclusion restreinte à un jeu de données :
+# [[gbif.exclude_taxa]]
+# dataset = "1560f099-f48d-43ac-8d88-ce329a53aa7e"   # SICEN Occitanie
+# taxon_keys = [734]                                  # chiroptères
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 [gbif.schedule]
 # Moissonnage planifié, via le Celery Beat déjà présent dans GeoNature : rien à
