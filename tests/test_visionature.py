@@ -572,3 +572,33 @@ def test_diff_refuse_une_date_illisible():
 def test_diff_tolere_une_date_sans_fuseau():
     recent = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%d")
     assert A.diff_possible(recent) is True
+
+
+# ── Robustesse du client vendorisé ───────────────────────────────────────────
+
+def test_les_controleurs_relaient_le_timeout():
+    """Sans timeout, `requests` attend indéfiniment et le moissonnage se fige.
+
+    `BiolovisionAPI` accepte le paramètre, mais aucune de ses onze sous-classes ne le
+    relayait dans l'amont : il restait à `None` quel que soit le contrôleur, et rien ne
+    le signalait — le client journalise dans un logger que la CLI n'affiche pas. Un
+    dry-run est resté bloqué plusieurs minutes sans la moindre sortie avant qu'on ne
+    trouve la cause.
+
+    Ce test garde le correctif : si une mise à jour du client vendorisé l'écrase, il
+    rougit au lieu de laisser revenir le gel silencieux.
+    """
+    import logging
+    logging.disable(logging.CRITICAL)
+    try:
+        from gn_module_connectors.sources.visionature.biolovision import api as bio
+        for classe in (bio.SpeciesAPI, bio.ObservationsAPI,
+                       bio.ObserversAPI, bio.TaxoGroupsAPI):
+            controleur = classe(
+                user_email="a@b.c", user_pw="x", base_url="https://exemple.org/",
+                client_key="k", client_secret="s",
+                timeout=120, unavailable_delay=60, max_retry=3, max_chunks=100)
+            assert controleur._limits["timeout"] == 120, classe.__name__
+            assert controleur._limits["unavailable_delay"] == 60, classe.__name__
+    finally:
+        logging.disable(logging.NOTSET)

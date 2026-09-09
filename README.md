@@ -677,6 +677,15 @@ dépendances dont aucune n'est utilisée par la couche API, qui ne demande que `
 et `requests_oauthlib`. Ne pas éditer ces fichiers — toute adaptation va dans
 `sources/visionature/api.py`.
 
+⚠️ **Une seule divergence avec l'amont**, à réappliquer en cas de mise à jour du client.
+`BiolovisionAPI` accepte un `timeout`, mais **aucune de ses onze sous-classes ne le
+relayait** : il restait donc à `None` quel que soit le contrôleur employé, et `requests`
+attendait indéfiniment. Un moissonnage pouvait se figer sans fin ni message, le client
+journalisant dans un logger que la CLI n'affiche pas. Les onze constructeurs acceptent et
+transmettent désormais le paramètre. `tests/test_visionature.py` le vérifie sur chaque
+contrôleur employé par le module : si un re-vendoring écrase le correctif, les tests le
+disent. À signaler en amont.
+
 ```
 backend/gn_module_connectors/
 ├── core/           socle générique — sans dépendance à une source précise

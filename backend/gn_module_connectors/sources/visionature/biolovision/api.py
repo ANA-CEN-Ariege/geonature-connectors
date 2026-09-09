@@ -543,6 +543,12 @@ class EntitiesAPI(BiolovisionAPI):
         max_chunks: int | None = None,
         unavailable_delay: int | None = None,
         retry_delay: int | None = None,
+        # ⚠ Divergence assumée avec Client_API_VN amont (rev 376c2e1b) : `timeout` est
+        # accepté par BiolovisionAPI mais AUCUNE sous-classe ne le relayait, ce qui le
+        # rendait inatteignable. Laissé à None, il est transmis tel quel à `requests`,
+        # qui attend alors indéfiniment — un incident réseau fige le moissonnage sans
+        # message. À signaler en amont.
+        timeout: int | None = None,
     ) -> None:
         super().__init__(
             controler="entities",
@@ -556,6 +562,7 @@ class EntitiesAPI(BiolovisionAPI):
             max_chunks=max_chunks,
             unavailable_delay=unavailable_delay,
             retry_delay=retry_delay,
+            timeout=timeout,
         )
         return None
 
@@ -583,6 +590,12 @@ class FamiliesAPI(BiolovisionAPI):
         max_chunks: int | None = None,
         unavailable_delay: int | None = None,
         retry_delay: int | None = None,
+        # ⚠ Divergence assumée avec Client_API_VN amont (rev 376c2e1b) : `timeout` est
+        # accepté par BiolovisionAPI mais AUCUNE sous-classe ne le relayait, ce qui le
+        # rendait inatteignable. Laissé à None, il est transmis tel quel à `requests`,
+        # qui attend alors indéfiniment — un incident réseau fige le moissonnage sans
+        # message. À signaler en amont.
+        timeout: int | None = None,
     ) -> None:
         super().__init__(
             controler="families",
@@ -596,6 +609,7 @@ class FamiliesAPI(BiolovisionAPI):
             max_chunks=max_chunks,
             unavailable_delay=unavailable_delay,
             retry_delay=retry_delay,
+            timeout=timeout,
         )
         return None
 
@@ -623,6 +637,12 @@ class FieldsAPI(BiolovisionAPI):
         max_chunks: int | None = None,
         unavailable_delay: int | None = None,
         retry_delay: int | None = None,
+        # ⚠ Divergence assumée avec Client_API_VN amont (rev 376c2e1b) : `timeout` est
+        # accepté par BiolovisionAPI mais AUCUNE sous-classe ne le relayait, ce qui le
+        # rendait inatteignable. Laissé à None, il est transmis tel quel à `requests`,
+        # qui attend alors indéfiniment — un incident réseau fige le moissonnage sans
+        # message. À signaler en amont.
+        timeout: int | None = None,
     ) -> None:
         super().__init__(
             controler="fields",
@@ -636,6 +656,7 @@ class FieldsAPI(BiolovisionAPI):
             max_chunks=max_chunks,
             unavailable_delay=unavailable_delay,
             retry_delay=retry_delay,
+            timeout=timeout,
         )
         return None
 
@@ -663,6 +684,12 @@ class LocalAdminUnitsAPI(BiolovisionAPI):
         max_chunks: int | None = None,
         unavailable_delay: int | None = None,
         retry_delay: int | None = None,
+        # ⚠ Divergence assumée avec Client_API_VN amont (rev 376c2e1b) : `timeout` est
+        # accepté par BiolovisionAPI mais AUCUNE sous-classe ne le relayait, ce qui le
+        # rendait inatteignable. Laissé à None, il est transmis tel quel à `requests`,
+        # qui attend alors indéfiniment — un incident réseau fige le moissonnage sans
+        # message. À signaler en amont.
+        timeout: int | None = None,
     ) -> None:
         super().__init__(
             controler="local_admin_units",
@@ -676,6 +703,7 @@ class LocalAdminUnitsAPI(BiolovisionAPI):
             max_chunks=max_chunks,
             unavailable_delay=unavailable_delay,
             retry_delay=retry_delay,
+            timeout=timeout,
         )
 
 
@@ -714,6 +742,12 @@ class ObservationsAPI(BiolovisionAPI):
         max_chunks: int | None = None,
         unavailable_delay: int | None = None,
         retry_delay: int | None = None,
+        # ⚠ Divergence assumée avec Client_API_VN amont (rev 376c2e1b) : `timeout` est
+        # accepté par BiolovisionAPI mais AUCUNE sous-classe ne le relayait, ce qui le
+        # rendait inatteignable. Laissé à None, il est transmis tel quel à `requests`,
+        # qui attend alors indéfiniment — un incident réseau fige le moissonnage sans
+        # message. À signaler en amont.
+        timeout: int | None = None,
     ) -> None:
         super().__init__(
             controler="observations",
@@ -727,6 +761,7 @@ class ObservationsAPI(BiolovisionAPI):
             max_chunks=max_chunks,
             unavailable_delay=unavailable_delay,
             retry_delay=retry_delay,
+            timeout=timeout,
         )
         return None
 
@@ -940,6 +975,12 @@ class ObserversAPI(BiolovisionAPI):
         max_chunks: int | None = None,
         unavailable_delay: int | None = None,
         retry_delay: int | None = None,
+        # ⚠ Divergence assumée avec Client_API_VN amont (rev 376c2e1b) : `timeout` est
+        # accepté par BiolovisionAPI mais AUCUNE sous-classe ne le relayait, ce qui le
+        # rendait inatteignable. Laissé à None, il est transmis tel quel à `requests`,
+        # qui attend alors indéfiniment — un incident réseau fige le moissonnage sans
+        # message. À signaler en amont.
+        timeout: int | None = None,
     ) -> None:
         super().__init__(
             controler="observers",
@@ -953,6 +994,7 @@ class ObserversAPI(BiolovisionAPI):
             max_chunks=max_chunks,
             unavailable_delay=unavailable_delay,
             retry_delay=retry_delay,
+            timeout=timeout,
         )
         return None
 
@@ -982,6 +1024,12 @@ class PlacesAPI(BiolovisionAPI):
         max_chunks: int | None = None,
         unavailable_delay: int | None = None,
         retry_delay: int | None = None,
+        # ⚠ Divergence assumée avec Client_API_VN amont (rev 376c2e1b) : `timeout` est
+        # accepté par BiolovisionAPI mais AUCUNE sous-classe ne le relayait, ce qui le
+        # rendait inatteignable. Laissé à None, il est transmis tel quel à `requests`,
+        # qui attend alors indéfiniment — un incident réseau fige le moissonnage sans
+        # message. À signaler en amont.
+        timeout: int | None = None,
     ) -> None:
         super().__init__(
             controler="places",
@@ -995,6 +1043,7 @@ class PlacesAPI(BiolovisionAPI):
             max_chunks=max_chunks,
             unavailable_delay=unavailable_delay,
             retry_delay=retry_delay,
+            timeout=timeout,
         )
         return None
 
@@ -1052,6 +1101,12 @@ class SpeciesAPI(BiolovisionAPI):
         max_chunks: int | None = None,
         unavailable_delay: int | None = None,
         retry_delay: int | None = None,
+        # ⚠ Divergence assumée avec Client_API_VN amont (rev 376c2e1b) : `timeout` est
+        # accepté par BiolovisionAPI mais AUCUNE sous-classe ne le relayait, ce qui le
+        # rendait inatteignable. Laissé à None, il est transmis tel quel à `requests`,
+        # qui attend alors indéfiniment — un incident réseau fige le moissonnage sans
+        # message. À signaler en amont.
+        timeout: int | None = None,
     ) -> None:
         super().__init__(
             controler="species",
@@ -1065,6 +1120,7 @@ class SpeciesAPI(BiolovisionAPI):
             max_chunks=max_chunks,
             unavailable_delay=unavailable_delay,
             retry_delay=retry_delay,
+            timeout=timeout,
         )
         return None
 
@@ -1092,6 +1148,12 @@ class TaxoGroupsAPI(BiolovisionAPI):
         max_chunks: int | None = None,
         unavailable_delay: int | None = None,
         retry_delay: int | None = None,
+        # ⚠ Divergence assumée avec Client_API_VN amont (rev 376c2e1b) : `timeout` est
+        # accepté par BiolovisionAPI mais AUCUNE sous-classe ne le relayait, ce qui le
+        # rendait inatteignable. Laissé à None, il est transmis tel quel à `requests`,
+        # qui attend alors indéfiniment — un incident réseau fige le moissonnage sans
+        # message. À signaler en amont.
+        timeout: int | None = None,
     ) -> None:
         super().__init__(
             controler="taxo_groups",
@@ -1105,6 +1167,7 @@ class TaxoGroupsAPI(BiolovisionAPI):
             max_chunks=max_chunks,
             unavailable_delay=unavailable_delay,
             retry_delay=retry_delay,
+            timeout=timeout,
         )
         return None
 
@@ -1137,6 +1200,12 @@ class TerritorialUnitsAPI(BiolovisionAPI):
         max_chunks: int | None = None,
         unavailable_delay: int | None = None,
         retry_delay: int | None = None,
+        # ⚠ Divergence assumée avec Client_API_VN amont (rev 376c2e1b) : `timeout` est
+        # accepté par BiolovisionAPI mais AUCUNE sous-classe ne le relayait, ce qui le
+        # rendait inatteignable. Laissé à None, il est transmis tel quel à `requests`,
+        # qui attend alors indéfiniment — un incident réseau fige le moissonnage sans
+        # message. À signaler en amont.
+        timeout: int | None = None,
     ) -> None:
         super().__init__(
             controler="territorial_units",
@@ -1150,6 +1219,7 @@ class TerritorialUnitsAPI(BiolovisionAPI):
             max_chunks=max_chunks,
             unavailable_delay=unavailable_delay,
             retry_delay=retry_delay,
+            timeout=timeout,
         )
         return None
 
@@ -1182,6 +1252,12 @@ class ValidationsAPI(BiolovisionAPI):
         max_chunks: int | None = None,
         unavailable_delay: int | None = None,
         retry_delay: int | None = None,
+        # ⚠ Divergence assumée avec Client_API_VN amont (rev 376c2e1b) : `timeout` est
+        # accepté par BiolovisionAPI mais AUCUNE sous-classe ne le relayait, ce qui le
+        # rendait inatteignable. Laissé à None, il est transmis tel quel à `requests`,
+        # qui attend alors indéfiniment — un incident réseau fige le moissonnage sans
+        # message. À signaler en amont.
+        timeout: int | None = None,
     ) -> None:
         super().__init__(
             controler="validations",
@@ -1195,5 +1271,6 @@ class ValidationsAPI(BiolovisionAPI):
             max_chunks=max_chunks,
             unavailable_delay=unavailable_delay,
             retry_delay=retry_delay,
+            timeout=timeout,
         )
         return None
