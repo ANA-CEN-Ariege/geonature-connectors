@@ -722,9 +722,17 @@ def vn_import(groupes, since, batch_size, dry_run):
         click.echo("  anonymat forcé pour tous les observateurs")
     respecter = cfg.get("respecter_confidentialite", True)
     niveau_masquees = cfg.get("niveau_diffusion_masquees", "4")
+    departements = vn_perim.normaliser(cfg.get("departements"))
+    filtre_api = dict(cfg.get("filtre_api") or {})
+    if departements:
+        click.echo(f"  périmètre : département(s) {', '.join(sorted(departements))}"
+                   + (f", filtre serveur {filtre_api}" if filtre_api else ""))
+    else:
+        click.secho("  ⚠ aucun filtre de périmètre : toute l'étendue de l'instance "
+                    "sera moissonnée.", fg="yellow")
     par_projet = cfg.get("jdd_par_code_projet", True)
 
-    total_lus = total_ecrits = total_maj = total_supprimes = 0
+    total_lus = total_ecrits = total_maj = total_supprimes = hors_perimetre = 0
     jdds: dict = {}
 
     for rang, groupe in enumerate(groupes, 1):
@@ -751,13 +759,16 @@ def vn_import(groupes, since, batch_size, dry_run):
             for cle, motif in inaccessibles:
                 rejets.add("inaccessible", cle, "", motif)
         else:
-            releves = vn_api.observations(cfg, str(groupe))
+            releves = vn_api.observations(cfg, str(groupe), **filtre_api)
         couples = vn_tr.deplier(releves)
         total_lus += len(couples)
         click.echo(f" {len(releves)} relevé(s), {len(couples)} observation(s)")
 
         lot, ecrits, maj = [], 0, 0
         for sighting, observation in couples:
+            if not vn_perim.dans_perimetre(sighting, departements):
+                hors_perimetre += 1
+                continue
             if respecter:
                 motif = vn_conf.est_confidentielle(observation, sighting)
                 if motif:
@@ -801,6 +812,15 @@ def vn_import(groupes, since, batch_size, dry_run):
 
     if not dry_run:
         db.session.commit()
+    if hors_perimetre:
+        # Un rejet massif alors qu'un filtre serveur est configuré signale que l'API l'a
+        # ignoré : le paramètre n'existe pas, ou ne porte pas ce nom sur cette instance.
+        click.secho(f"  {hors_perimetre} observation(s) hors périmètre écartée(s).",
+                    fg="yellow" if filtre_api else None)
+        if filtre_api and hors_perimetre > total_lus / 10:
+            click.secho("  ⚠ le filtre serveur semble ignoré par l'API : la quasi-totalité "
+                        "de l'instance a été téléchargée avant d'être écartée ici. "
+                        "Vérifiez le nom du paramètre avec `vn-territoires`.", fg="yellow")
     suffixe = f", {total_supprimes} supprimée(s)" if total_supprimes else ""
     click.secho(f"\n{'DRY-RUN — ' if dry_run else ''}{total_lus} observation(s) lue(s), "
                 f"{total_ecrits} écrite(s), {total_maj} mise(s) à jour{suffixe}, "
@@ -935,5 +955,38 @@ def vn_reanonymiser(yes):
         click.secho("Relancez avec --yes pour appliquer.", fg="yellow")
 
 
+@click.command("vn-territoires")
+def vn_territoires():
+    """Liste les unités territoriales de l'instance VisioNature.
+
+    Sert à renseigner `[visionature] filtre_api`. Le `short_name` est le code employé
+    par Client_API_VN pour filtrer — sur les instances régionales françaises, c'est le
+    code de département, celui qu'on retrouve dans `place.county` de chaque observation.
+    """
+    from geonature.utils.config import config as gn_config
+    from .sources.visionature import api as vn_api
+
+    cfg = (gn_config.get("CONNECTORS") or {}).get("visionature", {})
+    if not cfg.get("enabled"):
+        raise click.ClickException("Connecteur VisioNature désactivé.")
+
+    unites = vn_api.unites_territoriales(cfg)
+    if not unites:
+        click.secho("Aucune unité territoriale renvoyée par l'instance.", fg="yellow")
+        return
+
+    click.echo(f"{len(unites)} unité(s) territoriale(s) :\n")
+    click.echo(f"  {'id':>8}  {'short_name':<12}  nom")
+    for u in unites:
+        click.echo(f"  {str(u.get('id') or u.get('@id') or ''):>8}  "
+                   f"{str(u.get('short_name') or ''):<12}  {u.get('name') or ''}")
+    click.echo("\nRestreindre le moissonnage, dans connectors_config.toml :\n"
+               "  [visionature]\n"
+               "  departements = [\"09\"]              # vérifié sur place.county\n"
+               "  filtre_api = { id_territorial_unit = \"<id ci-dessus>\" }\n"
+               "\nLe second réduit le volume téléchargé, le premier garantit le "
+               "périmètre : un paramètre inconnu de l'API est ignoré sans erreur.")
+
+
 connectors_cli = [status, gbif_sync_datasets, gbif_import, gbif_purge, vn_import,
-                  vn_reanonymiser]
+                  vn_reanonymiser, vn_territoires]

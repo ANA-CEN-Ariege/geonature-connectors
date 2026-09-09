@@ -192,6 +192,20 @@ taxo_groups = []
 # rapprochement des observations d'un même contributeur.
 pseudonymisation_secret = ""
 
+# ── Périmètre géographique ───────────────────────────────────────────────────
+# Codes de département à conserver. Vérifiés sur `place.county` de chaque relevé, donc
+# fiables quoi qu'il arrive. Vide = toute l'étendue de l'instance : sur Faune-Occitanie,
+# treize départements. « 9 » et « 09 » sont équivalents.
+departements = ["09"]
+
+# Filtre appliqué CÔTÉ SERVEUR, transmis tel quel à l'API. C'est le seul moyen d'éviter
+# de télécharger l'instance entière. Lister les valeurs de votre instance avec :
+#     geonature connectors vn-territoires
+# ⚠ Un paramètre inconnu de l'API est ignoré SANS erreur : rien ne distingue un filtre
+# appliqué d'un filtre inexistant. D'où la vérification systématique sur `departements`,
+# et l'avertissement affiché en fin de moissonnage si le filtre serveur semble ignoré.
+# filtre_api = { id_territorial_unit = "..." }
+
 # ── Robustesse du client Biolovision ─────────────────────────────────────────
 # timeout : secondes avant d'abandonner une requête. À NE PAS mettre à 0 ni retirer —
 # le client vendorisé laisse ce paramètre à None s'il n'est pas fourni, et `requests`

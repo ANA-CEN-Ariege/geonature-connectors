@@ -686,3 +686,51 @@ def test_un_releve_inaccessible_ninterrompt_pas_le_moissonnage(monkeypatch):
 def test_un_releve_deja_complet_nest_pas_recharge():
     """Économie de requêtes : si le diff livre la donnée, ne pas la redemander."""
     assert A.est_releve_complet({"@id": "1", "observers": [{"@id": "9"}]})
+
+
+# ── Périmètre géographique ───────────────────────────────────────────────────
+
+from gn_module_connectors.sources.visionature import perimetre as P  # noqa: E402
+
+
+def test_le_departement_vient_du_lieu():
+    """`place.county` porte le code de département, vérifié sur des exports réels."""
+    assert P.departement({"place": {"county": "11", "insee": "11262"}}) == "11"
+
+
+def test_repli_sur_le_code_insee():
+    """Sans `county`, les deux premiers caractères de l'INSEE font l'affaire."""
+    assert P.departement({"place": {"insee": "09122"}}) == "09"
+
+
+def test_la_corse_nest_pas_numerique():
+    """2A et 2B interdisent de traiter le code de département comme un entier."""
+    assert P.departement({"place": {"insee": "2A004"}}) == "2A"
+    assert P.normaliser(["2a"]) == {"2A"}
+
+
+def test_neuf_et_zero_neuf_designent_le_meme_departement():
+    codes = P.normaliser(["9"])
+    assert codes == {"09"}
+    assert P.dans_perimetre({"place": {"county": "09"}}, codes)
+    assert P.dans_perimetre({"place": {"county": "9"}}, codes)
+
+
+def test_hors_perimetre_est_ecarte():
+    assert not P.dans_perimetre({"place": {"county": "31"}}, P.normaliser(["09"]))
+
+
+def test_sans_filtre_tout_passe():
+    """Un périmètre vide ne doit rien écarter — c'est le comportement historique."""
+    assert P.dans_perimetre({"place": {"county": "31"}}, set())
+    assert P.dans_perimetre({}, set())
+
+
+def test_un_lieu_indeterminable_est_ecarte_quand_un_filtre_est_actif():
+    """Le laisser passer ferait du filtre une passoire silencieuse.
+
+    Mieux vaut le voir dans le journal des rejets et décider en connaissance de cause
+    que de découvrir après coup des observations hors périmètre en Synthèse.
+    """
+    assert not P.dans_perimetre({}, P.normaliser(["09"]))
+    assert not P.dans_perimetre({"place": {"name": "quelque part"}}, P.normaliser(["09"]))

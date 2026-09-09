@@ -180,6 +180,15 @@ class VisioNatureSchemaConf(Schema):
     # correspondent à des programmes réels (atlas, suivis, plans d'action). À défaut,
     # un JDD unique par instance.
     jdd_par_code_projet = fields.Boolean(load_default=True)
+    # Codes de département à conserver, vérifiés sur `place.county` de chaque relevé.
+    # Vide = aucun filtre, donc toute l'étendue de l'instance : sur Faune-Occitanie,
+    # treize départements. « 9 » et « 09 » sont acceptés indifféremment.
+    departements = fields.List(fields.String(), load_default=list)
+    # Filtre appliqué côté serveur, transmis tel quel à l'API. Seul moyen d'éviter de
+    # télécharger l'instance entière — mais un paramètre inconnu de l'API est ignoré sans
+    # erreur, d'où la vérification systématique sur `departements` ci-dessus.
+    # `geonature connectors vn-territoires` liste les valeurs de l'instance.
+    filtre_api = fields.Dict(load_default=dict)
     max_retry = fields.Integer(load_default=3)
     max_chunks = fields.Integer(load_default=100)
     # ⚠ Secondes. Doit être fourni : dans le client Biolovision vendorisé, `timeout` est

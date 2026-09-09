@@ -284,6 +284,39 @@ dispose. Seules les lignes dont la valeur change sont réécrites.
 
 À passer périodiquement — le rattrapage n'a pas de déclencheur naturel.
 
+### Restreindre le périmètre
+
+Sans filtre, `vn-import` moissonne **toute l'étendue de l'instance** : treize départements
+sur Faune-Occitanie, la France entière sur Faune-France. Deux réglages, complémentaires :
+
+```toml
+[visionature]
+departements = ["09"]
+# filtre_api = { id_territorial_unit = "..." }
+```
+
+`departements` est vérifié sur `place.county` de chaque relevé — le code de département
+que porte chaque observation, à côté de `insee` et `municipality`. C'est le filtre qui
+**garantit** le périmètre. Les relevés écartés sont journalisés sous le motif
+`hors_perimetre`, et un lieu dont le département est indéterminable est écarté aussi :
+le laisser passer ferait du filtre une passoire silencieuse.
+
+`filtre_api` est transmis tel quel à l'API comme paramètres d'URL. C'est le seul moyen
+d'éviter de **télécharger** ce qu'on va jeter. Découvrir les valeurs de l'instance :
+
+```bash
+geonature connectors vn-territoires
+```
+
+Le `short_name` qu'affiche cette commande est le code employé par `Client_API_VN` — sa
+configuration le précise : « use the territory short_name, not the territory id ».
+
+⚠️ **Un paramètre inconnu de l'API est ignoré sans erreur** : rien ne distingue un filtre
+appliqué d'un filtre inexistant. C'est pourquoi `filtre_api` ne fait jamais foi seul. Si
+les rejets `hors_perimetre` dépassent un dixième du volume lu alors qu'un filtre serveur
+est configuré, le moissonnage le signale — le filtre a été ignoré et toute l'instance a
+été téléchargée avant d'être écartée localement.
+
 ### Résolution taxonomique
 
 **L'API Biolovision n'expose aucune correspondance vers TAXREF.** Vérifié :
@@ -610,9 +643,9 @@ certain, et un code inventé produirait une valeur fausse mais silencieuse.
 `gn_vn2synthese` ne les alimente pas davantage — mesuré sur un export de leur production,
 « Inconnu » sur 95 982 lignes sur 95 982.
 
-Aucun **filtre spatial**. Sur une instance régionale comme Faune-Occitanie, `vn-import`
-prend tout le territoire couvert par l'instance, département voisin compris. La LPO pose
-pour cela un trigger sur un zonage `VN_COVER` ; l'équivalent reste à faire ici.
+Le périmètre se restreint par **code de département**, pas par géométrie. Pour un
+territoire qui ne suit pas les limites administratives — un bassin versant, un parc —
+le zonage `VN_COVER` de la LPO reste la bonne réponse, et n'est pas implémenté ici.
 
 ---
 

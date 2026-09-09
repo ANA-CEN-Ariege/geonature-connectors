@@ -89,8 +89,29 @@ def _extraire(reponse) -> list[dict]:
     return releves
 
 
+def unites_territoriales(cfg) -> list[dict]:
+    """Unités territoriales de l'instance : identifiant, nom et `short_name`.
+
+    Le `short_name` est le code employé pour filtrer — sur les instances régionales
+    françaises, c'est le code de département. La configuration de `Client_API_VN` le dit
+    explicitement : « use the territory short_name, not the territory id ».
+    """
+    return _extraire(_controleur(bio.TerritorialUnitsAPI, cfg).api_list())
+
+
 def observations(cfg, id_taxo_group: str, **filtres) -> list[dict]:
-    """Observations d'un groupe taxonomique."""
+    """Observations d'un groupe taxonomique.
+
+    `filtres` est transmis tel quel à l'API comme paramètres d'URL. C'est par là que
+    passe une éventuelle restriction territoriale côté serveur — la seule qui évite de
+    télécharger l'instance entière.
+
+    ⚠ Un paramètre que l'API ne connaît pas est **ignoré en silence** : rien ne distingue
+    un filtre appliqué d'un filtre inexistant. C'est pourquoi le filtre serveur ne fait
+    jamais foi à lui seul, et que `perimetre.dans_perimetre` revérifie chaque relevé sur
+    `place.county`. Le décompte des rejets « hors périmètre » dit alors si le filtre
+    serveur a mordu : proche de zéro, il a fonctionné ; élevé, il a été ignoré.
+    """
     return _extraire(_controleur(bio.ObservationsAPI, cfg).api_list(id_taxo_group, **filtres))
 
 
