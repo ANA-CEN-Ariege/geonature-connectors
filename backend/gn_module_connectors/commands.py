@@ -1262,31 +1262,54 @@ def vn_diagnostic(groupe, debug, jours):
             premiere = entrees[0]
             if isinstance(premiere, dict):
                 complet = vn_api.est_releve_complet(premiere)
-                click.echo(f"  {'':<34}        champs : "
-                           f"{', '.join(sorted(premiere))}")
                 click.echo(f"  {'':<34}        relevé complet : "
                            f"{'oui' if complet else 'NON — un api_get par entrée'}")
-                # Les sous-objets décident du sort de l'observateur et du périmètre :
-                # `@uid` identifie l'observateur, `county` et `insee` le département.
-                # Leur absence au format court a déjà produit deux défauts silencieux.
-                for cle in ("observers", "place"):
-                    valeur = premiere.get(cle)
-                    sous = valeur[0] if isinstance(valeur, list) and valeur else valeur
-                    if isinstance(sous, dict):
-                        # Pas de troncature : c'est précisément la liste complète qui
-                        # renseigne, et une coupure à quatorze champs a déjà masqué la
-                        # présence de `anonymous`, `details` et `name`.
-                        click.echo(f"  {'':<34}        {cle}[0] ({len(sous)}) : "
-                                   f"{', '.join(sorted(sous))}")
-                        if cle == "observers" and "@uid" not in sous:
-                            click.secho(f"  {'':<34}        ⚠ pas de @uid : "
-                                        f"l'observateur ne pourra pas être apparié au "
-                                        f"référentiel, donc pseudonymisé par défaut.",
-                                        fg="yellow")
-                        if cle == "place" and not {"county", "insee"} & set(sous):
-                            click.secho(f"  {'':<34}        ⚠ ni county ni insee : le "
-                                        f"département n'est pas déductible du relevé.",
-                                        fg="yellow")
+                # ⚠ Compter sur TOUTES les entrées, jamais sur la première. `details`,
+                # `behaviours`, `medias`, `extended_info` et `atlas_code` sont
+                # optionnels : ils n'apparaissent que renseignés. Conclure de n=1 que
+                # l'API ne les renvoie pas serait une erreur — un lézard isolé sans
+                # comportement noté n'en porte aucun.
+                from collections import Counter as _Counter
+                freq_sighting, freq_obs, freq_place = _Counter(), _Counter(), _Counter()
+                for e in entrees:
+                    if not isinstance(e, dict):
+                        continue
+                    freq_sighting.update(e)
+                    liste = e.get("observers")
+                    if isinstance(liste, list) and liste and isinstance(liste[0], dict):
+                        freq_obs.update(liste[0])
+                    lieu = e.get("place")
+                    if isinstance(lieu, dict):
+                        freq_place.update(lieu)
+
+                total = len(entrees)
+
+                def _lister(intitule, freq):
+                    if not freq:
+                        return
+                    click.echo(f"  {'':<34}        {intitule} sur {total} relevé(s) :")
+                    for champ, n in sorted(freq.items(), key=lambda kv: (-kv[1], kv[0])):
+                        part = "" if n == total else f"  ({n})"
+                        click.echo(f"  {'':<34}          {champ}{part}")
+
+                _lister("champs du relevé", freq_sighting)
+                _lister("champs de observers[0]", freq_obs)
+                _lister("champs de place", freq_place)
+
+                attendus = {"atlas_code": "statut de reproduction des oiseaux",
+                            "details": "âge et sexe, donc reproduction des autres groupes",
+                            "behaviours": "comportement",
+                            "medias": "preuve d'existence",
+                            "extended_info": "mortalité",
+                            "project_code": "jeu de données par projet",
+                            "timing": "heure d'observation",
+                            "uuid": "identifiant SINP du producteur",
+                            "name": "nom de l'observateur"}
+                absents = [f"{c} ({usage})" for c, usage in attendus.items()
+                           if c not in freq_obs]
+                if absents:
+                    click.secho(f"  {'':<34}        ⚠ jamais rencontré(s) : "
+                                f"{'; '.join(absents)}", fg="yellow")
         return reponse
 
     click.echo(f"Instance {cfg['url']}, groupe taxonomique {groupe} :\n")
