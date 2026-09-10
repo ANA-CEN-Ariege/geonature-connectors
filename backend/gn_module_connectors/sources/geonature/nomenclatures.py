@@ -126,6 +126,32 @@ def resoudre(item: dict, resolver, *, statut_validation: str | None = None,
     return resolus
 
 
+def _exige(reglage: str, valeur: str, resolver) -> int:
+    """Résout une valeur **de configuration**, ou fait échouer l'import.
+
+    Une valeur venue du producteur qu'on ne sait pas résoudre est un fait à consigner : on
+    la collecte dans `manques` et on continue, l'import de dizaines de milliers
+    d'observations ne devant pas s'arrêter sur le vocabulaire d'un tiers.
+
+    Une valeur venue de la **configuration** est autre chose : quelqu'un l'a posée
+    délibérément, et s'il l'a mal orthographiée, la retomber à NULL en silence supprime la
+    restriction qu'il croyait avoir mise. C'est le pire résultat possible pour
+    `niveau_diffusion_si_sensible`, dont l'objet est précisément de protéger une donnée que
+    le référentiel de sensibilité local couvre moins bien que celui du producteur.
+
+    Le module applique déjà cette règle à `[validation] status`. Ici comme là, on échoue.
+    """
+    trouve = resolver.id_souple("NIV_PRECIS", valeur)
+    if trouve is None:
+        connues = ", ".join(sorted(resolver.valeurs("NIV_PRECIS"))[:8]) \
+            if hasattr(resolver, "valeurs") else ""
+        raise ValueError(
+            f"[geonature] {reglage} = « {valeur} » est introuvable dans le référentiel "
+            f"NIV_PRECIS de cette instance. Employez un cd_nomenclature (« 2 ») ou un "
+            f"libellé exact." + (f" Valeurs connues : {connues}…" if connues else ""))
+    return trouve
+
+
 def niveau_diffusion(item: dict, resolver, *, force: str = "",
                      si_sensible: str = "", manques: set | None = None) -> int | None:
     """`id_nomenclature_diffusion_level`, ou None si personne ne se prononce.
@@ -149,14 +175,14 @@ def niveau_diffusion(item: dict, resolver, *, force: str = "",
        VisioNature : ici l'arbitrage est porté par la donnée, observation par observation.
     """
     if force:
-        return resolver.id_souple("NIV_PRECIS", force)
+        return _exige("niveau_diffusion", force, resolver)
 
     if si_sensible:
         sensibilite = str(item.get("niveau_sensibilite") or "").strip()
         # Le libellé exact du « non sensible » varie (« Non sensible », « Aucune »…) : on
         # traite comme sensible tout ce qui est renseigné sans commencer par « non ».
         if sensibilite and not sensibilite.lower().startswith("non"):
-            return resolver.id_souple("NIV_PRECIS", si_sensible)
+            return _exige("niveau_diffusion_si_sensible", si_sensible, resolver)
 
     brut = str(item.get("precision_diffusion") or "").strip()
     if not brut:

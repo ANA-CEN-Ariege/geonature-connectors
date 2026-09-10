@@ -231,6 +231,16 @@ def moissonner(cfg, filtres: dict, journal=None,
     limite = min(int(cfg.get("page_size", LIMITE_DEFAUT)), LIMITE_DEFAUT)
     if max_results:
         limite = min(limite, max_results)
+    # ⚠ Une limite nulle ou négative — `page_size = 0`, ou un `--max-resultats` négatif —
+    # rend la seule sortie de boucle (`len(lot) < limite`) impossible à atteindre : la
+    # moisson tournerait indéfiniment en gonflant en mémoire, sans un message. C'est la
+    # défaillance que le contrôle d'inertie ci-dessous existe pour empêcher, entrée par une
+    # autre porte ; on la ferme ici, où la cause est encore nommable.
+    if limite <= 0:
+        raise ErreurGeoNature(
+            f"Taille de page nulle ou négative ({limite}). Vérifiez [geonature] page_size "
+            f"et --max-resultats : une limite non positive ferait boucler la moisson sans "
+            f"fin.")
 
     tri = dict(filtres)
     tri.setdefault("orderby", "id_synthese")

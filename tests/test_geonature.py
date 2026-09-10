@@ -150,6 +150,39 @@ def test_le_niveau_de_diffusion_de_la_configuration_prime():
     assert N.niveau_diffusion(item(), resolver, force="3") == 33
 
 
+def test_une_valeur_de_configuration_introuvable_fait_echouer_limport():
+    """Dissymétrie voulue avec la valeur du producteur, qui n'est que consignée.
+
+    Une valeur de configuration a été posée délibérément. Retomber à NULL sur une coquille
+    supprimerait en silence la restriction que l'exploitant croyait avoir mise — et pour
+    `niveau_diffusion_si_sensible`, cela revient à désactiver la protection au moment
+    précis où elle devait jouer.
+    """
+    with pytest.raises(ValueError, match="niveau_diffusion"):
+        N.niveau_diffusion(item(), ResolverStrict(), force="Precise")   # coquille
+
+    sensible = item(niveau_sensibilite="Sensible - Maille 10 km")
+    with pytest.raises(ValueError, match="niveau_diffusion_si_sensible"):
+        N.niveau_diffusion(sensible, ResolverStrict(), si_sensible="Maile 10km")
+
+
+def test_le_message_derreur_nomme_le_reglage_et_la_valeur():
+    """Un « valeur introuvable » sans le nom du réglage oblige à fouiller quatre sections
+    de configuration."""
+    with pytest.raises(ValueError) as e:
+        N.niveau_diffusion(item(), ResolverStrict(), force="Precise")
+    assert "niveau_diffusion" in str(e.value) and "Precise" in str(e.value)
+    assert "NIV_PRECIS" in str(e.value)
+
+
+def test_une_valeur_de_producteur_introuvable_nempeche_pas_limport():
+    """Le pendant : le vocabulaire d'un tiers ne doit pas arrêter des dizaines de milliers
+    d'observations. Il est collecté, pas fatal."""
+    manques = set()
+    assert N.niveau_diffusion(item(), ResolverStrict(), manques=manques) is None
+    assert ("NIV_PRECIS", "Précise") in manques
+
+
 def test_une_observation_sensible_peut_etre_restreinte():
     """Parade au décalage de référentiels : la sensibilité est recalculée localement, et
     un référentiel local moins couvrant rendrait la donnée moins protégée qu'à la source.
@@ -221,9 +254,11 @@ def test_la_couverture_compte_directs_replis_et_rejets():
 
 def test_lidentifiant_permanent_du_producteur_est_repris_verbatim():
     """L'instance distante est un producteur SINP : id_perm_sinp EST l'identifiant DEE."""
-    identifiant, calcule = X.identifiant_sinp(item(), "https://a.fr", "12")
+    identifiant, supplante = X.identifiant_sinp(item(), "https://a.fr", "12")
     assert identifiant == "3f2b8c4d-5e60-4a17-9a17-0d7e4a2f9b13"
-    assert calcule is None
+    # Le second membre est l'UUID dérivé que le natif a supplanté : il existe, et il est
+    # forcément différent de celui qui a été retenu.
+    assert supplante and supplante != identifiant
 
 
 def test_un_uuid_est_derive_quand_le_producteur_nen_publie_pas():
@@ -231,8 +266,8 @@ def test_un_uuid_est_derive_quand_le_producteur_nen_publie_pas():
     bien le problème : NULL n'étant jamais égal à NULL, l'index unique ne dédoublonne pas
     et chaque passage recréerait tout le corpus."""
     sans = item(id_perm_sinp=None)
-    identifiant, calcule = X.identifiant_sinp(sans, "https://a.fr", "12")
-    assert identifiant == calcule
+    identifiant, supplante = X.identifiant_sinp(sans, "https://a.fr", "12")
+    assert supplante is None, "rien n'a été supplanté : le dérivé est celui qu'on emploie"
     assert X.identifiant_sinp(sans, "https://a.fr", "12")[0] == identifiant
 
 
@@ -244,15 +279,33 @@ def test_luuid_derive_distingue_les_instances_et_les_exports():
     assert len({a, b, c}) == 3
 
 
-def test_luuid_derive_laisse_une_trace_pour_le_realignement():
-    provenance = json.loads(ligne(id_perm_sinp=None)["additional_data"])
-    assert provenance["gn_uuid_calcule"] == provenance["gn_uuid_calcule"]
-    assert provenance["gn_uuid_calcule"] == ligne(id_perm_sinp=None)["unique_id_sinp"]
+def test_la_trace_designe_lancienne_ligne_a_renommer():
+    """Le contrat est celui de `core.synthese.realigner_uuid`, pas celui de `to_row`.
+
+    Cette fonction ne retient une ligne que si `additional_data[cle]` **diffère** de son
+    `unique_id_sinp` : il lui faut l'ancien nom pour retrouver la ligne à renommer, pendant
+    que la clé porte déjà le nouveau. Le cas se rejoue donc en entier — un premier import
+    sans identifiant permanent, un second où le producteur l'a complété — et l'on vérifie
+    que le second désigne exactement ce que le premier avait écrit.
+
+    Écrit dans ce sens parce que l'inverse a été livré : la trace valait l'`unique_id_sinp`,
+    la condition n'était jamais vraie, et le réalignement ne pouvait pas fonctionner. Deux
+    tests l'attestaient pourtant, l'un par une assertion tautologique.
+    """
+    avant = ligne(id_perm_sinp=None)                 # le producteur ne publiait rien
+    apres = ligne()                                  # il publie désormais son UUID natif
+    trace = json.loads(apres["additional_data"])["gn_uuid_calcule"]
+
+    assert trace == avant["unique_id_sinp"], "la trace doit nommer la ligne déjà en base"
+    # La condition exacte de realigner_uuid (core/synthese.py) :
+    assert trace and trace != apres["unique_id_sinp"], "sinon le renommage est un no-op"
 
 
-def test_pas_de_trace_de_realignement_quand_luuid_est_natif():
-    """La présence systématique ferait tourner l'UPDATE de réalignement à chaque lot."""
-    assert "gn_uuid_calcule" not in json.loads(ligne()["additional_data"])
+def test_pas_de_trace_quand_rien_na_ete_supplante():
+    """Sans identifiant natif, le dérivé *est* la clé : il n'y a aucune ancienne ligne à
+    renommer, et une trace égale à la clé ferait retenir la ligne pour rien."""
+    assert "gn_uuid_calcule" not in json.loads(
+        ligne(id_perm_sinp=None)["additional_data"])
 
 
 @pytest.mark.parametrize("valeur", ["", None, "pas-un-uuid", "1234", "  "])
@@ -590,6 +643,30 @@ def test_les_doublons_sont_ecartes_et_la_moisson_declaree_incomplete(monkeypatch
     assert meta["doublons"] == 1
     assert meta["complet"] is False
     assert any("plusieurs fois" in m for m in messages)
+
+
+def test_une_limite_non_positive_est_refusee_avant_tout_appel(monkeypatch):
+    """La seule sortie de boucle est `len(lot) < limite`, inatteignable si limite <= 0 :
+    la moisson tournerait sans fin en gonflant en mémoire, sans un message."""
+    faux = RequestsFactice([_lot(1, 3)])
+    monkeypatch.setattr(A, "requests", faux)
+    for cfg in ({**CFG, "page_size": 0}, {**CFG, "page_size": -10}):
+        with pytest.raises(A.ErreurGeoNature, match="page_size"):
+            A.moissonner(cfg, {}, journal=lambda m: None)
+    with pytest.raises(A.ErreurGeoNature, match="max-resultats"):
+        A.moissonner(CFG, {}, max_results=-1, journal=lambda m: None)
+    assert faux.appels == [], "le refus doit précéder tout appel réseau"
+
+
+def test_lempreinte_suit_le_regroupement_et_la_version_de_taxref():
+    """Ce que l'empreinte ne couvre pas est figé au premier import : la ligne est jugée
+    identique, l'ON CONFLICT n'écrit rien, et la valeur devenue fausse y reste."""
+    base = X.empreinte(item())
+    assert X.empreinte(item(id_perm_grp_sinp="9f8e7d6c-1234-4321-8888-abcdefabcdef")) != base
+    assert X.empreinte(item(version_taxref="Taxref V18")) != base
+    for colonne in ("type_regroupement", "methode_regroupement",
+                    "type_info_geo", "methode_determination"):
+        assert X.empreinte(item(**{colonne: "autre chose"})) != base, colonne
 
 
 def test_une_moisson_sans_doublon_reste_complete(monkeypatch):

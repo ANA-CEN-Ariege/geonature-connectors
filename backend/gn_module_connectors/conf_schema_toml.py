@@ -1,4 +1,5 @@
 from marshmallow import Schema, fields
+from marshmallow.validate import Range
 
 
 class ScheduleSchemaConf(Schema):
@@ -363,7 +364,7 @@ class DbChiroSchemaConf(Schema):
 
     # ── Moissonnage ──────────────────────────────────────────────────────────
     # `LargeGeoJsonPageNumberPagination` plafonne à 5000.
-    page_size = fields.Integer(load_default=5000)
+    page_size = fields.Integer(load_default=5000, validate=Range(min=1))
     timeout = fields.Integer(load_default=120)
     batch_size = fields.Integer(load_default=1000)
     schedule = fields.Nested(ScheduleSchemaConf, load_default=lambda: ScheduleSchemaConf().load({}))
@@ -453,7 +454,7 @@ class GeoNatureSchemaConf(Schema):
 
     # ── Moissonnage ──────────────────────────────────────────────────────────
     # `max_page_size_api` vaut 1000 côté serveur et rabote sans le dire.
-    page_size = fields.Integer(load_default=1000)
+    page_size = fields.Integer(load_default=1000, validate=Range(min=1))
     timeout = fields.Integer(load_default=120)
     batch_size = fields.Integer(load_default=1000)
     schedule = fields.Nested(ScheduleSchemaConf, load_default=lambda: ScheduleSchemaConf().load({}))

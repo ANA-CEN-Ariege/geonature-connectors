@@ -26,6 +26,15 @@ CHAMPS_SUIVIS = (
     "altitude_min", "altitude_max", "observateurs", "determinateur", "precision",
     "comment_occurrence", "comment_releve", "preuve_numerique", "nom_lieu",
     "precision_diffusion", "niveau_sensibilite", "floutage_dee", "jdd_uuid",
+    # ⚠ Toute colonne que `to_row` écrit doit figurer ici, ou dans COLONNES_VUE, ou être
+    # couverte autrement — la géométrie l'est par `lon`/`lat`. Ce qui manque à l'empreinte
+    # est figé au premier import et ne se rafraîchit jamais : la ligne ne change pas, donc
+    # l'ON CONFLICT la juge identique et n'écrit rien.
+    "id_perm_grp_sinp",   # -> unique_id_sinp_grp : le producteur peut regrouper après coup
+    "version_taxref",     # -> meta_v_taxref : change à chaque montée de TAXREF du distant
+    # Les quatre colonnes de HORS_INSERT, qui partent en provenance faute de place dans
+    # l'INSERT commun. Les omettre gèlerait une provenance devenue fausse.
+    "type_regroupement", "methode_regroupement", "type_info_geo", "methode_determination",
 )
 
 # Le WKT d'un point, seule géométrie que l'INSERT commun sait écrire.
@@ -144,7 +153,7 @@ def _uuid_ou_none(valeur) -> str | None:
 
 def identifiant_sinp(item: dict, instance: str = "",
                      id_export: str = "") -> tuple[str, str | None]:
-    """(`unique_id_sinp`, UUID dérivé s'il a fallu en calculer un).
+    """(`unique_id_sinp`, UUID dérivé **supplanté** par le natif, s'il y a lieu).
 
     L'identifiant permanent du producteur est repris **verbatim** quand il existe. C'est le
     fond du sujet : l'instance distante est un producteur SINP, et `id_perm_sinp` *est*
@@ -155,20 +164,28 @@ def identifiant_sinp(item: dict, instance: str = "",
     ⚠ `unique_id_sinp` est nullable en Synthèse : un export peut donc en livrer sans. Le
     cas est le plus dangereux de tous, parce qu'il ne casse rien — NULL n'étant jamais égal
     à NULL, l'index unique ne dédoublonne pas et **chaque passage recréerait tout le
-    corpus**. On dérive donc un uuid5, et le second membre du tuple le signale : la ligne
-    portera `gn_uuid_calcule` dans `additional_data`, ce qui permettra à
-    `core.synthese.realigner_uuid` de la renommer le jour où le producteur publiera son
-    UUID natif, au lieu de la dupliquer.
+    corpus**. On dérive donc un uuid5.
+
+    ⚠ **Le second membre est l'UUID dérivé que le natif a supplanté**, et non celui qu'on
+    vient d'employer. C'est le sens qu'attend `core.synthese.realigner_uuid`, qui ne retient
+    une ligne que si la trace **diffère** de l'`unique_id_sinp` : il lui faut l'ancien nom
+    pour retrouver la ligne à renommer, pendant que la clé porte déjà le nouveau.
+
+    Le rendre dans l'autre sens — la trace égale à l'`unique_id_sinp` — rendait le
+    réalignement inopérant, sans que rien ne le signale : le jour où le producteur complète
+    ses `id_perm_sinp`, chaque observation concernée était insérée une seconde fois sous son
+    UUID natif, l'ancienne ligne restant en base. VisioNature nomme la même valeur
+    `uuid_supplante`, ce qui lève l'ambiguïté.
 
     L'instance et l'export entrent dans la clé : `id_synthese` est un entier propre à
     chaque base, et deux instances emploieraient les mêmes.
     """
-    natif = _uuid_ou_none(item.get("id_perm_sinp"))
-    if natif:
-        return (natif, None)
     calcule = str(uuid.uuid5(
         GEONATURE_NAMESPACE, f"{instance}:{id_export}:{item.get('id_synthese')}"))
-    return (calcule, calcule)
+    natif = _uuid_ou_none(item.get("id_perm_sinp"))
+    if natif:
+        return (natif, calcule)
+    return (calcule, None)
 
 
 def uuid_groupe(item: dict) -> str | None:
@@ -234,7 +251,7 @@ def observateurs(item: dict, *, pseudonymiser: bool = False,
 
 
 def provenance(item: dict, *, instance: str, id_export: str, licence: str = "",
-               licence_url: str = "", uuid_calcule: str | None = None) -> dict:
+               licence_url: str = "", uuid_supplante: str | None = None) -> dict:
     """Ce qu'on conserve d'une observation et qui n'est pas redérivable localement.
 
     Règle appliquée : `regne`, `classe`, `ordre`, `famille`, `cd_ref`, `nom_valide` et les
@@ -288,8 +305,8 @@ def provenance(item: dict, *, instance: str, id_export: str, licence: str = "",
         except ValueError:
             donnees["gn_donnees_additionnelles"] = str(brut)
 
-    if uuid_calcule:
-        donnees["gn_uuid_calcule"] = uuid_calcule
+    if uuid_supplante:
+        donnees["gn_uuid_calcule"] = uuid_supplante
     return donnees
 
 
@@ -315,7 +332,7 @@ def to_row(item: dict, *, cd_nom: int, id_dataset: int | None, id_source: int,
         item, resolver, force=code_diffusion,
         si_sensible=code_diffusion_si_sensible, manques=manques)
 
-    identifiant, calcule = identifiant_sinp(item, instance, id_export)
+    identifiant, uuid_supplante = identifiant_sinp(item, instance, id_export)
 
     return {
         **nomenclatures,
@@ -346,7 +363,7 @@ def to_row(item: dict, *, cd_nom: int, id_dataset: int | None, id_source: int,
         "additional_data": json.dumps(
             {k: v for k, v in provenance(
                 item, instance=instance, id_export=id_export, licence=licence,
-                licence_url=licence_url, uuid_calcule=calcule).items()
+                licence_url=licence_url, uuid_supplante=uuid_supplante).items()
              if v not in (None, "")},
             ensure_ascii=False),
         "lon": lon,
