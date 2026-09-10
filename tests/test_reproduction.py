@@ -339,6 +339,9 @@ def test_le_groupe_taxonomique_est_conserve_dans_la_provenance():
          "place": {"county": "09"}},
         {"@id": "1", "@uid": "7", "coord_lat": "42.8", "coord_lon": "1.9"},
         cd_nom=1, id_dataset=1, id_source=1, id_module=1, srid=2154,
-        resolver=ResolverFactice(), instance="i", repro=contexte)
+        resolver=ResolverFactice(), instance="i", repro=contexte,
+        # L'observateur n'exprimant pas de consentement, le module retombe sur le
+        # référentiel et pseudonymise — ce qui exige une clé.
+        index_anonymat={}, secret_pseudo="cle-de-test")
 
     assert json.loads(ligne["additional_data"])["groupe_taxo"] == "TAXO_GROUP_REPTILIAN"
