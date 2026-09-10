@@ -65,6 +65,29 @@ def index_anonymat(observateurs: list[dict]) -> dict[str, bool]:
     return index
 
 
+# `anonymous_in_export` vaut « anonymize » quand l'observateur refuse que son nom sorte
+# dans un export. `gn_vn2synthese` teste exactement cette valeur (`05_observers.sql`).
+ANONYMAT_EXPORT = {"anonymize", "anonymous"}
+
+
+def souhait_exprime(observation: dict) -> bool | None:
+    """Souhait d'anonymat porté par l'observation, ou None s'il n'y figure pas.
+
+    La forme longue de l'API expose `anonymous` et `anonymous_in_export` sur chaque
+    observation. La forme courte ne les porte pas : d'où le `None`, qui renvoie
+    l'appelant au référentiel des observateurs.
+
+    Les deux drapeaux sont traités comme équivalents : `anonymous` est le réglage global
+    du contributeur, `anonymous_in_export` vise précisément la diffusion. Verser en
+    Synthèse est une diffusion ; l'un ou l'autre suffit donc à imposer le pseudonyme.
+    """
+    brut_export = str(observation.get("anonymous_in_export") or "").strip().lower()
+    brut_global = observation.get("anonymous")
+    if not brut_export and brut_global in (None, ""):
+        return None
+    return bool(vrai(observation, "anonymous") or brut_export in ANONYMAT_EXPORT)
+
+
 def observateur(observation: dict, index_anonymat: dict[str, bool] | None = None,
                 secret: str = "", forcer_anonymat: bool = False) -> tuple[str | None, str]:
     """(valeur pour `synthese.observers`, motif).
@@ -92,6 +115,16 @@ def observateur(observation: dict, index_anonymat: dict[str, bool] | None = None
 
     if forcer_anonymat:
         return (f"obs-{pseudonyme(uid, secret)[:12]}" if uid else None, "anonymat forcé")
+
+    # Le consentement est porté par l'observation elle-même en forme longue :
+    # `anonymous` et `anonymous_in_export` y figurent. C'est la source la plus sûre —
+    # elle vaut au moment de l'observation, et elle ne dépend pas du chargement d'un
+    # référentiel de 246 699 inscrits dont 184 identifiants sur 467 étaient absents.
+    if souhait_exprime(observation) is not None:
+        if souhait_exprime(observation):
+            return (f"obs-{pseudonyme(uid, secret)[:12]}" if uid else None,
+                    "anonymat demandé (relevé)")
+        return (nom, "nom publié (relevé)")
 
     index_anonymat = index_anonymat or {}
     if uid not in index_anonymat:

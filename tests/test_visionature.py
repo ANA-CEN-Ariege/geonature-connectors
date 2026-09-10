@@ -819,3 +819,46 @@ def test_la_borne_serveur_ne_couvre_pas_un_departement_explicite():
     """On ne fait confiance au serveur que lorsqu'on ne sait pas trancher soi-même."""
     codes = P.normaliser(["09"])
     assert not P.dans_perimetre({"place": {"county": "31"}}, codes, borne_serveur=True)
+
+
+# ── Consentement porté par le relevé lui-même ────────────────────────────────
+
+def test_le_consentement_est_lu_dans_le_releve():
+    """La forme longue porte `anonymous` et `anonymous_in_export` sur l'observation.
+
+    C'est la source la plus sûre : elle vaut au moment de l'observation et ne dépend pas
+    du chargement d'un référentiel. Mesuré sur faune-occitanie.org, 184 identifiants
+    d'observateurs sur 467 étaient absents des 246 699 inscrits — ces observations
+    étaient pseudonymisées faute de savoir, alors que le relevé portait la réponse.
+    """
+    nom, motif = C.observateur({"@uid": "7", "name": "Untel", "anonymous": "0",
+                                "anonymous_in_export": "export"}, {}, "cle")
+    assert nom == "Untel" and "relevé" in motif
+
+
+@pytest.mark.parametrize("champs", [
+    {"anonymous": "1", "anonymous_in_export": "export"},
+    {"anonymous": "0", "anonymous_in_export": "anonymize"},
+])
+def test_lun_ou_lautre_drapeau_suffit_a_imposer_le_pseudonyme(champs):
+    """`anonymous` est le réglage global, `anonymous_in_export` vise la diffusion.
+
+    Verser en Synthèse est une diffusion : l'un ou l'autre suffit.
+    """
+    nom, motif = C.observateur({"@uid": "7", "name": "Untel", **champs}, {}, "cle")
+    assert nom.startswith("obs-")
+    assert "anonymat demandé" in motif
+
+
+def test_sans_drapeau_on_retombe_sur_le_referentiel():
+    """La forme courte ne porte pas ces champs : le référentiel reste le repli."""
+    assert C.souhait_exprime({"@uid": "7", "name": "Untel"}) is None
+    nom, motif = C.observateur({"@uid": "7", "name": "Untel"}, {"7": False}, "cle")
+    assert nom == "Untel" and motif == "nom publié"
+
+
+def test_le_releve_prime_sur_le_referentiel():
+    """Un référentiel peut dater ; le relevé porte l'état au moment de l'observation."""
+    nom, motif = C.observateur({"@uid": "7", "name": "Untel", "anonymous": "1"},
+                               {"7": False}, "cle")
+    assert nom.startswith("obs-") and "relevé" in motif

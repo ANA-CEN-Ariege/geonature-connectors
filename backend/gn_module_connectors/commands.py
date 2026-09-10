@@ -1223,7 +1223,7 @@ def vn_diagnostic(groupe, debug, jours):
             if isinstance(premiere, dict):
                 complet = vn_api.est_releve_complet(premiere)
                 click.echo(f"  {'':<34}        champs : "
-                           f"{', '.join(sorted(premiere)[:12])}")
+                           f"{', '.join(sorted(premiere))}")
                 click.echo(f"  {'':<34}        relevé complet : "
                            f"{'oui' if complet else 'NON — un api_get par entrée'}")
                 # Les sous-objets décident du sort de l'observateur et du périmètre :
@@ -1233,8 +1233,11 @@ def vn_diagnostic(groupe, debug, jours):
                     valeur = premiere.get(cle)
                     sous = valeur[0] if isinstance(valeur, list) and valeur else valeur
                     if isinstance(sous, dict):
-                        click.echo(f"  {'':<34}        {cle}[0] : "
-                                   f"{', '.join(sorted(sous)[:14])}")
+                        # Pas de troncature : c'est précisément la liste complète qui
+                        # renseigne, et une coupure à quatorze champs a déjà masqué la
+                        # présence de `anonymous`, `details` et `name`.
+                        click.echo(f"  {'':<34}        {cle}[0] ({len(sous)}) : "
+                                   f"{', '.join(sorted(sous))}")
                         if cle == "observers" and "@uid" not in sous:
                             click.secho(f"  {'':<34}        ⚠ pas de @uid : "
                                         f"l'observateur ne pourra pas être apparié au "
