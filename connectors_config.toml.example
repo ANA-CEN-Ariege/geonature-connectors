@@ -177,7 +177,57 @@ user_password = ""
 client_key = ""
 client_secret = ""
 
-# Groupes taxonomiques à moissonner. Vide = tous.
+# Groupes taxonomiques à moissonner, par leur identifiant. Vide = tous ceux que le
+# compte peut lire (ceux dont `access_mode` vaut « none » sont écartés d'office).
+#
+# ⚠ Ces identifiants sont ceux de Faune-Occitanie, relevés le 10/09/2026. Rien ne
+#   garantit qu'ils soient les mêmes sur une autre instance : les vérifier avec
+#       geonature connectors vn-groupes
+#   qui affiche l'identifiant, le code, l'`access_mode` et la couverture « repro ».
+#
+# La colonne « repro » ci-dessous indique les groupes pour lesquels le module sait
+# déduire un statut de reproduction depuis l'âge, le sexe et les comportements. Les
+# oiseaux passent par les codes atlas, pas par ces règles : leur « — » n'est pas un manque.
+#
+#    id  code                        repro   nom
+#     1  TAXO_GROUP_BIRD             —       Oiseaux
+#     2  TAXO_GROUP_BAT              oui     Chauves-souris
+#     3  TAXO_GROUP_MAMMAL           oui     Mammifères
+#     4  TAXO_GROUP_SEA_MAMMAL       —       Mammifères marins
+#     6  TAXO_GROUP_REPTILIAN        oui     Reptiles
+#     7  TAXO_GROUP_AMPHIBIAN        oui     Amphibiens
+#     8  TAXO_GROUP_ODONATA          oui     Odonates
+#     9  TAXO_GROUP_BUTTERFLY        oui     Papillons de jour
+#    10  TAXO_GROUP_MOTH             —       Papillons de nuit
+#    11  TAXO_GROUP_ORTHOPTERA       oui     Orthoptères
+#    12  TAXO_GROUP_HYMENOPTERA      —       Hyménoptères
+#    14  TAXO_GROUP_ORCHIDACEAE      —       Orchidées
+#    15  TAXO_GROUP_TRASH            —       Déchets
+#    16  TAXO_GROUP_EPHEMEROPTERA    —       Éphémères
+#    17  TAXO_GROUP_PLECOPTERA       —       Plécoptères
+#    18  TAXO_GROUP_MANTODEA         —       Mantes
+#    19  TAXO_GROUP_AUCHENORRHYNCHA  —       Cigales
+#    20  TAXO_GROUP_HETEROPTERA      —       Punaises
+#    21  TAXO_GROUP_COLEOPTERA       —       Coléoptères
+#    22  TAXO_GROUP_NEVROPTERA       —       Névroptères
+#    23  TAXO_GROUP_TRICHOPTERA      —       Trichoptères
+#    24  TAXO_GROUP_MECOPTERA        —       Mécoptères
+#    25  TAXO_GROUP_DIPTERA          —       Diptères
+#    26  TAXO_GROUP_PHASMATODEA      —       Phasmes
+#    27  TAXO_GROUP_ARACHNIDA        —       Araignées
+#    28  TAXO_GROUP_SCORPIONES       —       Scorpions
+#    29  TAXO_GROUP_FISH             —       Poissons
+#    30  TAXO_GROUP_MALACOSTRACA     —       Crustacés
+#    31  TAXO_GROUP_GASTROPODA       —       Gastéropodes
+#    32  TAXO_GROUP_BIVALVIA         —       Bivalves
+#    33  TAXO_GROUP_BRANCHIOPODA     —       Branchiopodes
+#    43  TAXO_GROUP_DERMAPTERA       —       Dermaptères
+#    51  TAXO_GROUP_FORMICIDAE       —       Fourmis
+#
+# `vn-volumetrie` chiffre le coût de chacun avant de choisir : sur Faune-Occitanie,
+# les oiseaux pèsent 76 % des modifications quotidiennes à eux seuls.
+#
+#   taxo_groups = ["2", "6", "7"]     # chiroptères, reptiles, amphibiens
 taxo_groups = []
 
 # ── Confidentialité ──────────────────────────────────────────────────────────
