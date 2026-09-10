@@ -862,3 +862,43 @@ def test_le_releve_prime_sur_le_referentiel():
     nom, motif = C.observateur({"@uid": "7", "name": "Untel", "anonymous": "1"},
                                {"7": False}, "cle")
     assert nom.startswith("obs-") and "relevé" in motif
+
+
+def test_un_refus_de_volume_retrecit_la_tranche_au_lieu_dabandonner(monkeypatch):
+    """Un 403 sur `search` signale un volume excessif, pas un droit manquant.
+
+    Mesuré sur faune-occitanie.org, mêmes identifiants et même territoire : 223 reptiles
+    sur soixante jours passent, sept jours d'oiseaux sont refusés. Abandonner le groupe
+    reviendrait à déclarer les oiseaux inaccessibles alors qu'ils ne sont que nombreux.
+    """
+    from datetime import date
+    from gn_module_connectors.sources.visionature.biolovision import api as bio
+
+    demandes = []
+
+    def faux_recherche(cfg, groupe, debut, fin, territoires):
+        jours = (fin - debut).days
+        demandes.append(jours)
+        if jours > 4:
+            raise bio.HTTPError(403)
+        return [{"@id": str(len(demandes)), "observers": [{"@uid": "1"}]}]
+
+    monkeypatch.setattr(A, "observations_recherche", faux_recherche)
+    tranches = list(A.moissonner_recherche(
+        {}, "1", date(2026, 1, 1), date(2026, 1, 20), ["109"], tranche_jours=16))
+
+    assert any(j > 4 for j in demandes), "la première tentative doit être large"
+    assert tranches, "le moissonnage doit aboutir après rétrécissement"
+    assert all(len(r) for _d, _f, _t, r in tranches)
+
+
+def test_un_refus_qui_persiste_au_plancher_remonte(monkeypatch):
+    """Rétrécir indéfiniment masquerait un vrai refus derrière une boucle sans fin."""
+    from datetime import date
+    from gn_module_connectors.sources.visionature.biolovision import api as bio
+
+    monkeypatch.setattr(A, "observations_recherche",
+                        lambda *a, **k: (_ for _ in ()).throw(bio.HTTPError(403)))
+    with pytest.raises(bio.HTTPError):
+        list(A.moissonner_recherche({}, "1", date(2026, 1, 1), date(2026, 1, 5),
+                                    ["109"], tranche_jours=2))

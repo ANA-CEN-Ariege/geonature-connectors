@@ -834,8 +834,12 @@ def vn_import(groupes, since, batch_size, dry_run):
             # par territoire. `api_list` est déprécié en amont et refusé par l'API, et
             # une recherche sans périmètre l'est aussi — mesuré sur faune-occitanie.org.
             def _tranche(territoire, debut, fin_t, n):
-                click.echo(f"    {territoire} {debut:%Y-%m-%d} → {fin_t:%Y-%m-%d} : "
-                           f"{n} relevé(s)")
+                if n < 0:
+                    click.secho(f"    {territoire} {debut:%Y-%m-%d} → {fin_t:%Y-%m-%d} : "
+                                f"refus de volume, tranche rétrécie", fg="yellow")
+                else:
+                    click.echo(f"    {territoire} {debut:%Y-%m-%d} → {fin_t:%Y-%m-%d} : "
+                               f"{n} relevé(s)")
 
             lots = (releves for _d, _f, _t, releves in vn_api.moissonner_recherche(
                 cfg, str(groupe), date_debut, date_fin, territoires,
@@ -1242,7 +1246,7 @@ def vn_diagnostic(groupe, debug, jours):
     recent = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
     obs = vn_api._controleur(bio.ObservationsAPI, cfg)
 
-    def sonder(intitule, appel):
+    def sonder(intitule, appel, observations=False):
         try:
             reponse = appel()
         except bio.HTTPError as erreur:
@@ -1302,7 +1306,7 @@ def vn_diagnostic(groupe, debug, jours):
                 # code de nidification EOAC : il ne concerne QUE les oiseaux, et son
                 # absence sur un groupe de reptiles ne signale rien. Le signaler comme
                 # un manque enverrait chercher un défaut là où il n'y en a pas.
-                attendus = {
+                attendus = {} if not observations else {
                     "timing": ("heure d'observation", "tous"),
                     "uuid": ("identifiant SINP du producteur", "tous"),
                     "name": ("nom de l'observateur", "forme longue"),
@@ -1350,7 +1354,8 @@ def vn_diagnostic(groupe, debug, jours):
     fin = datetime.now(timezone.utc)
     debut = fin - timedelta(days=jours)
     sonder(f"observations/search ({jours} j, sans périmètre)", lambda: obs.api_search(
-        vn_api.parametres_recherche(groupe, debut, fin), short_version="1"))
+        vn_api.parametres_recherche(groupe, debut, fin), short_version="1"),
+           observations=True)
 
     # `_store_search` de transfer_vn n'émet JAMAIS de recherche sans périmètre : sa
     # boucle `for t_u in t_us:` pose systématiquement `location_choice` et
@@ -1374,7 +1379,7 @@ def vn_diagnostic(groupe, debug, jours):
             sonder(f"observations/search ({jours} j, {apercu}, {etiquette})",
                    lambda v=version: obs.api_search(
                        vn_api.parametres_recherche(groupe, debut, fin, territoires[:1]),
-                       short_version=v))
+                       short_version=v), observations=True)
     else:
         click.secho("  observations/search (avec périmètre)  ignoré — aucune unité "
                     "territoriale exploitable", fg="yellow")

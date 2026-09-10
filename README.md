@@ -321,6 +321,17 @@ accélère.
 deprecated. Please use search method only »*. Un 403 sur ce point d'entrée est donc
 attendu, et ne signale aucun droit manquant.
 
+⚠️ **Le 403 de `search` est un refus de VOLUME, pas de droit.** Mesuré sur
+faune-occitanie.org avec les mêmes identifiants et le même territoire : 223 reptiles sur
+soixante jours passent, sept jours d'oiseaux — quelque 260 000 observations — sont
+refusés. C'est ce que régule le PID de `transfer_vn` : il ne cherche pas l'efficacité,
+il évite ce refus.
+
+Le moissonnage rétrécit donc sa tranche et réessaie au lieu d'abandonner. Un groupe très
+observé finira sur des tranches de quelques jours, un groupe rare sur des tranches de
+plusieurs mois, sans réglage manuel. Un refus qui persiste au plancher remonte, faute de
+quoi une boucle sans fin masquerait un vrai problème.
+
 ⚠️ **Et une recherche sans périmètre territorial est refusée elle aussi.** Mesuré sur
 faune-occitanie.org : `POST /observations/search/` sans `territorial_unit_ids` renvoie
 403, avec renvoie 200. `transfer_vn` n'en émet d'ailleurs jamais sans périmètre — sa

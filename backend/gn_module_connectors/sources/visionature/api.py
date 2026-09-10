@@ -236,7 +236,26 @@ def moissonner_recherche(cfg, id_taxo_group: str, date_debut, date_fin,
         tranche = tranche_jours
         while fin > date_debut:
             debut = max(date_debut, fin - timedelta(days=tranche))
-            releves = observations_recherche(cfg, id_taxo_group, debut, fin, [territoire])
+            try:
+                releves = observations_recherche(cfg, id_taxo_group, debut, fin,
+                                                 [territoire])
+            except bio.HTTPError as erreur:
+                # ⚠ Un 403 sur `search` n'est PAS un défaut de droit : c'est un refus de
+                # VOLUME. Mesuré sur faune-occitanie.org avec les mêmes identifiants et
+                # le même territoire : 223 reptiles sur soixante jours passent, sept
+                # jours d'oiseaux — quelque 260 000 observations — sont refusés, et une
+                # recherche sans périmètre l'est toujours.
+                #
+                # C'est ce que régule le PID de `transfer_vn` : il ne cherche pas
+                # l'efficacité, il évite ce refus. On rétrécit donc et on réessaie, au
+                # lieu d'abandonner le groupe comme s'il était interdit.
+                code = erreur.args[0] if erreur.args else None
+                if code == 403 and tranche > TRANCHE_JOURS_MIN:
+                    tranche = max(TRANCHE_JOURS_MIN, tranche // 4)
+                    if journal:
+                        journal(territoire, debut, fin, -1)
+                    continue
+                raise
             if journal:
                 journal(territoire, debut, fin, len(releves))
             yield (debut, fin, territoire, releves)
