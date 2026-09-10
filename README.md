@@ -392,6 +392,50 @@ contrairement au différentiel qui ne livre que des identifiants. C'est ce qui r
 moissonnage complet praticable là où le différentiel imposerait une requête par
 observation.
 
+### Diagnostiquer un 403 sur `observations`
+
+Un 403 de l'API Biolovision ressemble à un défaut de code. Ce n'en est pas
+nécessairement un, et l'établir demande d'éliminer les variables une à une. Voici le
+tableau d'une investigation menée sur faune-occitanie.org, à conserver pour la prochaine.
+
+**Ce qui a été éliminé, avec la mesure correspondante :**
+
+| variable | vérification | verdict |
+|---|---|---|
+| code du client | `diff` de `biolovision/api.py` contre l'amont | identique |
+| paramètres de `search` | comparés au tag `v2.12.0` de Client_API_VN | identiques |
+| versions | `requests` 2.32.5, `requests_oauthlib` 2.0.0 | conformes |
+| URL | comparée à la configuration LPO | identique |
+| forme du JSON | `short_version` 0 et 1 sondés | 403 des deux côtés |
+| périmètre territorial | avec et sans, plusieurs unités | 403 dans tous les cas |
+| groupe taxonomique | les 49 sondés | seul un groupe répondait |
+| volume | 74 modifications/jour sur toute la région | 403 quand même |
+| ancienneté des données | 2019 et 2026 | 403 des deux côtés |
+
+**Ce qui reste, une fois tout cela éliminé :** le périmètre attaché aux identifiants.
+
+Le point de comparaison décisif est un journal `transfer_vn` d'un tiers, sur la **même
+instance**, montrant un téléchargement abouti pour le même groupe, le même territoire et
+la même période — donc une requête réputée servie. Si la nôtre est identique et refusée,
+la différence est dans les identifiants, quoi qu'on en pense par ailleurs.
+
+**Les commandes de diagnostic** existent pour mener cette élimination sans tâtonner :
+
+```bash
+geonature connectors vn-diagnostic --taxo-group 6      # points d'entrée, champs reçus
+geonature connectors vn-diagnostic --territoire 111 --fin 2019-01-20 --jours 10
+geonature connectors vn-volumetrie                     # les 49 groupes d'un coup
+geonature connectors vn-territoires                    # identifiants à employer
+geonature connectors vn-groupes                        # codes et access_mode
+```
+
+⚠️ Deux formes de 403 coexistent, et seule la première se nomme :
+
+- `"you are not authorized to access this taxonomic group"` et `"you are not allowed to
+  access this resource"` : refus explicites, obtenus sur les groupes en `access_mode:
+  none` et sur le contrôleur `observers` ;
+- **corps vide** : tout le reste. C'est celui qui coûte des heures.
+
 ### Restreindre le périmètre
 
 Sans filtre, `vn-import` moissonne **toute l'étendue de l'instance** : treize départements
