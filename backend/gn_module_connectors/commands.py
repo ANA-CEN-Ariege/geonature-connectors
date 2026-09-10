@@ -652,9 +652,13 @@ def gbif_purge(reference, taxon, max_uncertainty, tout, drop_empty_datasets, yes
               help="Date ISO 8601 : ne moissonner que les créations, modifications et "
                    "suppressions depuis. VisioNature sait signaler les suppressions, "
                    "ce que GBIF ne fait pas.")
+@click.option("--fin", "fin", default="",
+              help="Date de fin du moissonnage complet (AAAA-MM-JJ). Par défaut, "
+                   "aujourd'hui. Sert à découper un gros historique en partitions "
+                   "reprenables : une par département et par année.")
 @click.option("--lot", "batch_size", default=None, type=int)
 @click.option("--dry-run", is_flag=True)
-def visionature_import(groupes, since, batch_size, dry_run):
+def visionature_import(groupes, since, fin, batch_size, dry_run):
     """Importe des observations VisioNature dans la Synthèse."""
     from geonature.utils.config import config as gn_config
     from sqlalchemy import select as sa_select
@@ -829,7 +833,23 @@ def visionature_import(groupes, since, batch_size, dry_run):
             raise click.ClickException(
                 f"{'--since' if since else '[visionature] date_debut'} = {brut!r} "
                 f"n'est pas une date ISO (AAAA-MM-JJ).")
-        date_fin = _date.today()
+        # Borner la fin permet de découper un historique volumineux en partitions
+        # reprenables. Sur 14 millions d'observations à ~32/s, une seule exécution
+        # durerait cinq jours : une coupure au troisième tout perdrait, faute de
+        # journal de reprise. Une partition par département et par année se rejoue en
+        # quelques heures, et l'ON CONFLICT rend le recouvrement gratuit.
+        if fin:
+            try:
+                date_fin = _date.fromisoformat(fin)
+            except ValueError:
+                raise click.ClickException(
+                    f"--fin = {fin!r} n'est pas une date ISO (AAAA-MM-JJ).")
+        else:
+            date_fin = _date.today()
+        if date_fin <= date_debut:
+            raise click.ClickException(
+                f"--fin ({date_fin}) doit être postérieure au début de période "
+                f"({date_debut}).")
 
         # L'API refuse une recherche non bornée territorialement : 403 sans périmètre,
         # 200 avec. L'identifiant attendu est `id_country` suivi du `short_name`, soit

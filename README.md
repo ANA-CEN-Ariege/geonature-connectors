@@ -561,6 +561,47 @@ n'est pas modifié. La route (`blueprint.voir_dans_visionature`) refuse tout ide
 qui ne soit pas numérique, plutôt que de concaténer dans une redirection ce qui vient
 d'une URL.
 
+### Moissonner un gros historique
+
+Débit mesuré sur Faune-Occitanie : **5 763 observations écrites en 3 minutes**, soit
+environ **32 par seconde** — et c'est une borne basse, ces trois minutes incluant le
+chargement du référentiel de 63 616 espèces, qui est un coût fixe.
+
+| volume | durée |
+|---|---|
+| un mois d'un département | 3 min |
+| un an d'un département | ~40 min |
+| vingt ans d'un département | ~13 h |
+| toute une région, quatorze millions | **~5 jours** |
+
+Jusqu'à quelques millions, un moissonnage d'un seul tenant convient : en cas d'erreur de
+correspondance, on purge et on recommence. Au-delà, deux limites deviennent bloquantes —
+il n'y a **pas de reprise sur incident**, et le relevé brut n'est pas conservé, donc
+corriger une correspondance impose de tout retélécharger.
+
+La parade est de **partitionner par département et par année**, chaque partition se
+rejouant en quelques heures :
+
+```bash
+for dep in 09 11 12 30 31 32 34 46 48 65 66 81 82; do
+  for an in $(seq 2005 2026); do
+    geonature connectors visionature-import \
+      --depuis "${an}-01-01" --fin "$((an+1))-01-01" 2>&1 | tee -a moisson.log
+  done
+done
+```
+
+`departements` se règle dans la configuration ; l'exemple ci-dessus suppose qu'on la
+modifie entre deux départements, ou qu'on lance une instance de configuration par
+département. Le recouvrement est gratuit : l'`ON CONFLICT` ne réécrit que sur changement
+d'empreinte, et une partition rejouée ne coûte que son téléchargement.
+
+⚠️ **Le coût réel n'est pas dans le téléchargement mais dans les zonages.** Chaque
+observation engendre environ **9 lignes de `cor_area_synthese`** — quatorze millions
+d'observations en produisent donc cent vingt-six millions, avec la maintenance d'index
+correspondante. Les 32 observations par seconde mesurées l'ont été sur une Synthèse
+quasi vide ; le débit se dégrade à mesure qu'elle se remplit.
+
 ### Restreindre le périmètre
 
 Sans filtre, `visionature-import` moissonne **toute l'étendue de l'instance** : treize départements
