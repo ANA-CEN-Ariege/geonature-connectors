@@ -215,6 +215,18 @@ def moissonner(cfg, filtres: dict, journal=None,
     - **un `offset` ignoré boucle indéfiniment.** Si la page N commence par la même ligne
       que la page N-1, on s'arrête net : sans ce contrôle, la moisson gonfle en mémoire
       jusqu'à ce que le processus meure, sans qu'aucun message ne désigne la cause.
+
+    ⚠ S'y ajoute un dédoublonnage sur `id_synthese`, qui n'est pas une précaution de
+    confort. Le raisonnement « le tri ascendant interdit les répétitions » suppose que le
+    serveur honore `orderby` ; le contrôle ci-dessus ne détecte qu'un `offset` totalement
+    ignoré, pas un chevauchement partiel. Sans dédoublonnage, un même `unique_id_sinp`
+    deux fois dans un lot fausse le décompte d'`insert_batch`, dont les « insérées » se
+    calculent par `len(lignes) - len(deja)`.
+
+    Et surtout : **un doublon prouve que l'ordre n'est pas stable, donc que des lignes ont
+    pu être sautées.** La moisson est alors marquée incomplète, ce qui interdit à
+    `geonature-reconcilier` de tourner dessus — une absence n'y serait plus la preuve
+    d'une suppression à la source.
     """
     limite = min(int(cfg.get("page_size", LIMITE_DEFAUT)), LIMITE_DEFAUT)
     if max_results:
@@ -226,7 +238,8 @@ def moissonner(cfg, filtres: dict, journal=None,
 
     items: list[dict] = []
     meta: dict = {"complet": True, "limite": limite, "total": None,
-                  "total_filtered": None, "license": {}}
+                  "total_filtered": None, "license": {}, "doublons": 0}
+    vus: set[str] = set()
     numero, precedent = 0, None
     while True:
         charge = page(cfg, numero, limite, tri)
@@ -253,7 +266,13 @@ def moissonner(cfg, filtres: dict, journal=None,
                 f"`offset` est un numéro de page, pas un décalage de lignes.")
 
         precedent = _premier_identifiant(lot)
-        items.extend(lot)
+        for enregistrement in lot:
+            cle = str(enregistrement.get("id_synthese"))
+            if cle in vus:
+                meta["doublons"] += 1
+                continue
+            vus.add(cle)
+            items.append(enregistrement)
 
         if max_results and len(items) >= max_results:
             items = items[:max_results]
@@ -268,8 +287,19 @@ def moissonner(cfg, filtres: dict, journal=None,
             break
         numero += 1
 
+    if meta["doublons"]:
+        meta["complet"] = False
+        message = (f"{meta['doublons']} enregistrement(s) reçus plusieurs fois : le "
+                   f"serveur n'a pas honoré le tri. Des lignes ont donc pu être sautées "
+                   f"aussi — la réconciliation des suppressions s'interdira de tourner "
+                   f"sur cette moisson.")
+        if journal:
+            journal(f"  ⚠ {message}")
+        else:
+            raise ErreurGeoNature(message)
+
     annonce = meta["total_filtered"]
-    if annonce is not None and len(items) != annonce:
+    if annonce is not None and len(items) + meta["doublons"] != annonce:
         meta["complet"] = False
         message = (f"pagination incomplète : {len(items)} enregistrement(s) reçus pour "
                    f"{annonce} annoncé(s)")

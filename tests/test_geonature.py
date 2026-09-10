@@ -572,6 +572,34 @@ def test_le_tri_est_impose_pour_stabiliser_la_pagination(monkeypatch):
     assert faux.appels[0]["order"] == "asc"
 
 
+def test_les_doublons_sont_ecartes_et_la_moisson_declaree_incomplete(monkeypatch):
+    """Le tri ascendant sur `id_synthese` interdit en principe les répétitions — mais cela
+    suppose que le serveur honore `orderby`, et le contrôle d'inertie ne détecte qu'un
+    `offset` totalement ignoré, pas un chevauchement partiel.
+
+    Deux conséquences, et la seconde est la plus grave : un même `unique_id_sinp` deux fois
+    dans un lot fausse le décompte d'`insert_batch` (`len(lignes) - len(deja)`), et surtout
+    un doublon **prouve que l'ordre n'est pas stable**, donc que des lignes ont pu être
+    sautées. La réconciliation doit s'interdire de tourner là-dessus.
+    """
+    faux = RequestsFactice([_lot(1, 3), [item(id_synthese=3), item(id_synthese=4)]])
+    monkeypatch.setattr(A, "requests", faux)
+    messages = []
+    items, meta = A.moissonner({**CFG, "page_size": 3}, {}, journal=messages.append)
+    assert [i["id_synthese"] for i in items] == [1, 2, 3, 4]
+    assert meta["doublons"] == 1
+    assert meta["complet"] is False
+    assert any("plusieurs fois" in m for m in messages)
+
+
+def test_une_moisson_sans_doublon_reste_complete(monkeypatch):
+    faux = RequestsFactice([_lot(1, 3), _lot(4, 1)])
+    monkeypatch.setattr(A, "requests", faux)
+    items, meta = A.moissonner({**CFG, "page_size": 3}, {}, journal=lambda m: None)
+    assert meta["doublons"] == 0 and meta["complet"] is True
+    assert len(items) == 4
+
+
 def test_une_moisson_bornee_nest_pas_complete(monkeypatch):
     """La troncature est voulue — donc pas d'avertissement —, mais la réconciliation doit
     s'interdire de tourner là-dessus."""
