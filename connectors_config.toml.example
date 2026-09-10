@@ -230,6 +230,25 @@ client_secret = ""
 #   taxo_groups = ["2", "6", "7"]     # chiroptères, reptiles, amphibiens
 taxo_groups = []
 
+# ── Acteurs des jeux de données (métadonnées SINP) ───────────────────────────
+# Un jeu de données SANS producteur n'est pas conforme au SINP. Rien dans GeoNature ne
+# l'impose techniquement, d'où la facilité avec laquelle on l'oublie.
+#
+# Les JDD sont découpés par DÉPARTEMENT, parce que c'est là que change le producteur :
+# sur Faune-Occitanie, l'Ariège est produite par l'ANA-CEN Ariège, les Pyrénées-
+# Orientales par le GOR. Un jeu porte un producteur unique.
+#
+# ⚠ Les organismes doivent exister dans utilisateurs.bib_organismes, à l'orthographe
+#   près. Le module ne les crée jamais : les tirer des données peuplerait le référentiel
+#   de variantes que plus personne ne saurait rapprocher.
+#
+# La structure qui met la donnée à disposition, distincte de celle qui l'a produite.
+# organisme_fournisseur = "Collectif Faune-Occitanie"
+#
+# [visionature.producteurs_departementaux]
+# "09" = "ANA-CEN Ariège"
+# "66" = "GOR"
+
 # ── Confidentialité ──────────────────────────────────────────────────────────
 # Clé du HMAC de pseudonymisation. OBLIGATOIRE, même si peu d'observateurs demandent
 # l'anonymat : sans elle on ne peut traiter ni ceux qui l'ont demandé, ni ceux que le

@@ -180,6 +180,27 @@ class VisioNatureSchemaConf(Schema):
     # correspondent à des programmes réels (atlas, suivis, plans d'action). À défaut,
     # un JDD unique par instance.
     jdd_par_code_projet = fields.Boolean(load_default=True)
+    # ── Acteurs des jeux de données (métadonnées SINP) ───────────────────────
+    # Un jeu de données SANS producteur n'est pas conforme au SINP. Rien dans GeoNature
+    # ne l'impose techniquement, d'où la facilité avec laquelle on l'oublie.
+    #
+    # Le découpage des JDD suit le département parce que c'est là que change le
+    # producteur : sur Faune-Occitanie, l'Ariège est produite par l'ANA-CEN Ariège, les
+    # Pyrénées-Orientales par le GOR. Code de département -> nom d'organisme, tel qu'il
+    # figure dans `utilisateurs.bib_organismes`.
+    #
+    #   [visionature.producteurs_departementaux]
+    #   "09" = "ANA-CEN Ariège"
+    #   "66" = "GOR"
+    #
+    # ⚠ Le module ne CRÉE aucun organisme : il les résout par leur nom et signale ceux
+    # qu'il ne trouve pas. Les tirer des données peuplerait le référentiel de variantes
+    # d'orthographe que plus personne ne saurait rapprocher.
+    producteurs_departementaux = fields.Dict(keys=fields.String(),
+                                             values=fields.String(), load_default=dict)
+    # Fournisseur commun à tous les jeux — la structure qui met la donnée à disposition,
+    # distincte de celle qui l'a produite. Ex. « Collectif Faune-Occitanie ».
+    organisme_fournisseur = fields.String(load_default="")
     # Codes de département à conserver, vérifiés sur `place.county` de chaque relevé.
     # Vide = aucun filtre, donc toute l'étendue de l'instance : sur Faune-Occitanie,
     # treize départements. « 9 » et « 09 » sont acceptés indifféremment.

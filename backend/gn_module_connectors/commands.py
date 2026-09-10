@@ -814,6 +814,15 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
         click.secho("  ⚠ aucun filtre de périmètre : toute l'étendue de l'instance "
                     "sera moissonnée.", fg="yellow")
     par_projet = cfg.get("jdd_par_code_projet", True)
+    # Producteurs déclarés par l'exploitant, jamais créés depuis les données : les tirer
+    # d'une API peuplerait bib_organismes de variantes d'orthographe.
+    producteurs = {str(k).strip().zfill(2): v
+                   for k, v in (cfg.get("producteurs_departementaux") or {}).items()}
+    fournisseur = cfg.get("organisme_fournisseur") or None
+    if not producteurs and not fournisseur:
+        click.secho("  ⚠ aucun organisme déclaré : les jeux de données seront créés sans "
+                    "producteur, ce que le SINP n'admet pas. Voir "
+                    "[visionature] producteurs_departementaux.", fg="yellow")
 
     # ── Périmètre temporel et territorial du moissonnage complet ────────────
     # Inutile de les établir en incrémental : le différentiel s'en passe.
@@ -976,9 +985,11 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
                                    (sighting.get("species") or {}).get("name"), "")
                         continue
                     ligne["_projet"] = vn_tr.code_projet(observation) if par_projet else None
+                    ligne["_departement"] = vn_perim.departement(sighting)
                     lot.append(ligne)
                     if len(lot) >= batch_size and not dry_run:
-                        i, u = _ecrire_lot(lot, jdds, instance, af, id_source)
+                        i, u = _ecrire_lot(lot, jdds, instance, af, id_source,
+                                   producteurs, fournisseur)
                         ecrits += i; maj += u
                         db.session.commit(); lot = []
                         click.echo(f"    … {ecrits} écrites, {maj} mises à jour")
@@ -989,7 +1000,8 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
             click.secho(f"    interrompu par l'API ({erreur!r})", fg="yellow")
 
         if lot and not dry_run:
-            i, u = _ecrire_lot(lot, jdds, instance, af, id_source)
+            i, u = _ecrire_lot(lot, jdds, instance, af, id_source,
+                                   producteurs, fournisseur)
             ecrits += i; maj += u
             db.session.commit()
         elif dry_run:
@@ -1102,7 +1114,8 @@ class _IndexAnonymat:
         return True
 
 
-def _ecrire_lot(lot, jdds, instance, af, id_source=None):
+def _ecrire_lot(lot, jdds, instance, af, id_source=None,
+                producteurs=None, fournisseur=None):
     """Écrit un lot en le répartissant par code projet.
 
     Les JDD sont créés à la demande : un projet dont toutes les observations sont
@@ -1119,33 +1132,48 @@ def _ecrire_lot(lot, jdds, instance, af, id_source=None):
         if renommees:
             click.echo(f"    … {renommees} ligne(s) réalignée(s) sur l'UUID du producteur")
 
+    # La clé du jeu est (département, projet) : le producteur change d'un département
+    # à l'autre, et un jeu de données porte un producteur unique.
     par_jdd: dict = {}
     for ligne in lot:
-        par_jdd.setdefault(ligne.pop("_projet", None), []).append(ligne)
+        cle = (ligne.pop("_departement", None), ligne.pop("_projet", None))
+        par_jdd.setdefault(cle, []).append(ligne)
 
     inserees = maj = 0
-    for projet, lignes in par_jdd.items():
-        if projet not in jdds:
-            jdds[projet] = _jdd_visionature(instance, af, projet)
+    for cle, lignes in par_jdd.items():
+        departement, projet = cle
+        if cle not in jdds:
+            jdds[cle] = _jdd_visionature(instance, af, projet, departement,
+                                         producteurs, fournisseur)
         for ligne in lignes:
-            ligne["id_dataset"] = jdds[projet].id_dataset
+            ligne["id_dataset"] = jdds[cle].id_dataset
         i, u = syn_core.insert_batch(lignes)
         inserees += i; maj += u
     return inserees, maj
 
 
-def _jdd_visionature(instance: str, af, projet: str | None = None):
-    """JDD unique de l'instance, créé à la première écriture.
+def _jdd_visionature(instance: str, af, projet: str | None = None,
+                     departement: str | None = None, producteurs: dict | None = None,
+                     fournisseur: str | None = None):
+    """JDD d'un département, créé à la première écriture.
 
-    Contrairement à GBIF, VisioNature n'agrège pas plusieurs producteurs : une instance
-    est un jeu de données. Le découpage par producteur n'aurait donc pas de sens ici.
+    ⚠ Le découpage suit le **département** et non la seule instance, parce que c'est là
+    que change le producteur : sur Faune-Occitanie, l'Ariège est produite par l'ANA-CEN
+    Ariège, les Pyrénées-Orientales par le GOR. Un jeu de données porte un producteur
+    unique — c'est une métadonnée obligatoire du SINP —, donc mêler deux départements
+    dans un même jeu le rendrait non conforme.
+
+    Le code projet reste un axe secondaire, quand il est activé : il distingue des
+    programmes (atlas, suivis) au sein d'un même producteur.
     """
     from .core import datasets as ds_core
     site = instance.replace("https://", "").replace("http://", "")
-    nom = (f"{projet} — {site}" if projet
+    morceaux = [m for m in (projet, f"dép. {departement}" if departement else None) if m]
+    nom = (f"{' — '.join(morceaux)} — {site}" if morceaux
            else f"Observations VisioNature — {site}")
     jdd, cree = ds_core.upsert_dataset(
-        source="VisioNature", cle=f"{instance}:{projet or ''}", licence="",
+        source="VisioNature",
+        cle=f"{instance}:{departement or ''}:{projet or ''}", licence="",
         nom=nom,
         description=(f"Observations moissonnées depuis {instance} via l'API Biolovision.\n\n"
                      f"Les codes atlas de nidification sont conservés dans additional_data : "
@@ -1154,7 +1182,26 @@ def _jdd_visionature(instance: str, af, projet: str | None = None):
     )
     db.session.flush()
     if cree:
-        click.secho(f"  + JDD créé : {jdd.id_dataset}", fg="green")
+        click.secho(f"  + JDD créé : {jdd.id_dataset} — {nom}", fg="green")
+
+    # Les acteurs sont posés à chaque passage, pas seulement à la création : une
+    # configuration corrigée après coup doit pouvoir rattraper un jeu déjà créé.
+    from .core import datasets as ds_core
+    for nom_org, role in ((( producteurs or {}).get(departement or ""),
+                           ds_core.ROLE_PRODUCTEUR),
+                          (fournisseur, ds_core.ROLE_FOURNISSEUR)):
+        if not nom_org:
+            continue
+        id_org = ds_core.resoudre_organisme(nom_org)
+        if id_org is None:
+            click.secho(f"    ⚠ organisme « {nom_org} » absent de "
+                        f"utilisateurs.bib_organismes : acteur non déclaré. Le jeu de "
+                        f"données n'est pas conforme au SINP sans producteur.",
+                        fg="yellow")
+            continue
+        if ds_core.attacher_acteur(jdd.id_dataset, id_org, role):
+            libelle = ("producteur" if role == ds_core.ROLE_PRODUCTEUR else "fournisseur")
+            click.echo(f"    + {libelle} : {nom_org}")
     return jdd
 
 

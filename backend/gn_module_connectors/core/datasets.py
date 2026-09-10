@@ -105,3 +105,56 @@ def dernier_moissonnage(id_dataset: int, id_source: int):
         ),
         {"s": id_source, "d": id_dataset},
     ).scalar()
+
+
+# ── Acteurs des jeux de données ──────────────────────────────────────────────
+# Rôles SINP (`ROLE_ACTEUR`), relevés sur instance :
+#   1 Contact principal          5 Fournisseur du jeu de données
+#   2 Financeur                  6 Producteur du jeu de données
+#   3 Maître d'ouvrage           7 Point de contact base de données de production
+#   4 Maître d'œuvre             8 Point de contact pour les métadonnées
+ROLE_PRODUCTEUR = "6"
+ROLE_FOURNISSEUR = "5"
+
+
+def resoudre_organisme(nom: str) -> int | None:
+    """id_organisme d'après son nom, ou None s'il n'existe pas.
+
+    ⚠ Le module ne CRÉE jamais d'organisme. Les tirer des données d'une API peuplerait
+    `utilisateurs.bib_organismes` de variantes d'orthographe — « LPO Occitanie »,
+    « LPO-Occitanie », « Ligue pour la Protection des Oiseaux Occitanie » — que plus
+    personne ne saurait rapprocher ensuite. L'exploitant les déclare, le module les
+    résout, et signale ceux qu'il ne trouve pas.
+    """
+    if not nom:
+        return None
+    return db.session.execute(
+        text("""SELECT id_organisme FROM utilisateurs.bib_organismes
+                WHERE lower(trim(nom_organisme)) = lower(trim(:n))"""),
+        {"n": nom},
+    ).scalar()
+
+
+def attacher_acteur(id_dataset: int, id_organisme: int, cd_role: str) -> bool:
+    """Déclare un organisme comme acteur d'un JDD. Idempotent.
+
+    Un jeu de données sans acteur n'est pas conforme au SINP : le producteur est une
+    métadonnée obligatoire du standard. Rien dans GeoNature ne l'impose techniquement,
+    d'où la facilité avec laquelle on l'oublie.
+    """
+    id_role_nomenclature = db.session.execute(
+        text("SELECT ref_nomenclatures.get_id_nomenclature('ROLE_ACTEUR', :c)"),
+        {"c": cd_role},
+    ).scalar()
+    if id_role_nomenclature is None:
+        return False
+    return bool(db.session.execute(
+        text("""INSERT INTO gn_meta.cor_dataset_actor
+                    (id_dataset, id_organism, id_nomenclature_actor_role)
+                SELECT :jdd, :org, :role
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM gn_meta.cor_dataset_actor
+                    WHERE id_dataset = :jdd AND id_organism = :org
+                      AND id_nomenclature_actor_role = :role)"""),
+        {"jdd": id_dataset, "org": id_organisme, "role": id_role_nomenclature},
+    ).rowcount)

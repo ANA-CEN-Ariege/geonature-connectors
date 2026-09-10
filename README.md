@@ -813,6 +813,46 @@ données — ce qui est sans objet pour des contributeurs qui n'ont pas de compt
 Si le besoin se présentait, la bonne approche serait de ne rapprocher que les observateurs
 **disposant déjà d'un compte**, par courriel — ciblé plutôt que massif.
 
+### Jeux de données, producteurs et personnes morales
+
+Un jeu de données **sans producteur n'est pas conforme au SINP**. Rien dans GeoNature ne
+l'impose techniquement, d'où la facilité avec laquelle on l'oublie — ce module l'a oublié
+jusqu'ici.
+
+Trois niveaux de personne morale coexistent, et ils ne vivent pas au même endroit :
+
+| niveau | exemple | où |
+|---|---|---|
+| structure qui met à disposition | Collectif Faune-Occitanie | acteur du JDD, rôle **fournisseur** (`ROLE_ACTEUR 5`) |
+| structure qui produit | ANA-CEN Ariège, GOR | acteur du JDD, rôle **producteur** (`ROLE_ACTEUR 6`) |
+| organisme de l'observateur | employeur d'un salarié | `additional_data.juridical_person` |
+
+Le troisième ne peut pas être un acteur : il varie d'une observation à l'autre, alors
+qu'un acteur qualifie le jeu entier. GeoNature n'offre pas de champ d'organisme par
+observation, et c'est cohérent avec le standard.
+
+**Le découpage des JDD suit donc le département**, puisque c'est là que change le
+producteur. Le code projet reste un axe secondaire, distinguant des programmes au sein
+d'un même producteur.
+
+```toml
+[visionature]
+organisme_fournisseur = "Collectif Faune-Occitanie"
+
+[visionature.producteurs_departementaux]
+"09" = "ANA-CEN Ariège"
+"66" = "GOR"
+```
+
+⚠️ **Le module ne crée jamais d'organisme.** Il les résout par leur nom dans
+`utilisateurs.bib_organismes` et signale ceux qu'il ne trouve pas, sans interrompre
+l'import. Les tirer des données peuplerait le référentiel de variantes d'orthographe —
+« LPO Occitanie », « LPO-Occitanie », « Ligue pour la Protection des Oiseaux Occitanie » —
+que plus personne ne saurait rapprocher ensuite.
+
+Les acteurs sont posés à **chaque passage**, pas seulement à la création du jeu : une
+configuration corrigée après coup rattrape ainsi les jeux déjà créés.
+
 ### Jeux de données par code projet
 
 VisioNature rattache les observations à des **codes projet**, qui correspondent à des
