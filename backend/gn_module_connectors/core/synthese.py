@@ -106,7 +106,16 @@ INSERT_SQL = text(
         id_nomenclature_type_count = EXCLUDED.id_nomenclature_type_count,
         id_nomenclature_biogeo_status = EXCLUDED.id_nomenclature_biogeo_status,
         id_nomenclature_exist_proof = EXCLUDED.id_nomenclature_exist_proof,
-        id_nomenclature_valid_status = EXCLUDED.id_nomenclature_valid_status,
+        -- ⚠ `id_nomenclature_valid_status` est délibérément ABSENTE de cette clause.
+        -- Elle est écrite à la création, jamais réécrite ensuite : une pré-validation est
+        -- un réglage de masse, la décision d'un validateur est un jugement porté sur cette
+        -- observation-là. Remettre le réglage par-dessus le jugement est toujours le
+        -- mauvais sens, et cela contredisait `prevalider`, qui s'interdit déjà de réécrire
+        -- `gn_commons.t_validations` pour cette raison exacte — l'historique gardait donc
+        -- l'avis du validateur pendant que la Synthèse affichait le statut automatique.
+        -- Une observation corrigée à la source revient au validateur par le filtre
+        -- « modifiée depuis sa validation » du module Validation, qui compare
+        -- `meta_update_date` à `validation_date`. C'est ce mécanisme-là qui doit jouer.
         id_nomenclature_behaviour = EXCLUDED.id_nomenclature_behaviour,
         id_nomenclature_diffusion_level = EXCLUDED.id_nomenclature_diffusion_level,
         id_nomenclature_geo_object_nature = EXCLUDED.id_nomenclature_geo_object_nature,

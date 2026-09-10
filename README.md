@@ -948,6 +948,12 @@ du cœur reporte statut et commentaire dans la Synthèse. L'historique n'est éc
 **qu'une fois par observation**, jamais réécrit : un validateur qui a tranché a le dernier
 mot, et rafraîchir la date éteindrait le filtre « modifiée depuis sa validation ».
 
+**Une validation faite chez vous survit aux imports suivants.** Le statut est écrit à la
+création de la ligne, puis plus jamais : un réimport qui met à jour l'observation — parce
+que la source l'a corrigée — ne remet pas le statut automatique par-dessus la décision de
+votre validateur. L'observation corrigée lui revient par le filtre « modifiée depuis sa
+validation », qui est fait pour ça.
+
 ⚠️ **Règle à connaître avant de toucher à `insert_batch`** : l'écriture de l'historique
 doit rester dans **la transaction de l'INSERT**. Le filtre « modifiée depuis sa
 validation » compare `meta_update_date` à `validation_date`, et il ne survit que parce que

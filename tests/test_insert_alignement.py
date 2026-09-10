@@ -388,7 +388,37 @@ def test_les_colonnes_de_completude_sont_bien_dans_linsert():
 # la ligne, pas son contenu : les réécrire n'apporterait rien et `last_action` doit
 # valoir « U », pas la valeur insérée.
 HORS_MISE_A_JOUR = {"unique_id_sinp", "id_source", "id_module", "id_dataset",
-                    "entity_source_pk_value", "last_action"}
+                    "entity_source_pk_value", "last_action",
+                    # Écrite à la création, jamais réécrite : voir le commentaire dans
+                    # INSERT_SQL et `test_une_validation_locale_survit_a_un_reimport`.
+                    "id_nomenclature_valid_status"}
+
+
+def test_une_validation_locale_survit_a_un_reimport():
+    """`id_nomenclature_valid_status` doit rester hors du SET de l'ON CONFLICT.
+
+    Le scénario que cela protège : une observation entre avec le statut de pré-validation,
+    un validateur la reprend et tranche, puis la source la modifie. Si la colonne était
+    réécrite, l'import remettrait le statut automatique par-dessus la décision du
+    validateur — dans la Synthèse seulement, car `prevalider` s'interdit de réécrire
+    `gn_commons.t_validations`. Les deux tables se contrediraient, et c'est la Synthèse que
+    lisent les exports, les filtres et la carte : la version fausse serait la visible.
+
+    Une observation corrigée à la source revient au validateur par le filtre « modifiée
+    depuis sa validation », qui compare `meta_update_date` à `validation_date`. Écraser le
+    statut court-circuiterait ce mécanisme au lieu de s'en servir.
+
+    Le test est écrit à l'envers des autres — il exige une ABSENCE — parce que la ligne
+    retirée l'avait été par inadvertance dès le premier commit du module, et qu'elle est
+    exactement le genre de chose qu'on réintroduit en complétant une clause.
+    """
+    bloc_set = (_source_insert().split("ON CONFLICT (unique_id_sinp) DO UPDATE SET")[1]
+                .split("WHERE COALESCE")[0])
+    assert "id_nomenclature_valid_status = EXCLUDED" not in bloc_set, (
+        "la décision d'un validateur local serait écrasée au prochain import")
+    # Mais la colonne doit bien être écrite à la création, sans quoi la pré-validation
+    # n'aurait aucun effet.
+    assert "id_nomenclature_valid_status" in colonnes_insert()
 
 
 def test_toute_colonne_inseree_est_aussi_mise_a_jour():
