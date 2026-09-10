@@ -432,6 +432,20 @@ Elle est exigée même si aucun observateur ne demande l'anonymat : le module é
 systématiquement un identifiant pseudonymisé dans `additional_data.observateur`, quel que
 soit le sort du nom. Sans elle, `vn-import` refuse de démarrer.
 
+Le consentement est lu **dans le relevé lui-même** : la forme longue de l'API porte
+`anonymous` et `anonymous_in_export` sur chaque observation. C'est la source la plus
+sûre — elle vaut au moment de l'observation, et non au moment où l'on consulte un
+référentiel.
+
+Le référentiel des observateurs n'est donc plus qu'un repli, pour les réponses qui ne
+portent pas ces champs. Il n'est **chargé qu'au premier relevé qui en a besoin**, et le
+plus souvent jamais : sur Faune-Occitanie il pèse 246 699 inscrits, soit plusieurs
+minutes de téléchargement et autant de noms de personnes en mémoire, qu'il serait absurde
+de payer d'avance pour un cas devenu rare.
+
+⚠️ `vn-reanonymiser`, lui, le charge toujours : c'est sa raison d'être, puisqu'il sert
+précisément à rattraper les changements d'avis exprimés après l'import.
+
 #### Générer la clé de pseudonymisation
 
 Sur la machine qui héberge GeoNature :

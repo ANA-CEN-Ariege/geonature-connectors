@@ -736,18 +736,16 @@ def vn_import(groupes, since, batch_size, dry_run):
 
     # Le consentement est individuel : chaque observateur déclare dans VisioNature si son
     # nom peut être diffusé. Un interrupteur global écraserait ce choix.
-    index_anonymat = {}
-    if not forcer_anonymat:
-        obs_ref = referentiel("observateurs", lambda: vn_api.observateurs(cfg),
-                              personnel=True)
-        index_anonymat = vn_conf.index_anonymat(obs_ref)
-        anonymes = sum(1 for v in index_anonymat.values() if v)
-        click.echo(f"  référentiel des observateurs : {len(index_anonymat)} inscrit(s), "
-                   f"{anonymes} ayant demandé l'anonymat")
-        if not index_anonymat:
-            click.secho("  ⚠ référentiel vide : tous les observateurs seront "
-                        "pseudonymisés, l'ignorance ne valant pas consentement.", fg="yellow")
-    else:
+    # Le référentiel des observateurs pèse 246 699 inscrits sur Faune-Occitanie, soit
+    # plusieurs minutes de téléchargement. Depuis que le consentement est lu dans le
+    # relevé lui-même — `anonymous` et `anonymous_in_export`, présents en forme longue —
+    # il n'est plus qu'un repli pour la forme courte. On ne le charge donc qu'à la
+    # première observation qui en a réellement besoin, et le plus souvent jamais.
+    index_anonymat = _IndexAnonymat(
+        lambda: vn_conf.index_anonymat(
+            referentiel("observateurs", lambda: vn_api.observateurs(cfg),
+                        personnel=True)))
+    if forcer_anonymat:
         click.echo("  anonymat forcé pour tous les observateurs")
     respecter = cfg.get("respecter_confidentialite", True)
     niveau_masquees = cfg.get("niveau_diffusion_masquees", "4")
@@ -954,6 +952,48 @@ def vn_import(groupes, since, batch_size, dry_run):
     chemin = rejets.write_csv(Path("vn_rejets.csv"))
     if chemin:
         click.echo(f"  Journal détaillé : {chemin}")
+
+
+class _IndexAnonymat:
+    """Index des consentements, chargé au premier besoin — souvent jamais.
+
+    `observateur()` n'interroge cet index que lorsque le relevé ne porte pas lui-même
+    `anonymous` ni `anonymous_in_export`. En forme longue il les porte toujours, si bien
+    que le référentiel — plusieurs minutes de téléchargement pour un quart de million
+    d'inscrits, et des noms de personnes en mémoire — n'a plus lieu d'être payé d'avance.
+
+    Se comporte comme le dictionnaire qu'il remplace : `in` et `[]` suffisent à
+    `observateur()`, et déclenchent le chargement.
+    """
+
+    def __init__(self, chargeur):
+        self._chargeur = chargeur
+        self._index = None
+
+    def _charger(self) -> dict:
+        if self._index is None:
+            click.echo("\n  (chargement du référentiel des observateurs : un relevé "
+                       "n'exprime pas de consentement)")
+            self._index = self._chargeur() or {}
+            anonymes = sum(1 for v in self._index.values() if v)
+            click.echo(f"  référentiel : {len(self._index)} inscrit(s), "
+                       f"{anonymes} ayant demandé l'anonymat")
+            if not self._index:
+                click.secho("  ⚠ référentiel vide : les observateurs concernés seront "
+                            "pseudonymisés, l'ignorance ne valant pas consentement.",
+                            fg="yellow")
+        return self._index
+
+    def __contains__(self, cle) -> bool:
+        return cle in self._charger()
+
+    def __getitem__(self, cle):
+        return self._charger()[cle]
+
+    def __bool__(self) -> bool:
+        # Ne PAS déclencher le chargement : `observateur()` fait `index or {}`, et le
+        # provoquer ici annulerait tout le bénéfice.
+        return True
 
 
 def _ecrire_lot(lot, jdds, instance, af, id_source=None):
