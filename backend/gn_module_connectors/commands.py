@@ -444,8 +444,8 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
         lot, ecrits, maj = [], 0, 0
         for occ in occurrences:
             if not keep_specimens and occ.get("basisOfRecord") in gbif_nomen.BASIS_OF_RECORD_EXCLUS:
-                rejets.add("hors_perimetre", occ.get("gbifID"), occ.get("scientificName"),
-                           occ.get("basisOfRecord"))
+                rejets.add("type_enregistrement_exclu", occ.get("gbifID"),
+                           occ.get("scientificName"), occ.get("basisOfRecord"))
                 continue
             cd_nom = gbif_taxo.resolve(occ, index, cache_gbif, journal=click.echo)
             if not cd_nom:

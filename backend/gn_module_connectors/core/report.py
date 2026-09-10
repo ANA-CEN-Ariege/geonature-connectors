@@ -26,7 +26,13 @@ REASONS = {
     "observer_excluded": "observateur hors liste",
     "uncertainty_too_high": "incertitude géographique trop élevée",
     "write_error": "erreur à l'écriture dans GeoNature",
-    "hors_perimetre": "hors périmètre (spécimen de collection ou fossile)",
+    # Deux notions distinctes, longtemps confondues sous la seule clé `hors_perimetre` :
+    # GBIF y rangeait un rejet sur le TYPE d'enregistrement, les trois autres connecteurs
+    # un rejet GÉOGRAPHIQUE. Le journal annonçait donc « spécimen de collection ou
+    # fossile » pour une observation simplement située hors du territoire demandé.
+    "hors_perimetre": "hors du périmètre géographique demandé",
+    "type_enregistrement_exclu": "type d'enregistrement exclu "
+                                 "(spécimen de collection ou fossile)",
     "no_date": "date indéterminable",
     "metadonnees_illisibles": "métadonnées GBIF du jeu illisibles",
     "jeu_maille": "jeu de données publié à la maille",
