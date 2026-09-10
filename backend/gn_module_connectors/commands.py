@@ -1216,10 +1216,13 @@ def vn_vider_cache():
               help="Journalise la requête réelle, pour comparer avec transfer_vn.")
 @click.option("--jours", default=60,
               help="Fenêtre des sondes de recherche, en jours (défaut : 60).")
+@click.option("--fin", default="",
+              help="Date de fin des sondes de recherche (AAAA-MM-JJ). Par défaut, "
+                   "aujourd'hui. Sert à sonder une période ancienne.")
 @click.option("--territoire", default="",
               help="Unité territoriale à sonder (id_country + short_name, ex. 109). "
                    "Par défaut, celles déduites de [visionature] departements.")
-def vn_diagnostic(groupe, debug, jours, territoire):
+def vn_diagnostic(groupe, debug, jours, fin, territoire):
     """Sonde les points d'entrée de l'API et rapporte ce que le compte peut faire.
 
     Les droits Biolovision ne sont pas uniformes : `observations/diff` peut fonctionner
@@ -1367,8 +1370,18 @@ def vn_diagnostic(groupe, debug, jours, territoire):
     # Une fenêtre d'un seul jour peut ne rien contenir — les reptiles ariégeois n'ont
     # pas d'observation quotidienne — et une sonde vide n'apprend rien sur la forme des
     # données. Soixante jours donnent un échantillon dans presque tous les cas.
-    fin = datetime.now(timezone.utc)
+    # Le journal de la LPO montre des oiseaux téléchargés sur l'Ariège en janvier 2019,
+    # avec exactement la même requête. Si 2019 passe et 2026 non, l'API restreint les
+    # données récentes — ce que ni le code ni les identifiants ne peuvent expliquer.
+    if fin:
+        try:
+            fin = datetime.fromisoformat(fin).replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise click.ClickException(f"--fin {fin!r} n'est pas une date ISO.")
+    else:
+        fin = datetime.now(timezone.utc)
     debut = fin - timedelta(days=jours)
+    click.echo(f"Sondes de recherche : {debut:%Y-%m-%d} → {fin:%Y-%m-%d}\n")
     sonder(f"observations/search ({jours} j, sans périmètre)", lambda: obs.api_search(
         vn_api.parametres_recherche(groupe, debut, fin), short_version="1"),
            observations=True)
