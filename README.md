@@ -844,6 +844,13 @@ organisme_fournisseur = "Collectif Faune-Occitanie"
 "66" = "GOR"
 ```
 
+**Le cadre d'acquisition est qualifié lui aussi.** Créé par la migration du module, il
+en sort sans territoire ni contact principal — que la migration ne peut pas connaître,
+puisqu'ils dépendent de l'instance et de la structure qui l'exploite. Le formulaire de
+GeoNature refuse alors de l'enregistrer, exactement comme pour un jeu de données. La
+qualification a lieu à chaque import plutôt qu'à la migration, de sorte qu'une
+configuration renseignée après coup rattrape un cadre déjà créé.
+
 ⚠️ **Le module ne crée jamais d'organisme.** Il les résout par leur nom dans
 `utilisateurs.bib_organismes` et signale ceux qu'il ne trouve pas, sans interrompre
 l'import. Les tirer des données peuplerait le référentiel de variantes d'orthographe —

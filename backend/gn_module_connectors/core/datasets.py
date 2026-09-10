@@ -285,3 +285,63 @@ def attacher_territoires(jdd, cds: list[str], journal=None) -> None:
                         SELECT 1 FROM gn_meta.cor_dataset_territory
                         WHERE id_dataset = :jdd AND id_nomenclature_territory = :terr)"""),
             {"jdd": jdd.id_dataset, "terr": id_nomenclature})
+
+
+def qualifier_cadre(af, territoires: list[str] | None = None,
+                    contact_principal: str = "", journal=None) -> None:
+    """Renseigne les champs que le formulaire du cadre d'acquisition exige.
+
+    Le cadre est créé par la migration du module, qui ne peut pas connaître ces valeurs :
+    elles dépendent de l'instance et de la structure qui l'exploite. Il en sort donc sans
+    territoire ni contact principal, et le formulaire de GeoNature refuse de
+    l'enregistrer — exactement comme pour les jeux de données.
+
+    Appelé à chaque import plutôt qu'à la migration : une configuration renseignée après
+    coup rattrape ainsi un cadre déjà créé, et une migration Alembic ne se rejoue pas.
+    """
+    if af is None or getattr(af, "id_acquisition_framework", None) is None:
+        return
+    id_af = af.id_acquisition_framework
+
+    for cd in territoires or []:
+        id_terr = db.session.execute(
+            text("SELECT ref_nomenclatures.get_id_nomenclature('TERRITOIRE', :c)"),
+            {"c": cd},
+        ).scalar()
+        if id_terr is None:
+            if journal:
+                journal(f"territoire « {cd} » inconnu de la nomenclature TERRITOIRE")
+            continue
+        db.session.execute(
+            text("""INSERT INTO gn_meta.cor_acquisition_framework_territory
+                        (id_acquisition_framework, id_nomenclature_territory)
+                    SELECT :af, :terr
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM gn_meta.cor_acquisition_framework_territory
+                        WHERE id_acquisition_framework = :af
+                          AND id_nomenclature_territory = :terr)"""),
+            {"af": id_af, "terr": id_terr})
+
+    if not contact_principal:
+        return
+    id_org = resoudre_organisme(contact_principal)
+    if id_org is None:
+        if journal:
+            journal(f"contact principal « {contact_principal} » introuvable dans "
+                    f"utilisateurs.bib_organismes : cadre laissé sans contact")
+        return
+    id_role = db.session.execute(
+        text("SELECT ref_nomenclatures.get_id_nomenclature('ROLE_ACTEUR', :c)"),
+        {"c": ROLE_CONTACT_PRINCIPAL},
+    ).scalar()
+    if id_role is None:
+        return
+    db.session.execute(
+        text("""INSERT INTO gn_meta.cor_acquisition_framework_actor
+                    (id_acquisition_framework, id_organism, id_nomenclature_actor_role)
+                SELECT :af, :org, :role
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM gn_meta.cor_acquisition_framework_actor
+                    WHERE id_acquisition_framework = :af AND id_organism = :org
+                      AND id_nomenclature_actor_role = :role)"""),
+        {"af": id_af, "org": id_org, "role": id_role})

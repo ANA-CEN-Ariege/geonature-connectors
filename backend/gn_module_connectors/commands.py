@@ -726,6 +726,15 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
     id_module = syn_core.get_module_id("CONNECTORS")
     srid = syn_core.local_srid()
     af = ds_core.get_acquisition_framework(CA_UUID)
+    # Le cadre est créé par la migration, qui ne peut connaître ni le territoire ni la
+    # structure exploitante. Sans eux, le formulaire de GeoNature refuse de
+    # l'enregistrer. Qualifié à chaque import plutôt qu'à la migration : une
+    # configuration renseignée après coup rattrape ainsi un cadre déjà créé.
+    ds_core.qualifier_cadre(
+        af, territoires=list(cfg.get("territoires") or []),
+        contact_principal=(cfg.get("organisme_contact_principal")
+                           or cfg.get("organisme_fournisseur") or ""),
+        journal=lambda m: click.secho(f"  ⚠ {m}", fg="yellow"))
     v_taxref = syn_core.version_taxref()
     click.secho(f"instance={instance} source={id_source} srid={srid} "
                 f"taxref={v_taxref or 'inconnu'}", fg="green")
