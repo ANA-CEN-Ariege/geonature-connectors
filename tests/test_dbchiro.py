@@ -358,3 +358,85 @@ def test_la_table_couvre_les_soixante_codes_mesures():
 
 def test_tous_les_cd_nom_sont_des_entiers_positifs():
     assert all(isinstance(cd, int) and cd > 0 for cd in T.TABLE.values())
+
+
+# ── Diagnostic des échecs de connexion ───────────────────────────────────────
+# Écrit après coup : lors du premier essai en conditions réelles, dbchiroc.org a renvoyé
+# un 500 sur le POST de connexion alors que le GET répondait normalement. Le connecteur
+# annonçait « identifiants invalides », ce qui envoyait vérifier un mot de passe
+# parfaitement valide. Un diagnostic faux coûte plus cher qu'une absence de diagnostic.
+
+from gn_module_connectors.sources.dbchiro import api as A  # noqa: E402
+
+
+class ReponseFactice:
+    def __init__(self, status_code, url="https://dbchiroc.org/", text="", json_=None):
+        self.status_code = status_code
+        self.url = url
+        self.text = text
+        self.headers = {"content-type": "application/json"}
+        self._json = json_
+
+    def json(self):
+        if self._json is None:
+            raise ValueError("pas du JSON")
+        return self._json
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+@pytest.mark.parametrize("code", [500, 502, 503])
+def test_une_panne_serveur_nest_pas_un_refus_didentifiants(code):
+    """Le cas réellement rencontré : 500 sur /accounts/login/, GET normal."""
+    with pytest.raises(A.ErreurDbChiro) as exc:
+        A.verifier_reponse_login(
+            ReponseFactice(code, "https://dbchiroc.org/accounts/login/"),
+            "https://dbchiroc.org")
+    message = str(exc.value)
+    assert "panne côté serveur" in message
+    assert "identifiants" not in message.replace("problème d'identifiants", "")
+
+
+def test_un_429_parle_de_debit_et_non_de_mot_de_passe():
+    with pytest.raises(A.ErreurDbChiro, match="débit"):
+        A.verifier_reponse_login(
+            ReponseFactice(429, "https://dbchiroc.org/accounts/login/"),
+            "https://dbchiroc.org")
+
+
+def test_un_403_evoque_le_csrf_ou_le_blocage_pas_le_mot_de_passe():
+    with pytest.raises(A.ErreurDbChiro, match="CSRF"):
+        A.verifier_reponse_login(
+            ReponseFactice(403, "https://dbchiroc.org/accounts/login/"),
+            "https://dbchiroc.org")
+
+
+def test_un_retour_au_formulaire_en_200_est_bien_un_refus():
+    with pytest.raises(A.ErreurDbChiro, match="identifiants invalides"):
+        A.verifier_reponse_login(
+            ReponseFactice(200, "https://dbchiroc.org/accounts/login/?next=/"),
+            "https://dbchiroc.org")
+
+
+def test_une_connexion_reussie_ne_leve_rien():
+    assert A.verifier_reponse_login(
+        ReponseFactice(200, "https://dbchiroc.org/"), "https://dbchiroc.org") is None
+
+
+def test_une_erreur_serveur_interrompt_le_moissonnage():
+    """Rendre un corpus partiel qu'un bilan présenterait comme complet serait pire
+    qu'échouer."""
+    with pytest.raises(A.ErreurDbChiro, match="panne côté"):
+        A._verifier_json(ReponseFactice(503, "https://dbchiroc.org/api/v1/search"),
+                         "https://dbchiroc.org/api/v1/search")
+
+
+def test_un_filtre_anti_robot_est_nomme_explicitement():
+    """demo.dbchiro.org est derrière Anubis : le cas doit se diagnostiquer seul."""
+    with pytest.raises(A.ErreurDbChiro, match="anti-robot"):
+        A._verifier_json(
+            ReponseFactice(200, "https://demo.dbchiro.org/api/v1/search",
+                           text="<html>within.website challenge</html>"),
+            "https://demo.dbchiro.org/api/v1/search")

@@ -63,6 +63,12 @@ def _verifier_json(reponse, url: str):
     intercale une page de défi, et une vraie erreur serveur. Sans ce tri, les trois
     remontent en `JSONDecodeError` sur une page HTML, ce qui n'apprend rien.
     """
+    if reponse.status_code >= 500:
+        raise ErreurDbChiro(
+            f"L'instance a répondu {reponse.status_code} sur {url} : panne côté "
+            f"serveur. Le moissonnage est interrompu plutôt que de rendre un corpus "
+            f"partiel qu'un bilan présenterait comme complet."
+        )
     if CHEMIN_LOGIN in reponse.url:
         raise ErreurDbChiro(
             f"Redirigé vers le formulaire de connexion en appelant {url} : la session "
@@ -83,6 +89,40 @@ def _verifier_json(reponse, url: str):
             f"Réponse non JSON de {url} (content-type "
             f"{reponse.headers.get('content-type')!r})."
         ) from exc
+
+
+def verifier_reponse_login(reponse, base: str) -> None:
+    """Lève une `ErreurDbChiro` explicite si la connexion n'a pas abouti.
+
+    Isolée de `connecter` pour être vérifiable sans réseau : c'est la
+    classification qui a été fausse en production, pas le transport.
+    """
+    # ⚠ L'ordre des tests compte. Un 500 rendu par l'application sur le chemin de
+    # connexion satisfait *aussi* le test d'URL ci-dessous : conclure « identifiants
+    # invalides » sur une panne serveur envoie l'exploitant vérifier un mot de passe
+    # parfaitement valide. Mesuré en conditions réelles — dbchiroc.org a renvoyé un 500
+    # sur le POST de connexion alors que le GET répondait normalement.
+    if reponse.status_code >= 500:
+        raise ErreurDbChiro(
+            f"L'instance {base} a répondu {reponse.status_code} au formulaire de "
+            f"connexion. C'est une panne côté serveur, pas un problème "
+            f"d'identifiants : réessayez plus tard, et signalez-la à l'exploitant si "
+            f"elle persiste."
+        )
+    if reponse.status_code == 429:
+        raise ErreurDbChiro(
+            f"L'instance {base} limite le débit des connexions (429). Espacez les "
+            f"exécutions du connecteur."
+        )
+    if reponse.status_code == 403:
+        raise ErreurDbChiro(
+            f"Connexion refusée sur {base} avec un 403 : jeton CSRF rejeté, ou compte "
+            f"bloqué après des tentatives répétées. Ce n'est pas un mot de passe erroné."
+        )
+    if CHEMIN_LOGIN in reponse.url:
+        raise ErreurDbChiro(
+            f"Connexion refusée sur {base} : identifiants invalides, ou compte inactif."
+        )
 
 
 def connecter(cfg) -> requests.Session:
@@ -131,10 +171,7 @@ def connecter(cfg) -> requests.Session:
         timeout=timeout,
         allow_redirects=True,
     )
-    if CHEMIN_LOGIN in reponse.url:
-        raise ErreurDbChiro(
-            f"Connexion refusée sur {base} : identifiants invalides, ou compte inactif."
-        )
+    verifier_reponse_login(reponse, base)
     return session
 
 

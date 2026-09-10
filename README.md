@@ -1017,7 +1017,7 @@ finir en erreur de décodage JSON.
 python3 -m pytest tests/ -q
 ```
 
-285 tests, sans dépendance à GeoNature ni à la base. Ils couvrent les cas qui ont
+294 tests, sans dépendance à GeoNature ni à la base. Ils couvrent les cas qui ont
 réellement mordu pendant le développement : le faux-ami `Nymph` / « Nymphe », les dates
 en intervalle ISO, l'asymétrie énumération/URL des licences, la distinction entre origine
 du taxon et état de l'individu, et le déterminisme de l'identifiant unique.
