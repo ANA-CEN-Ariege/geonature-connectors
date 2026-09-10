@@ -819,6 +819,7 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
     producteurs = {str(k).strip().zfill(2): v
                    for k, v in (cfg.get("producteurs_departementaux") or {}).items()}
     fournisseur = cfg.get("organisme_fournisseur") or None
+    creer_organismes = cfg.get("creer_organismes_manquants", False)
     if not producteurs and not fournisseur:
         click.secho("  ⚠ aucun organisme déclaré : les jeux de données seront créés sans "
                     "producteur, ce que le SINP n'admet pas. Voir "
@@ -989,7 +990,7 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
                     lot.append(ligne)
                     if len(lot) >= batch_size and not dry_run:
                         i, u = _ecrire_lot(lot, jdds, instance, af, id_source,
-                                   producteurs, fournisseur)
+                                   producteurs, fournisseur, creer_organismes)
                         ecrits += i; maj += u
                         db.session.commit(); lot = []
                         click.echo(f"    … {ecrits} écrites, {maj} mises à jour")
@@ -1001,7 +1002,7 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
 
         if lot and not dry_run:
             i, u = _ecrire_lot(lot, jdds, instance, af, id_source,
-                                   producteurs, fournisseur)
+                                   producteurs, fournisseur, creer_organismes)
             ecrits += i; maj += u
             db.session.commit()
         elif dry_run:
@@ -1115,7 +1116,7 @@ class _IndexAnonymat:
 
 
 def _ecrire_lot(lot, jdds, instance, af, id_source=None,
-                producteurs=None, fournisseur=None):
+                producteurs=None, fournisseur=None, creer_organismes=False):
     """Écrit un lot en le répartissant par code projet.
 
     Les JDD sont créés à la demande : un projet dont toutes les observations sont
@@ -1144,7 +1145,7 @@ def _ecrire_lot(lot, jdds, instance, af, id_source=None,
         departement, projet = cle
         if cle not in jdds:
             jdds[cle] = _jdd_visionature(instance, af, projet, departement,
-                                         producteurs, fournisseur)
+                                         producteurs, fournisseur, creer_organismes)
         for ligne in lignes:
             ligne["id_dataset"] = jdds[cle].id_dataset
         i, u = syn_core.insert_batch(lignes)
@@ -1154,7 +1155,7 @@ def _ecrire_lot(lot, jdds, instance, af, id_source=None,
 
 def _jdd_visionature(instance: str, af, projet: str | None = None,
                      departement: str | None = None, producteurs: dict | None = None,
-                     fournisseur: str | None = None):
+                     fournisseur: str | None = None, creer_organismes: bool = False):
     """JDD d'un département, créé à la première écriture.
 
     ⚠ Le découpage suit le **département** et non la seule instance, parce que c'est là
@@ -1194,6 +1195,10 @@ def _jdd_visionature(instance: str, af, projet: str | None = None,
             continue
         libelle = "producteur" if role == ds_core.ROLE_PRODUCTEUR else "fournisseur"
         id_org = ds_core.resoudre_organisme(nom_org)
+        if id_org is None and creer_organismes:
+            id_org = ds_core.creer_organisme(nom_org)
+            if id_org is not None:
+                click.secho(f"    + organisme créé : {nom_org} (id={id_org})", fg="green")
         if id_org is None:
             # Le producteur est obligatoire au SINP, le fournisseur ne l'est pas :
             # mettre les deux sur le même plan banaliserait l'avertissement qui compte.
@@ -1202,8 +1207,9 @@ def _jdd_visionature(instance: str, af, projet: str | None = None,
                        else "Le fournisseur est facultatif ; le jeu reste conforme.")
             click.secho(f"    ⚠ {libelle} « {nom_org} » introuvable dans "
                         f"utilisateurs.bib_organismes. {gravite} Vérifiez "
-                        f"l'orthographe : la résolution se fait sur le nom exact, aux "
-                        f"espaces et à la casse près.", fg="yellow")
+                        f"l'orthographe — la résolution se fait sur le nom exact, aux "
+                        f"espaces et à la casse près — ou activez "
+                        f"[visionature] creer_organismes_manquants.", fg="yellow")
             continue
         if ds_core.attacher_acteur(jdd.id_dataset, id_org, role):
             click.echo(f"    + {libelle} : {nom_org}")

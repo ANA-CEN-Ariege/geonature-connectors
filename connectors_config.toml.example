@@ -245,6 +245,14 @@ taxo_groups = []
 # La structure qui met la donnée à disposition, distincte de celle qui l'a produite.
 # organisme_fournisseur = "Collectif Faune-Occitanie"
 #
+# Créer les organismes ci-dessus s'ils n'existent pas encore. Faux par défaut : mieux
+# vaut un avertissement qu'une création silencieuse sur une faute de frappe.
+# creer_organismes_manquants = true
+#
+# ⚠ EN TOML, une sous-table avale toutes les clés qui la suivent. Placer le bloc
+#   ci-dessous À LA FIN de la section [visionature], jamais au milieu — sinon
+#   `pseudonymisation_secret` et les autres réglages basculeraient dedans.
+#
 # [visionature.producteurs_departementaux]
 # "09" = "ANA-CEN Ariège"
 # "66" = "GOR"

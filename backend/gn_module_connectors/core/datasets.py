@@ -135,6 +135,29 @@ def resoudre_organisme(nom: str) -> int | None:
     ).scalar()
 
 
+def creer_organisme(nom: str) -> int | None:
+    """Crée un organisme et retourne son identifiant, ou None en cas d'échec.
+
+    ⚠ À n'appeler que sur un nom venu de la CONFIGURATION, jamais des données d'une API.
+    La distinction n'est pas formelle : un nom déclaré par l'exploitant exprime une
+    intention, et le créer ne fait que l'exécuter. Un nom tiré de l'API arriverait en
+    autant de variantes qu'il y a de saisies — « LPO Occitanie », « LPO-Occitanie »,
+    « Ligue pour la Protection des Oiseaux Occitanie » — que plus personne ne saurait
+    rapprocher ensuite.
+    """
+    nom = (nom or "").strip()
+    if not nom:
+        return None
+    existant = resoudre_organisme(nom)
+    if existant is not None:
+        return existant
+    return db.session.execute(
+        text("""INSERT INTO utilisateurs.bib_organismes (nom_organisme)
+                VALUES (:n) RETURNING id_organisme"""),
+        {"n": nom},
+    ).scalar()
+
+
 def attacher_acteur(id_dataset: int, id_organisme: int, cd_role: str) -> bool:
     """Déclare un organisme comme acteur d'un JDD. Idempotent.
 

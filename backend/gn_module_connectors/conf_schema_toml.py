@@ -201,6 +201,13 @@ class VisioNatureSchemaConf(Schema):
     # Fournisseur commun à tous les jeux — la structure qui met la donnée à disposition,
     # distincte de celle qui l'a produite. Ex. « Collectif Faune-Occitanie ».
     organisme_fournisseur = fields.String(load_default="")
+    # Créer dans `utilisateurs.bib_organismes` les organismes déclarés ci-dessus qui
+    # n'y figurent pas. Faux par défaut : mieux vaut un avertissement qu'une création
+    # silencieuse sur une faute de frappe.
+    # ⚠ Ne vaut que pour les noms VENUS DE CETTE CONFIGURATION. Le module ne crée jamais
+    # d'organisme tiré des données d'une API : ils arriveraient en autant de variantes
+    # d'orthographe que de saisies.
+    creer_organismes_manquants = fields.Boolean(load_default=False)
     # Codes de département à conserver, vérifiés sur `place.county` de chaque relevé.
     # Vide = aucun filtre, donc toute l'étendue de l'instance : sur Faune-Occitanie,
     # treize départements. « 9 » et « 09 » sont acceptés indifféremment.
