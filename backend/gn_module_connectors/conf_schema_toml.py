@@ -208,6 +208,14 @@ class VisioNatureSchemaConf(Schema):
     # d'organisme tiré des données d'une API : ils arriveraient en autant de variantes
     # d'orthographe que de saisies.
     creer_organismes_manquants = fields.Boolean(load_default=False)
+    # Origine du financement, en cd_nomenclature de `DS_PUBLIQUE`. Non renseignée, la
+    # colonne prend le DEFAULT de GeoNature — d'où le « Financement : Publique »
+    # qu'affiche l'interface, qui n'a été choisi par personne et qui est probablement
+    # faux pour des données associatives issues de bénévoles.
+    financement = fields.String(load_default="")
+    # Créateur du jeu de données : identifiant de connexion ou id_role. En ligne de
+    # commande il n'y a pas d'utilisateur courant, d'où le « Créateur : Non renseigné ».
+    createur = fields.String(load_default="")
     # Codes de département à conserver, vérifiés sur `place.county` de chaque relevé.
     # Vide = aucun filtre, donc toute l'étendue de l'instance : sur Faune-Occitanie,
     # treize départements. « 9 » et « 09 » sont acceptés indifféremment.

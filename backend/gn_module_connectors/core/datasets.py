@@ -82,6 +82,48 @@ def upsert_dataset(
     return jdd, cree
 
 
+def qualifier_dataset(jdd, financement: str = "", createur: str = "",
+                      journal=None) -> None:
+    """Renseigne les métadonnées qu'un JDD prend sinon par défaut.
+
+    Deux colonnes se remplissent toutes seules et rarement à propos :
+
+    - `id_nomenclature_data_origin` porte un DEFAULT sur `DS_PUBLIQUE`, d'où le
+      « Financement : Publique » qu'affiche l'interface. Pour des données associatives
+      issues de bénévoles, c'est vraisemblablement faux — mais seul l'exploitant peut
+      le dire, d'où le réglage ;
+    - `id_digitiser` reste NULL, d'où « Créateur : Non renseigné ». En ligne de commande
+      il n'y a pas d'utilisateur courant ; il faut donc le désigner.
+
+    Une valeur inconnue du référentiel est signalée et ignorée, jamais devinée : écrire
+    une nomenclature fausse serait pire que de laisser le défaut.
+    """
+    if financement:
+        id_nomenclature = db.session.execute(
+            text("SELECT ref_nomenclatures.get_id_nomenclature('DS_PUBLIQUE', :c)"),
+            {"c": financement},
+        ).scalar()
+        if id_nomenclature is None:
+            if journal:
+                journal(f"financement « {financement} » inconnu de la nomenclature "
+                        f"DS_PUBLIQUE : valeur par défaut conservée")
+        else:
+            jdd.id_nomenclature_data_origin = id_nomenclature
+
+    if createur:
+        id_role = db.session.execute(
+            text("""SELECT id_role FROM utilisateurs.t_roles
+                    WHERE identifiant = :c OR CAST(id_role AS TEXT) = :c"""),
+            {"c": str(createur)},
+        ).scalar()
+        if id_role is None:
+            if journal:
+                journal(f"créateur « {createur} » introuvable dans "
+                        f"utilisateurs.t_roles : jeu laissé sans créateur")
+        else:
+            jdd.id_digitiser = id_role
+
+
 def dernier_moissonnage(id_dataset: int, id_source: int):
     """Date du dernier écrit du connecteur sur ce jeu, ou None.
 

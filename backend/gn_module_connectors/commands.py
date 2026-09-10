@@ -847,6 +847,10 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
                    for k, v in (cfg.get("producteurs_departementaux") or {}).items()}
     fournisseur = cfg.get("organisme_fournisseur") or None
     creer_organismes = cfg.get("creer_organismes_manquants", False)
+    # Métadonnées que le jeu prendrait sinon par défaut : « Financement : Publique » et
+    # « Créateur : Non renseigné », ni l'un ni l'autre choisi.
+    metadonnees = {"financement": cfg.get("financement", ""),
+                   "createur": cfg.get("createur", "")}
     if not producteurs and not fournisseur:
         click.secho("  ⚠ aucun organisme déclaré : les jeux de données seront créés sans "
                     "producteur, ce que le SINP n'admet pas. Voir "
@@ -1017,7 +1021,8 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
                     lot.append(ligne)
                     if len(lot) >= batch_size and not dry_run:
                         i, u = _ecrire_lot(lot, jdds, instance, af, id_source,
-                                   producteurs, fournisseur, creer_organismes)
+                                   producteurs, fournisseur, creer_organismes,
+                                   metadonnees)
                         ecrits += i; maj += u
                         db.session.commit(); lot = []
                         click.echo(f"    … {ecrits} écrites, {maj} mises à jour")
@@ -1029,7 +1034,8 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
 
         if lot and not dry_run:
             i, u = _ecrire_lot(lot, jdds, instance, af, id_source,
-                                   producteurs, fournisseur, creer_organismes)
+                                   producteurs, fournisseur, creer_organismes,
+                                   metadonnees)
             ecrits += i; maj += u
             db.session.commit()
         elif dry_run:
@@ -1143,7 +1149,8 @@ class _IndexAnonymat:
 
 
 def _ecrire_lot(lot, jdds, instance, af, id_source=None,
-                producteurs=None, fournisseur=None, creer_organismes=False):
+                producteurs=None, fournisseur=None, creer_organismes=False,
+                metadonnees=None):
     """Écrit un lot en le répartissant par code projet.
 
     Les JDD sont créés à la demande : un projet dont toutes les observations sont
@@ -1172,7 +1179,8 @@ def _ecrire_lot(lot, jdds, instance, af, id_source=None,
         departement, projet = cle
         if cle not in jdds:
             jdds[cle] = _jdd_visionature(instance, af, projet, departement,
-                                         producteurs, fournisseur, creer_organismes)
+                                         producteurs, fournisseur, creer_organismes,
+                                         metadonnees)
         for ligne in lignes:
             ligne["id_dataset"] = jdds[cle].id_dataset
         i, u = syn_core.insert_batch(lignes)
@@ -1182,7 +1190,8 @@ def _ecrire_lot(lot, jdds, instance, af, id_source=None,
 
 def _jdd_visionature(instance: str, af, projet: str | None = None,
                      departement: str | None = None, producteurs: dict | None = None,
-                     fournisseur: str | None = None, creer_organismes: bool = False):
+                     fournisseur: str | None = None, creer_organismes: bool = False,
+                     metadonnees: dict | None = None):
     """JDD d'un département, créé à la première écriture.
 
     ⚠ Le découpage suit le **département** et non la seule instance, parce que c'est là
@@ -1195,6 +1204,7 @@ def _jdd_visionature(instance: str, af, projet: str | None = None,
     programmes (atlas, suivis) au sein d'un même producteur.
     """
     from .core import datasets as ds_core
+    metadonnees = metadonnees or {}
     site = instance.replace("https://", "").replace("http://", "")
     morceaux = [m for m in (projet, f"dép. {departement}" if departement else None) if m]
     nom = (f"{' — '.join(morceaux)} — {site}" if morceaux
@@ -1208,6 +1218,10 @@ def _jdd_visionature(instance: str, af, projet: str | None = None,
                      f"le SINP ne connaît pas leur gradation possible/probable/certaine."),
         id_acquisition_framework=af.id_acquisition_framework,
     )
+    ds_core.qualifier_dataset(
+        jdd, financement=metadonnees.get("financement", ""),
+        createur=metadonnees.get("createur", ""),
+        journal=lambda m: click.secho(f"    ⚠ {m}", fg="yellow"))
     db.session.flush()
     if cree:
         click.secho(f"  + JDD créé : {jdd.id_dataset} — {nom}", fg="green")

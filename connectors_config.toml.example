@@ -249,6 +249,21 @@ taxo_groups = []
 # vaut un avertissement qu'une création silencieuse sur une faute de frappe.
 # creer_organismes_manquants = true
 #
+# ── Métadonnées que le jeu prendrait sinon par défaut ─────────────────────────
+# Sans ces réglages, l'interface affiche « Financement : Publique » et « Créateur :
+# Non renseigné » — le premier vient d'un DEFAULT de colonne dans GeoNature, le second
+# de l'absence d'utilisateur courant en ligne de commande. Ni l'un ni l'autre n'a été
+# choisi, et « Publique » est probablement faux pour des données associatives.
+#
+# cd_nomenclature de DS_PUBLIQUE. Lister les valeurs de votre instance avec :
+#   SELECT cd_nomenclature, label_default FROM ref_nomenclatures.t_nomenclatures t
+#   JOIN ref_nomenclatures.bib_nomenclatures_types b ON t.id_type = b.id_type
+#   WHERE b.mnemonique = 'DS_PUBLIQUE';
+# financement = "Pr"
+#
+# Identifiant de connexion ou id_role de l'utilisateur à porter comme créateur.
+# createur = "admin"
+#
 # ⚠ EN TOML, une sous-table avale toutes les clés qui la suivent. Placer le bloc
 #   ci-dessous À LA FIN de la section [visionature], jamais au milieu — sinon
 #   `pseudonymisation_secret` et les autres réglages basculeraient dedans.
