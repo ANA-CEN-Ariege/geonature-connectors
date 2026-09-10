@@ -819,9 +819,13 @@ def vn_import(groupes, since, batch_size, dry_run):
                     total_supprimes += n
                     click.echo(f"    {len(supprimes)} relevé(s) supprimé(s) à la "
                                f"source -> {n} observation(s) retirée(s)")
+            def _avancement(faits, total):
+                if total > vn_api.LOT_IDENTIFIANTS:
+                    click.echo(f"    récupération : {faits}/{total} relevé(s)")
+
             try:
                 releves, inaccessibles = vn_api.observations_modifiees(
-                    cfg, str(groupe), since)
+                    cfg, str(groupe), since, journal=_avancement)
             except vn_api.bio.BiolovisionApiException as erreur:
                 groupes_refuses.append((str(groupe), f"diff : {erreur!r}"))
                 click.secho(f"    refusé par l'API ({erreur!r})", fg="yellow")

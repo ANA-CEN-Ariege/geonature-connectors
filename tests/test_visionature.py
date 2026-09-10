@@ -655,32 +655,54 @@ def test_identifiant_de_diff(entree, attendu):
     assert A.identifiant(entree) == attendu
 
 
-def test_un_releve_inaccessible_ninterrompt_pas_le_moissonnage(monkeypatch):
-    """Un 403 sur une observation ne doit pas faire tomber tout l'import.
+def test_les_releves_sont_recuperes_par_lots_de_cent(monkeypatch):
+    """`api_list(id_sightings_list=…)` rend cent relevés par requête.
 
-    Le différentiel liste des relevés que le compte n'a pas forcément le droit de lire
-    individuellement. Le client vendorisé traite tout 4xx comme irrécupérable et lève :
-    sans rattrapage, une seule observation protégée fait échouer un moissonnage de
-    milliers de relevés. Mesuré sur faune-occitanie.org, où l'import est tombé au premier
-    groupe sur l'observation 88724785.
+    C'est la voie qu'emploie `_store_update` de `transfer_vn`. Une version antérieure
+    appelait `api_get` par identifiant : le différentiel des oiseaux d'Occitanie rendant
+    quelque 26 000 identifiants par jour, cela faisait 26 000 requêtes contre 260 ici.
     """
-    from gn_module_connectors.sources.visionature.biolovision import api as bio
+    appels = []
 
     class ControleurFactice:
-        def api_diff(self, *_args):
-            return [{"id_sighting": "1"}, {"id_sighting": "403"}, {"id_sighting": "3"}]
+        def api_diff(self, *_a):
+            return [{"id_sighting": str(i)} for i in range(250)]
 
-        def api_get(self, cle):
-            if cle == "403":
-                raise bio.HTTPError(403)
-            return {"data": {"sightings": [{"@id": cle, "observers": [{"@id": "9"}]}]}}
+        def api_list(self, groupe, id_sightings_list=None, **_k):
+            cles = id_sightings_list.split(",")
+            appels.append(len(cles))
+            return {"data": {"sightings": [{"@id": c, "observers": [{"@uid": "1"}]}
+                                           for c in cles]}}
 
     monkeypatch.setattr(A, "_controleur", lambda *_a, **_k: ControleurFactice())
     releves, inaccessibles = A.observations_modifiees({}, "1", "2026-09-09")
 
-    assert [r["@id"] for r in releves] == ["1", "3"]
-    assert [cle for cle, _ in inaccessibles] == ["403"]
-    assert "403" in inaccessibles[0][1]
+    assert appels == [100, 100, 50], "trois requêtes, pas deux cent cinquante"
+    assert len(releves) == 250
+    assert not inaccessibles
+
+
+def test_un_lot_refuse_ninterrompt_pas_les_suivants(monkeypatch):
+    """Perdre cent relevés est regrettable ; en perdre vingt-six mille le serait plus."""
+    from gn_module_connectors.sources.visionature.biolovision import api as bio
+
+    class ControleurFactice:
+        def api_diff(self, *_a):
+            return [{"id_sighting": str(i)} for i in range(150)]
+
+        def api_list(self, groupe, id_sightings_list=None, **_k):
+            if id_sightings_list.startswith("0,"):
+                raise bio.HTTPError(403)
+            cles = id_sightings_list.split(",")
+            return {"data": {"sightings": [{"@id": c, "observers": [{"@uid": "1"}]}
+                                           for c in cles]}}
+
+    monkeypatch.setattr(A, "_controleur", lambda *_a, **_k: ControleurFactice())
+    releves, inaccessibles = A.observations_modifiees({}, "1", "2026-09-09")
+
+    assert len(releves) == 50, "le second lot doit avoir abouti"
+    assert len(inaccessibles) == 100
+    assert all("403" in motif for _cle, motif in inaccessibles)
 
 
 def test_un_releve_deja_complet_nest_pas_recharge():

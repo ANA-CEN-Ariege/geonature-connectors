@@ -347,45 +347,77 @@ def identifiant(entree: dict) -> str | None:
     return str(valeur) if valeur else None
 
 
-def observations_modifiees(cfg, id_taxo_group: str, depuis: str,
-                           type_modification: str = "only_modified"
-                           ) -> tuple[list[dict], list[tuple[str, str]]]:
-    """Relevés créés ou modifiés depuis `depuis`, et la liste des inaccessibles.
+# Nombre d'identifiants demandés par requête. `transfer_vn` emploie 100
+# (`max_list_length`), et découpe la liste en tranches de cette taille.
+LOT_IDENTIFIANTS = 100
 
-    Le différentiel ne livrant que des identifiants, chaque relevé signalé est ensuite
-    récupéré par `api_get`. C'est une requête par relevé : acceptable pour un incrémental,
-    dont c'est le propre de ne porter que sur un delta, mais c'est aussi la raison pour
-    laquelle `--since` ne remplace pas un moissonnage complet.
+
+def observations_par_identifiants(cfg, id_taxo_group: str, identifiants: list[str],
+                                  journal=None) -> tuple[list[dict], list[tuple[str, str]]]:
+    """Relevés complets correspondant à une liste d'identifiants.
+
+    C'est la voie qu'emploie `transfer_vn` dans `_store_update` — et celle qui manquait
+    ici. `api_list` accepte un paramètre `id_sightings_list` : des identifiants séparés
+    par des virgules, cent à la fois. On obtient donc cent relevés complets par requête,
+    là où `api_get` en demandait un par observation.
+
+    L'écart n'est pas théorique : le différentiel des oiseaux d'Occitanie rend quelque
+    26 000 identifiants par jour, soit 26 000 requêtes en `api_get` contre 260 ici.
+
+    Un `api_list` ainsi borné n'est de surcroît pas le dump intégral d'un groupe
+    taxonomique, que l'API refuse — c'est une demande ciblée.
+
+    Retourne `(relevés, inaccessibles)`. Un lot refusé n'interrompt pas les suivants :
+    ses identifiants sont remontés avec leur motif, à charge pour l'appelant de les
+    journaliser. Perdre cent relevés est regrettable, en perdre 26 000 le serait plus.
+    """
+    controleur = _controleur(bio.ObservationsAPI, cfg)
+    releves, inaccessibles = [], []
+    for debut in range(0, len(identifiants), LOT_IDENTIFIANTS):
+        lot = identifiants[debut:debut + LOT_IDENTIFIANTS]
+        try:
+            reponse = controleur.api_list(id_taxo_group,
+                                          id_sightings_list=",".join(lot),
+                                          short_version=SHORT_VERSION)
+            releves.extend(_extraire(reponse))
+        except bio.BiolovisionApiException as erreur:
+            inaccessibles.extend((cle, f"lot : {erreur!r}") for cle in lot)
+        if journal:
+            journal(debut + len(lot), len(identifiants))
+    return releves, inaccessibles
+
+
+def observations_modifiees(cfg, id_taxo_group: str, depuis: str,
+                           type_modification: str = "only_modified", journal=None
+                           ) -> tuple[list[dict], list[tuple[str, str]]]:
+    """Relevés créés ou modifiés depuis `depuis`, complets, et les inaccessibles.
+
+    Le différentiel ne livre que des identifiants — `id_sighting`, `id_universal`,
+    `modification_type`. Les relevés sont ensuite récupérés **par lots de cent** via
+    `api_list(id_sightings_list=…)`, comme le fait `_store_update` de `transfer_vn`.
+
+    Une version antérieure appelait `api_get` par identifiant. C'était tenable sur un
+    petit delta et intenable au-delà : le différentiel des oiseaux d'Occitanie rend
+    quelque 26 000 identifiants par jour. Le passage par lots divise le nombre de
+    requêtes par cent.
 
     Le défaut est `only_modified` et non « all » : les suppressions sont traitées à part,
-    par `observations_supprimees`, et les inclure ici ferait tenter la récupération de
-    relevés qui n'existent plus.
-
-    ⚠ Un relevé peut être listé par le différentiel sans être lisible individuellement :
-    l'API répond alors 403, et le client vendorisé traite tout 4xx comme irrécupérable en
-    levant `HTTPError`. Sans le rattrapage ci-dessous, **une seule observation protégée
-    fait échouer le moissonnage entier** — mesuré sur faune-occitanie.org, où l'import est
-    tombé au premier groupe sur l'observation 88724785.
-
-    Un relevé inaccessible est donc une donnée manquante, pas une panne : il est retourné
-    à l'appelant avec son motif, à charge pour lui de le journaliser. L'ignorer en silence
-    serait pire que l'erreur — on ne saurait pas ce qu'on n'a pas.
+    par `observations_supprimees`, et les inclure ici ferait demander des relevés qui
+    n'existent plus.
     """
     controleur = _controleur(bio.ObservationsAPI, cfg)
     entrees = _extraire(controleur.api_diff(id_taxo_group, depuis, type_modification))
 
-    releves, inaccessibles = [], []
+    releves, a_chercher = [], []
     for entree in entrees:
+        # Le différentiel peut livrer un relevé complet ; inutile de le redemander.
         if est_releve_complet(entree):
             releves.append(entree)
             continue
         cle = identifiant(entree)
-        if not cle:
-            continue
-        try:
-            releves.extend(_extraire(controleur.api_get(cle)))
-        except bio.HTTPError as erreur:
-            inaccessibles.append((cle, f"HTTP {erreur}"))
-        except bio.BiolovisionApiException as erreur:
-            inaccessibles.append((cle, str(erreur) or type(erreur).__name__))
-    return releves, inaccessibles
+        if cle:
+            a_chercher.append(cle)
+
+    complementaires, inaccessibles = observations_par_identifiants(
+        cfg, id_taxo_group, a_chercher, journal=journal)
+    return releves + complementaires, inaccessibles
