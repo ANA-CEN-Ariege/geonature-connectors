@@ -212,6 +212,10 @@ def attacher_acteur(id_dataset: int, id_organisme: int, cd_role: str) -> bool:
     métadonnée obligatoire du standard. Rien dans GeoNature ne l'impose techniquement,
     d'où la facilité avec laquelle on l'oublie.
     """
+    if id_dataset is None:
+        raise RuntimeError(
+            "Le jeu de données n'a pas encore d'identifiant : appelez db.session.flush() "
+            "avant d'écrire dans une table de liaison.")
     id_role_nomenclature = db.session.execute(
         text("SELECT ref_nomenclatures.get_id_nomenclature('ROLE_ACTEUR', :c)"),
         {"c": cd_role},
@@ -256,6 +260,14 @@ def attacher_territoires(jdd, cds: list[str], journal=None) -> None:
     enregistré. « METROP » convient à la France métropolitaine ; une instance
     ultramarine emploiera GLP, MTQ, REU, MYT, GUF…
     """
+    if getattr(jdd, "id_dataset", None) is None:
+        # Sans ce contrôle, PostgreSQL rejette sur une contrainte NOT NULL et la trace
+        # ne dit pas la cause : le jeu n'a pas encore été « flushé », donc il n'a pas
+        # d'identifiant. Une table de liaison ne peut s'écrire qu'après.
+        raise RuntimeError(
+            "Le jeu de données n'a pas encore d'identifiant : appelez db.session.flush() "
+            "avant d'écrire dans une table de liaison.")
+
     for cd in cds or []:
         id_nomenclature = db.session.execute(
             text("SELECT ref_nomenclatures.get_id_nomenclature('TERRITOIRE', :c)"),

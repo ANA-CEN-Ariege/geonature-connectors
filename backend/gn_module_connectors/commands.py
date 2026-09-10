@@ -1232,9 +1232,6 @@ def _jdd_visionature(instance: str, af, projet: str | None = None,
                      f"le SINP ne connaît pas leur gradation possible/probable/certaine."),
         id_acquisition_framework=af.id_acquisition_framework,
     )
-    ds_core.attacher_territoires(
-        jdd, metadonnees.get("territoires") or [],
-        journal=lambda m: click.secho(f"    ⚠ {m}", fg="yellow"))
     ds_core.qualifier_dataset(
         # Le financement dépend du PROJET, non du département : la plupart des projets
         # VisioNature sont privés, une minorité relève d'un financement public.
@@ -1242,9 +1239,16 @@ def _jdd_visionature(instance: str, af, projet: str | None = None,
                           or metadonnees.get("financement", "")),
         createur=metadonnees.get("createur", ""),
         journal=lambda m: click.secho(f"    ⚠ {m}", fg="yellow"))
+    # Le flush attribue l'id_dataset. Tout ce qui écrit en SQL brut sur des tables de
+    # liaison doit donc venir APRÈS : `qualifier_dataset` ne fait que poser des attributs
+    # ORM et peut précéder, `attacher_territoires` et `attacher_acteur` non.
     db.session.flush()
     if cree:
         click.secho(f"  + JDD créé : {jdd.id_dataset} — {nom}", fg="green")
+
+    ds_core.attacher_territoires(
+        jdd, metadonnees.get("territoires") or [],
+        journal=lambda m: click.secho(f"    ⚠ {m}", fg="yellow"))
 
     # Les acteurs sont posés à chaque passage, pas seulement à la création : une
     # configuration corrigée après coup doit pouvoir rattraper un jeu déjà créé.
