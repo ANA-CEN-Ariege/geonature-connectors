@@ -1192,15 +1192,20 @@ def _jdd_visionature(instance: str, af, projet: str | None = None,
                           (fournisseur, ds_core.ROLE_FOURNISSEUR)):
         if not nom_org:
             continue
+        libelle = "producteur" if role == ds_core.ROLE_PRODUCTEUR else "fournisseur"
         id_org = ds_core.resoudre_organisme(nom_org)
         if id_org is None:
-            click.secho(f"    ⚠ organisme « {nom_org} » absent de "
-                        f"utilisateurs.bib_organismes : acteur non déclaré. Le jeu de "
-                        f"données n'est pas conforme au SINP sans producteur.",
-                        fg="yellow")
+            # Le producteur est obligatoire au SINP, le fournisseur ne l'est pas :
+            # mettre les deux sur le même plan banaliserait l'avertissement qui compte.
+            gravite = ("Le jeu de données restera non conforme au SINP, qui exige un "
+                       "producteur." if role == ds_core.ROLE_PRODUCTEUR
+                       else "Le fournisseur est facultatif ; le jeu reste conforme.")
+            click.secho(f"    ⚠ {libelle} « {nom_org} » introuvable dans "
+                        f"utilisateurs.bib_organismes. {gravite} Vérifiez "
+                        f"l'orthographe : la résolution se fait sur le nom exact, aux "
+                        f"espaces et à la casse près.", fg="yellow")
             continue
         if ds_core.attacher_acteur(jdd.id_dataset, id_org, role):
-            libelle = ("producteur" if role == ds_core.ROLE_PRODUCTEUR else "fournisseur")
             click.echo(f"    + {libelle} : {nom_org}")
     return jdd
 
