@@ -212,6 +212,13 @@ class VisioNatureSchemaConf(Schema):
     # colonne prend le DEFAULT de GeoNature — d'où le « Financement : Publique »
     # qu'affiche l'interface, qui n'a été choisi par personne et qui est probablement
     # faux pour des données associatives issues de bénévoles.
+    # Nom lisible du portail, employé dans le nom des jeux : « Faune Occitanie (Ariège) »
+    # plutôt que « dép. 09 — www.faune-occitanie.org ». Vide, le nom d'hôte est repris.
+    nom_instance = fields.String(load_default="")
+    # Territoires du jeu (`TERRITOIRE`), exigés par le formulaire de GeoNature — sans eux
+    # le jeu ne peut pas être enregistré. « METROP » pour la France métropolitaine ; une
+    # instance ultramarine emploiera GLP, MTQ, REU, MYT, GUF, SPM…
+    territoires = fields.List(fields.String(), load_default=lambda: ["METROP"])
     financement = fields.String(load_default="")
     # Financement par code projet VisioNature, qui prime sur la valeur ci-dessus. La
     # plupart des projets sont privés, une minorité relève d'un financement public :

@@ -227,3 +227,48 @@ def attacher_acteur(id_dataset: int, id_organisme: int, cd_role: str) -> bool:
                       AND id_nomenclature_actor_role = :role)"""),
         {"jdd": id_dataset, "org": id_organisme, "role": id_role_nomenclature},
     ).rowcount)
+
+
+def nom_departement(code: str) -> str | None:
+    """Nom d'un département d'après son code, via `ref_geo.l_areas`.
+
+    Les données VisioNature ne portent que le code (`place.county`). Nommer un jeu
+    « Faune Occitanie (Ariège) » plutôt que « dép. 09 » demande donc d'interroger le
+    référentiel géographique de l'instance — qui l'a déjà, et dans l'orthographe que
+    l'exploitant reconnaîtra.
+    """
+    if not code:
+        return None
+    return db.session.execute(
+        text("""SELECT a.area_name FROM ref_geo.l_areas a
+                JOIN ref_geo.bib_areas_types t ON t.id_type = a.id_type
+                WHERE t.type_code = 'DEP' AND a.area_code = :c
+                LIMIT 1"""),
+        {"c": str(code)},
+    ).scalar()
+
+
+def attacher_territoires(jdd, cds: list[str], journal=None) -> None:
+    """Rattache le jeu à des territoires (`TERRITOIRE`). Idempotent.
+
+    Le formulaire de GeoNature l'exige — sans territoire, le jeu ne peut pas être
+    enregistré. « METROP » convient à la France métropolitaine ; une instance
+    ultramarine emploiera GLP, MTQ, REU, MYT, GUF…
+    """
+    for cd in cds or []:
+        id_nomenclature = db.session.execute(
+            text("SELECT ref_nomenclatures.get_id_nomenclature('TERRITOIRE', :c)"),
+            {"c": cd},
+        ).scalar()
+        if id_nomenclature is None:
+            if journal:
+                journal(f"territoire « {cd} » inconnu de la nomenclature TERRITOIRE")
+            continue
+        db.session.execute(
+            text("""INSERT INTO gn_meta.cor_dataset_territory
+                        (id_dataset, id_nomenclature_territory)
+                    SELECT :jdd, :terr
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM gn_meta.cor_dataset_territory
+                        WHERE id_dataset = :jdd AND id_nomenclature_territory = :terr)"""),
+            {"jdd": jdd.id_dataset, "terr": id_nomenclature})

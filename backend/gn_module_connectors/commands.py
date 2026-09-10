@@ -849,7 +849,9 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
     creer_organismes = cfg.get("creer_organismes_manquants", False)
     # Métadonnées que le jeu prendrait sinon par défaut : « Financement : Publique » et
     # « Créateur : Non renseigné », ni l'un ni l'autre choisi.
-    metadonnees = {"financement": cfg.get("financement", ""),
+    metadonnees = {"nom_instance": cfg.get("nom_instance", ""),
+                   "territoires": list(cfg.get("territoires") or []),
+                   "financement": cfg.get("financement", ""),
                    "financement_par_projet": dict(cfg.get("financement_par_projet") or {}),
                    "createur": cfg.get("createur", "")}
     if not producteurs and not fournisseur:
@@ -1207,9 +1209,15 @@ def _jdd_visionature(instance: str, af, projet: str | None = None,
     from .core import datasets as ds_core
     metadonnees = metadonnees or {}
     site = instance.replace("https://", "").replace("http://", "")
-    morceaux = [m for m in (projet, f"dép. {departement}" if departement else None) if m]
-    nom = (f"{' — '.join(morceaux)} — {site}" if morceaux
-           else f"Observations VisioNature — {site}")
+    # Un nom que l'exploitant reconnaît : « Faune Occitanie (Ariège) » plutôt que
+    # « dép. 09 — www.faune-occitanie.org ». Le nom du département vient de `ref_geo`,
+    # qui l'a déjà et dans l'orthographe de l'instance ; les données VisioNature ne
+    # portent que le code.
+    portail = metadonnees.get("nom_instance") or site
+    lieu = ds_core.nom_departement(departement) if departement else None
+    lieu = lieu or (f"dép. {departement}" if departement else None)
+    morceaux = [m for m in (portail, f"({lieu})" if lieu else None, projet) if m]
+    nom = " ".join(morceaux) if morceaux else f"Observations VisioNature — {site}"
     # Construit plutôt que tronqué : amputer le nom long donnait « dép. 09 — www.faune-oc »,
     # illisible dans les listes déroulantes où le nom court sert précisément à choisir.
     court = " ".join(x for x in ("VN", projet, departement) if x)[:30]
@@ -1222,6 +1230,9 @@ def _jdd_visionature(instance: str, af, projet: str | None = None,
                      f"le SINP ne connaît pas leur gradation possible/probable/certaine."),
         id_acquisition_framework=af.id_acquisition_framework,
     )
+    ds_core.attacher_territoires(
+        jdd, metadonnees.get("territoires") or [],
+        journal=lambda m: click.secho(f"    ⚠ {m}", fg="yellow"))
     ds_core.qualifier_dataset(
         # Le financement dépend du PROJET, non du département : la plupart des projets
         # VisioNature sont privés, une minorité relève d'un financement public.

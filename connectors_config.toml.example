@@ -255,6 +255,16 @@ taxo_groups = []
 # de l'absence d'utilisateur courant en ligne de commande. Ni l'un ni l'autre n'a été
 # choisi, et « Publique » est probablement faux pour des données associatives.
 #
+# Nom lisible du portail : les jeux s'appellent alors « Faune Occitanie (Ariège) »
+# plutôt que « dép. 09 — www.faune-occitanie.org ». Le nom du département vient de
+# ref_geo, qui le porte déjà dans l'orthographe de votre instance.
+nom_instance = "Faune Occitanie"
+
+# Territoires du jeu, EXIGÉS par le formulaire de GeoNature : sans eux, le jeu ne peut
+# pas être enregistré. METROP pour la métropole ; une instance ultramarine emploiera
+# GLP, MTQ, REU, MYT, GUF, SPM, NCL, PYF…
+territoires = ["METROP"]
+
 # cd_nomenclature de DS_PUBLIQUE. Lister les valeurs de votre instance avec :
 #   SELECT cd_nomenclature, label_default FROM ref_nomenclatures.t_nomenclatures t
 #   JOIN ref_nomenclatures.bib_nomenclatures_types b ON t.id_type = b.id_type
