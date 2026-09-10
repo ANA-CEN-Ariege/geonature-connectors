@@ -287,8 +287,39 @@ def attacher_territoires(jdd, cds: list[str], journal=None) -> None:
             {"jdd": jdd.id_dataset, "terr": id_nomenclature})
 
 
+def resoudre_nomenclature(mnemonique: str, valeur: str) -> int | None:
+    """id_nomenclature d'après un `cd_nomenclature` ou, à défaut, un libellé.
+
+    Accepter les deux évite d'imposer à l'exploitant de relever des codes qu'il ne voit
+    nulle part dans l'interface : elle lui montre « Mixte », pas « 3 ». Le code est
+    essayé d'abord — il est stable — et le libellé ne sert que de repli.
+
+    ⚠ Un libellé est propre à une langue et peut changer d'une version de référentiel à
+    l'autre. Préférer le `cd_nomenclature` quand on le connaît.
+    """
+    valeur = (valeur or "").strip()
+    if not valeur:
+        return None
+    par_code = db.session.execute(
+        text("SELECT ref_nomenclatures.get_id_nomenclature(:m, :c)"),
+        {"m": mnemonique, "c": valeur},
+    ).scalar()
+    if par_code is not None:
+        return par_code
+    return db.session.execute(
+        text("""SELECT t.id_nomenclature FROM ref_nomenclatures.t_nomenclatures t
+                JOIN ref_nomenclatures.bib_nomenclatures_types b ON b.id_type = t.id_type
+                WHERE b.mnemonique = :m
+                  AND lower(trim(t.label_default)) = lower(trim(:c))
+                LIMIT 1"""),
+        {"m": mnemonique, "c": valeur},
+    ).scalar()
+
+
 def qualifier_cadre(af, territoires: list[str] | None = None,
-                    contact_principal: str = "", journal=None) -> None:
+                    contact_principal: str = "", objectifs: list[str] | None = None,
+                    financement: str = "", niveau_territorial: str = "",
+                    journal=None) -> None:
     """Renseigne les champs que le formulaire du cadre d'acquisition exige.
 
     Le cadre est créé par la migration du module, qui ne peut pas connaître ces valeurs :
@@ -321,6 +352,38 @@ def qualifier_cadre(af, territoires: list[str] | None = None,
                         WHERE id_acquisition_framework = :af
                           AND id_nomenclature_territory = :terr)"""),
             {"af": id_af, "terr": id_terr})
+
+    # Objectifs : table de liaison, comme les territoires.
+    for valeur in objectifs or []:
+        id_obj = resoudre_nomenclature("CA_OBJECTIFS", valeur)
+        if id_obj is None:
+            if journal:
+                journal(f"objectif « {valeur} » inconnu de la nomenclature CA_OBJECTIFS")
+            continue
+        db.session.execute(
+            text("""INSERT INTO gn_meta.cor_acquisition_framework_objectif
+                        (id_acquisition_framework, id_nomenclature_objectif)
+                    SELECT :af, :obj
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM gn_meta.cor_acquisition_framework_objectif
+                        WHERE id_acquisition_framework = :af
+                          AND id_nomenclature_objectif = :obj)"""),
+            {"af": id_af, "obj": id_obj})
+
+    # Financement et niveau territorial : colonnes, prises par DEFAULT sinon.
+    for attribut, mnemonique, valeur in (
+            ("id_nomenclature_financing_type", "TYPE_FINANCEMENT", financement),
+            ("id_nomenclature_territorial_level", "NIVEAU_TERRITORIAL",
+             niveau_territorial)):
+        if not valeur:
+            continue
+        id_nom = resoudre_nomenclature(mnemonique, valeur)
+        if id_nom is None:
+            if journal:
+                journal(f"« {valeur} » inconnu de la nomenclature {mnemonique} : "
+                        f"valeur par défaut conservée")
+            continue
+        setattr(af, attribut, id_nom)
 
     if not contact_principal:
         return

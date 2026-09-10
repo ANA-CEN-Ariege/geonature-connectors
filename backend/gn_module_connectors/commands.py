@@ -734,6 +734,9 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
         af, territoires=list(cfg.get("territoires") or []),
         contact_principal=(cfg.get("organisme_contact_principal")
                            or cfg.get("organisme_fournisseur") or ""),
+        objectifs=list(cfg.get("objectifs_cadre") or []),
+        financement=cfg.get("financement_cadre", ""),
+        niveau_territorial=cfg.get("niveau_territorial", ""),
         journal=lambda m: click.secho(f"  ⚠ {m}", fg="yellow"))
     v_taxref = syn_core.version_taxref()
     click.secho(f"instance={instance} source={id_source} srid={srid} "
@@ -1229,9 +1232,11 @@ def _jdd_visionature(instance: str, af, projet: str | None = None,
     lieu = lieu or (f"dép. {departement}" if departement else None)
     morceaux = [m for m in (portail, f"({lieu})" if lieu else None, projet) if m]
     nom = " ".join(morceaux) if morceaux else f"Observations VisioNature — {site}"
-    # Construit plutôt que tronqué : amputer le nom long donnait « dép. 09 — www.faune-oc »,
-    # illisible dans les listes déroulantes où le nom court sert précisément à choisir.
-    court = " ".join(x for x in ("VN", projet, departement) if x)[:30]
+    # Le nom court dérive du nom réel : « Faune Occitanie (Ariège) » tient en 24
+    # caractères, sous la limite de 30 qu'impose le formulaire. Un libellé fabriqué
+    # séparément — « VN 09 » — obligeait à reconnaître deux désignations du même jeu
+    # selon l'écran consulté.
+    court = nom[:30]
     jdd, cree = ds_core.upsert_dataset(
         source="VisioNature",
         cle=f"{instance}:{departement or ''}:{projet or ''}", licence="",

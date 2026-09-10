@@ -269,6 +269,17 @@ nom_instance = "Faune Occitanie"
 # GLP, MTQ, REU, MYT, GUF, SPM, NCL, PYF…
 territoires = ["METROP"]
 
+# ── Cadre d'acquisition ──────────────────────────────────────────────────────
+# Créé par la migration du module, il en sort sans ces valeurs : elles dépendent de
+# l'instance et de la structure qui l'exploite. Le formulaire les exige, ou applique des
+# valeurs par défaut que personne n'a choisies.
+#
+# Chaque valeur s'écrit en cd_nomenclature OU en libellé, le code primant. Le libellé est
+# plus lisible mais dépend de la langue et de la version du référentiel.
+objectifs_cadre = ["Multiples ou autres"]
+financement_cadre = "Mixte"
+niveau_territorial = "Régional terrestre, ou sous-région marine"
+
 # cd_nomenclature de DS_PUBLIQUE. Lister les valeurs de votre instance avec :
 #   SELECT cd_nomenclature, label_default FROM ref_nomenclatures.t_nomenclatures t
 #   JOIN ref_nomenclatures.bib_nomenclatures_types b ON t.id_type = b.id_type

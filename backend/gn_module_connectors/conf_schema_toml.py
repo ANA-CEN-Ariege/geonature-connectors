@@ -224,6 +224,15 @@ class VisioNatureSchemaConf(Schema):
     # le jeu ne peut pas être enregistré. « METROP » pour la France métropolitaine ; une
     # instance ultramarine emploiera GLP, MTQ, REU, MYT, GUF, SPM…
     territoires = fields.List(fields.String(), load_default=lambda: ["METROP"])
+    # ── Cadre d'acquisition ─────────────────────────────────────────────────
+    # Créé par la migration, il en sort sans ces valeurs — que la migration ne peut pas
+    # connaître, elles dépendent de l'instance. Le formulaire de GeoNature les exige ou
+    # applique des DEFAULT qui n'ont été choisis par personne.
+    # Chaque valeur s'écrit en cd_nomenclature ou en libellé, le code primant.
+    objectifs_cadre = fields.List(fields.String(), load_default=list)
+    financement_cadre = fields.String(load_default="")
+    niveau_territorial = fields.String(load_default="")
+
     financement = fields.String(load_default="")
     # Financement par code projet VisioNature, qui prime sur la valeur ci-dessus. La
     # plupart des projets sont privés, une minorité relève d'un financement public :
