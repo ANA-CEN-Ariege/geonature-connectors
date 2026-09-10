@@ -1664,6 +1664,20 @@ def vn_purge(projet, taxon, drop_empty_datasets, yes):
     click.echo(f"{n} observation(s) concernée(s) — {quoi}.")
 
     if not n:
+        total = purge_core.compter(id_source, id_dataset)
+        if taxon and total:
+            # « 0 concernée » alors que la Synthèse en montre : le nom de rang cherché
+            # n'existe pas dans TAXREF, ou pas sous cette forme. Montrer ce qu'il y a.
+            click.secho(f"  ⚠ aucun taxon ne correspond à « {taxon} », alors que la "
+                        f"source porte {total} observation(s). Rangs présents :",
+                        fg="yellow")
+            click.echo(f"    {'classe':<20}  {'ordre':<20}  {'famille':<24}  n")
+            for classe, ordre, famille, combien in purge_core.rangs_presents(
+                    id_source, id_dataset):
+                click.echo(f"    {str(classe or '—'):<20}  {str(ordre or '—'):<20}  "
+                           f"{str(famille or '—'):<24}  {combien}")
+            click.echo("  Reprenez --taxon avec l'un de ces noms, ou omettez-le pour "
+                       "purger toute la source.")
         return
     if not yes:
         click.secho("Simulation. Relancez avec --yes pour supprimer.", fg="yellow")
