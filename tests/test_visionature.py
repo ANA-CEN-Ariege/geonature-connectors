@@ -1013,3 +1013,25 @@ def test_pas_de_retrecissement_quand_la_fenetre_nen_depend_pas(monkeypatch):
                                     ["109"], tranche_jours=15))
 
     assert len(appels) == 1, f"une seule tentative attendue, {len(appels)} émises"
+
+
+@pytest.mark.parametrize("valeur", ["anonymous", "export", "nominative", ""])
+def test_seul_anonymize_impose_le_pseudonyme(valeur):
+    """Une seule valeur d'`anonymous_in_export` déclenche l'anonymisation.
+
+    `gn_vn2synthese` teste `= 'anonymize'` et rien d'autre. Avoir ajouté « anonymous » à
+    cet ensemble, d'après une liste de valeurs possibles plutôt qu'une décision
+    constatée, pseudonymisait potentiellement tous les observateurs — l'inverse exact de
+    ce que le respect du consentement doit produire.
+    """
+    obs = {"@uid": "7", "name": "Untel", "anonymous": "0",
+           "anonymous_in_export": valeur}
+    nom, _motif = C.observateur(obs, {"7": False}, "cle")
+    assert nom == "Untel", f"{valeur!r} ne doit pas déclencher le pseudonyme"
+
+
+def test_anonymize_impose_bien_le_pseudonyme():
+    nom, motif = C.observateur(
+        {"@uid": "7", "name": "Untel", "anonymous": "0",
+         "anonymous_in_export": "anonymize"}, {"7": False}, "cle")
+    assert nom.startswith("obs-") and "anonymat demandé" in motif

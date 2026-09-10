@@ -1347,6 +1347,20 @@ def vn_diagnostic(groupe, debug, jours, fin, territoire):
                         part = "" if n == total else f"  ({n})"
                         click.echo(f"  {'':<34}          {champ}{part}")
 
+                # Les valeurs comptent autant que la présence : c'est en supposant le
+                # sens d'un code d'énumération qu'on pseudonymise tout le monde.
+                for champ in ("anonymous", "anonymous_in_export", "second_hand"):
+                    valeurs = _Counter()
+                    for e in entrees:
+                        liste = (e or {}).get("observers")
+                        if isinstance(liste, list) and liste and isinstance(liste[0], dict):
+                            if champ in liste[0]:
+                                valeurs[str(liste[0][champ])] += 1
+                    if valeurs:
+                        detail = ", ".join(f"{v!r} ({n})"
+                                           for v, n in valeurs.most_common())
+                        click.echo(f"  {'':<34}        {champ} : {detail}")
+
                 _lister("champs du relevé", freq_sighting)
                 _lister("champs de observers[0]", freq_obs)
                 _lister("champs de place", freq_place)
