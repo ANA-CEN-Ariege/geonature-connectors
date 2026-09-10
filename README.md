@@ -321,16 +321,28 @@ accélère.
 deprecated. Please use search method only »*. Un 403 sur ce point d'entrée est donc
 attendu, et ne signale aucun droit manquant.
 
-⚠️ **Le 403 de `search` est un refus de VOLUME, pas de droit.** Mesuré sur
-faune-occitanie.org avec les mêmes identifiants et le même territoire : 223 reptiles sur
-soixante jours passent, sept jours d'oiseaux — quelque 260 000 observations — sont
-refusés. C'est ce que régule le PID de `transfer_vn` : il ne cherche pas l'efficacité,
-il évite ce refus.
+⚠️ **Deux 403 distincts coexistent sur `search`, et ils ne veulent pas dire la même
+chose.** Relevé sur faune-occitanie.org, en sondant les quarante-neuf groupes avec les
+mêmes identifiants, le même territoire et la même fenêtre :
 
-Le moissonnage rétrécit donc sa tranche et réessaie au lieu d'abandonner. Un groupe très
-observé finira sur des tranches de quelques jours, un groupe rare sur des tranches de
-plusieurs mois, sans réglage manuel. Un refus qui persiste au plancher remonte, faute de
-quoi une boucle sans fin masquerait un vrai problème.
+| corps de la réponse | groupes concernés | lecture |
+|---|---|---|
+| `"you are not authorized to access this taxonomic group"` | exactement ceux dont `access_mode` vaut `none` | refus de droit, explicite |
+| **vide** | des groupes en `access_mode = full`, y compris minuscules | périmètre de la clé d'API |
+
+Le volume ne l'explique pas : les chiroptères comptent 74 modifications quotidiennes sur
+**toute** l'Occitanie, donc une poignée en Ariège, et sont refusés comme les oiseaux. Le
+seul groupe servi était les reptiles.
+
+Autrement dit, le périmètre d'export d'une clé Biolovision se décide **par groupe
+taxonomique**, indépendamment de l'`access_mode` du portail, et un refus de périmètre ne
+se distingue d'un refus de droit que par la présence ou l'absence d'un message. Le
+diagnostic les affiche tous deux ; c'est ce qu'il faut porter à l'administrateur de
+l'instance pour demander une extension.
+
+Le moissonnage rétrécit malgré tout sa tranche deux fois avant d'abandonner : si un refus
+tient au volume, il passera ; sinon on ne divise pas indéfiniment une plage qui ne sera
+jamais servie.
 
 ⚠️ **Et une recherche sans périmètre territorial est refusée elle aussi.** Mesuré sur
 faune-occitanie.org : `POST /observations/search/` sans `territorial_unit_ids` renvoie

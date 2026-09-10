@@ -194,6 +194,21 @@ TRANCHE_JOURS_DEFAUT = 15
 TRANCHE_JOURS_MIN = 1
 TRANCHE_JOURS_MAX = 365
 
+# Nombre de rétrécissements consentis face à un 403 avant d'abandonner.
+#
+# ⚠ Deux 403 distincts coexistent, et ils ne veulent pas dire la même chose. Relevé sur
+# faune-occitanie.org :
+#   - corps « you are not authorized to access this taxonomic group » : refus de droit
+#     explicite, obtenu exactement sur les groupes dont `access_mode` vaut « none » ;
+#   - corps VIDE : autre chose. Obtenu sur des groupes en `access_mode = full`, y compris
+#     des groupes minuscules — 74 modifications quotidiennes pour les chiroptères sur
+#     TOUTE l'Occitanie, donc une poignée en Ariège. Le volume ne l'explique donc pas.
+#
+# Rétrécir la tranche n'aide que si le refus tient au volume. Comme rien ne l'établit, on
+# s'y essaie deux fois — c'est peu coûteux — puis on remonte l'erreur au lieu de diviser
+# indéfiniment une plage qui ne sera jamais servie.
+ESSAIS_403 = 2
+
 
 def _ajuster(tranche: int, obtenus: int) -> int:
     """Nouvelle taille de tranche, d'après le volume qu'a rendu la précédente.
@@ -234,6 +249,7 @@ def moissonner_recherche(cfg, id_taxo_group: str, date_debut, date_fin,
     for territoire in territoires:
         fin = date_fin
         tranche = tranche_jours
+        essais = 0
         while fin > date_debut:
             debut = max(date_debut, fin - timedelta(days=tranche))
             try:
@@ -250,7 +266,8 @@ def moissonner_recherche(cfg, id_taxo_group: str, date_debut, date_fin,
                 # l'efficacité, il évite ce refus. On rétrécit donc et on réessaie, au
                 # lieu d'abandonner le groupe comme s'il était interdit.
                 code = erreur.args[0] if erreur.args else None
-                if code == 403 and tranche > TRANCHE_JOURS_MIN:
+                if code == 403 and tranche > TRANCHE_JOURS_MIN and essais < ESSAIS_403:
+                    essais += 1
                     tranche = max(TRANCHE_JOURS_MIN, tranche // 4)
                     if journal:
                         journal(territoire, debut, fin, -1)
@@ -259,6 +276,7 @@ def moissonner_recherche(cfg, id_taxo_group: str, date_debut, date_fin,
             if journal:
                 journal(territoire, debut, fin, len(releves))
             yield (debut, fin, territoire, releves)
+            essais = 0
             tranche = _ajuster(tranche, len(releves))
             fin = debut - timedelta(days=1)
 
