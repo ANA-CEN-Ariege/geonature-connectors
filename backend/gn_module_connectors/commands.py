@@ -1157,7 +1157,9 @@ def vn_vider_cache():
 @click.option("--taxo-group", "groupe", default="1", help="Groupe à sonder (défaut : 1).")
 @click.option("--debug", is_flag=True,
               help="Journalise la requête réelle, pour comparer avec transfer_vn.")
-def vn_diagnostic(groupe, debug):
+@click.option("--jours", default=60,
+              help="Fenêtre des sondes de recherche, en jours (défaut : 60).")
+def vn_diagnostic(groupe, debug, jours):
     """Sonde les points d'entrée de l'API et rapporte ce que le compte peut faire.
 
     Les droits Biolovision ne sont pas uniformes : `observations/diff` peut fonctionner
@@ -1261,9 +1263,13 @@ def vn_diagnostic(groupe, debug):
     # Paramètres relevés sur `transfer_vn`, et non devinés : `period_choice` est
     # obligatoire et les dates sont au format JJ.MM.AAAA. La sonde précédente envoyait
     # de l'ISO sans `period_choice` — son 403 ne prouvait donc rien.
-    hier = datetime.now(timezone.utc) - timedelta(days=1)
-    sonder("observations/search (sans périmètre)", lambda: obs.api_search(
-        vn_api.parametres_recherche(groupe, hier, hier), short_version="1"))
+    # Une fenêtre d'un seul jour peut ne rien contenir — les reptiles ariégeois n'ont
+    # pas d'observation quotidienne — et une sonde vide n'apprend rien sur la forme des
+    # données. Soixante jours donnent un échantillon dans presque tous les cas.
+    fin = datetime.now(timezone.utc)
+    debut = fin - timedelta(days=jours)
+    sonder(f"observations/search ({jours} j, sans périmètre)", lambda: obs.api_search(
+        vn_api.parametres_recherche(groupe, debut, fin), short_version="1"))
 
     # `_store_search` de transfer_vn n'émet JAMAIS de recherche sans périmètre : sa
     # boucle `for t_u in t_us:` pose systématiquement `location_choice` et
@@ -1279,8 +1285,8 @@ def vn_diagnostic(groupe, debug):
                    if t]
     if territoires:
         apercu = ", ".join(territoires[:3]) + ("…" if len(territoires) > 3 else "")
-        sonder(f"observations/search ({apercu})", lambda: obs.api_search(
-            vn_api.parametres_recherche(groupe, hier, hier, territoires[:1]),
+        sonder(f"observations/search ({jours} j, {apercu})", lambda: obs.api_search(
+            vn_api.parametres_recherche(groupe, debut, fin, territoires[:1]),
             short_version="1"))
     else:
         click.secho("  observations/search (avec périmètre)  ignoré — aucune unité "
