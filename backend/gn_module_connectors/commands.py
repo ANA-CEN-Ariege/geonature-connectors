@@ -1141,14 +1141,19 @@ def vn_territoires():
         return
 
     click.echo(f"{len(unites)} unité(s) territoriale(s) :\n")
-    click.echo(f"  {'id':>8}  {'short_name':<12}  nom")
+    # L'identifiant à employer dans `search` n'est ni l'`id` ni le `short_name` : c'est
+    # leur concaténation, `id_country` suivi du `short_name`. L'afficher évite d'avoir à
+    # la deviner — l'Ariège est « 109 », l'Aude « 111 ».
+    click.echo(f"  {'id':>4}  {'short_name':<12}  {'à employer':<12}  nom")
     for u in unites:
-        click.echo(f"  {str(u.get('id') or u.get('@id') or ''):>8}  "
-                   f"{str(u.get('short_name') or ''):<12}  {u.get('name') or ''}")
+        click.echo(f"  {str(u.get('id') or u.get('@id') or ''):>4}  "
+                   f"{str(u.get('short_name') or ''):<12}  "
+                   f"{str(vn_api.identifiant_territoire(u) or '—'):<12}  "
+                   f"{u.get('name') or ''}")
     click.echo("\nRestreindre le moissonnage, dans connectors_config.toml :\n"
                "  [visionature]\n"
                "  departements = [\"09\"]              # vérifié sur place.county\n"
-               "  filtre_api = { id_territorial_unit = \"<id ci-dessus>\" }\n"
+               "  # colonne « à employer » ci-dessus pour --territoire\n"
                "\nLe second réduit le volume téléchargé, le premier garantit le "
                "périmètre : un paramètre inconnu de l'API est ignoré sans erreur.")
 
