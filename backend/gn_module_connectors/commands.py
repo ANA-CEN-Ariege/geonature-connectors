@@ -1270,7 +1270,15 @@ def vn_diagnostic(groupe, debug, jours, fin, territoire):
             reponse = appel()
         except bio.HTTPError as erreur:
             code = erreur.args[0] if erreur.args else "?"
-            sens = {403: "droit manquant", 404: "point d'entrée absent",
+            # 401 et 403 ne disent pas la même chose, et la confusion coûte cher.
+            # 401 « Can't verify request, missing oauth_consumer_key » : la signature
+            # OAuth n'est pas vérifiable — client_key ou client_secret absent ou faux,
+            # l'API ne reconnaît pas le demandeur.
+            # 403 : demandeur reconnu, mais pas autorisé sur cette ressource. La clé est
+            # donc valide ; c'est son périmètre qui est en cause.
+            sens = {401: "clé non reconnue — vérifier client_key et client_secret",
+                    403: "clé valide, mais périmètre insuffisant",
+                    404: "point d'entrée absent",
                     400: "requête refusée (l'accès, lui, existe)"}.get(code, "")
             click.secho(f"  {intitule:<34} HTTP {code}  {sens}", fg="yellow")
             return None
@@ -1425,6 +1433,10 @@ def vn_diagnostic(groupe, debug, jours, fin, territoire):
     click.echo("\nLa méthode `list` est DÉPRÉCIÉE en amont — transfer_vn journalise\n"
                "« Download using list method is deprecated, please use search method only ».\n"
                "Son 403 est donc attendu ; c'est `search` avec périmètre qui compte.\n")
+    click.echo("\n401 partout -> la clé n'est pas reconnue : client_key ou client_secret\n"
+               "               absent ou erroné. Rien à voir avec les droits.\n"
+               "403 partout -> la clé est reconnue mais son périmètre ne couvre pas la\n"
+               "               ressource. C'est une question d'habilitation, pas de code.\n")
     click.echo("\nLecture :\n"
                "  search avec périmètre OK              -> c'était le périmètre manquant,\n"
                "                                           pas le droit.\n"

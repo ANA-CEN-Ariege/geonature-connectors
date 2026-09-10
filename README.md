@@ -429,6 +429,17 @@ geonature connectors vn-territoires                    # identifiants à employe
 geonature connectors vn-groupes                        # codes et access_mode
 ```
 
+⚠️ **401 et 403 ne disent pas la même chose**, et les confondre coûte cher :
+
+- **401** `Can't verify request, missing oauth_consumer_key or oauth_token (3Leg)` : la
+  signature OAuth n'est pas vérifiable. `client_key` ou `client_secret` est absent ou
+  erroné, et l'API ne reconnaît pas le demandeur. Rien à voir avec les droits.
+- **403** : le demandeur est reconnu, mais n'est pas autorisé sur cette ressource. **La
+  clé est donc valide** ; c'est son périmètre qui est en cause.
+
+Obtenir un 401 avec un second jeu d'identifiants est ainsi une façon simple de confirmer
+que le premier est bien authentifié.
+
 ⚠️ Deux formes de 403 coexistent, et seule la première se nomme :
 
 - `"you are not authorized to access this taxonomic group"` et `"you are not allowed to
