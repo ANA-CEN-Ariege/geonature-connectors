@@ -344,6 +344,21 @@ creuse — pour viser le même ordre de grandeur que `transfer_vn`, qui régule 
 autour de 10 000 observations. Une interruption laisse donc un corpus utilisable, les
 données récentes étant traitées en premier.
 
+⚠️ **La forme du JSON n'est pas un détail de volumétrie.** `short_version=1` demande la
+forme réduite, et sur faune-occitanie.org `observers[]` n'y porte que `@id`, `@uid`,
+`altitude`, `comment`, `coord_lat`, `coord_lon`, `count`, `estimation_code`,
+`flight_number`, `gps_lat`, `gps_lon`, `hidden`, `id_sighting`, `id_universal`.
+
+Manquent donc `atlas_code`, `details`, `behaviours`, `timing`, `uuid`, `medias`,
+`extended_info`, `project_code`, `second_hand` — et `name`, le nom de l'observateur. Soit :
+ni statut de reproduction, ni heure, ni identifiant SINP natif, ni mortalité, ni preuve
+d'existence, ni jeu de données par code projet, ni observateur nommé. Le module emploie
+donc la **forme longue**. `transfer_vn` recommande la courte pour sa volumétrie ; ce
+n'est pas notre besoin.
+
+Le `place` de la forme courte est amputé de la même façon : il porte `loc_precision` mais
+ni `county` ni `insee`, d'où l'impossibilité d'en déduire le département.
+
 `search` renvoie des **relevés complets** (`date`, `observers`, `place`, `species`),
 contrairement au différentiel qui ne livre que des identifiants. C'est ce qui rend le
 moissonnage complet praticable là où le différentiel imposerait une requête par

@@ -116,7 +116,19 @@ def unites_territoriales(cfg) -> list[dict]:
 #
 # La forme réduite suffit : c'est elle qui alimente la table de transit de la LPO, dont
 # le SQL lit `observers[0].details`, `behaviours`, `place` et le reste.
-SHORT_VERSION = "1"
+# ⚠ « 1 » demande la forme RÉDUITE, et elle est bien plus réduite qu'il n'y paraît.
+# Relevé sur faune-occitanie.org, `observers[]` n'y porte que :
+#   @id, @uid, altitude, comment, coord_lat, coord_lon, count, estimation_code,
+#   flight_number, gps_lat, gps_lon, hidden, id_sighting, id_universal
+# Manquent donc `atlas_code`, `details`, `behaviours`, `timing`, `uuid`, `medias`,
+# `extended_info`, `project_code`, `second_hand` — et `name`, le nom de l'observateur.
+# Autrement dit : ni statut de reproduction, ni heure, ni identifiant SINP natif, ni
+# mortalité, ni preuve d'existence, ni jeu de données par projet, ni observateur nommé.
+#
+# Le module retient donc la forme LONGUE par défaut. `transfer_vn` recommande la courte
+# parce que sa table de transit alimente ensuite un SQL qui lit... `details` et
+# `behaviours` : la recommandation vaut pour leur volumétrie, pas pour nos besoins.
+SHORT_VERSION = "0"
 
 
 def parametres_recherche(id_taxo_group: str, date_debut, date_fin,

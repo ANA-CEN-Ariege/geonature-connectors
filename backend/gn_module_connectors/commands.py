@@ -1285,9 +1285,15 @@ def vn_diagnostic(groupe, debug, jours):
                    if t]
     if territoires:
         apercu = ", ".join(territoires[:3]) + ("…" if len(territoires) > 3 else "")
-        sonder(f"observations/search ({jours} j, {apercu})", lambda: obs.api_search(
-            vn_api.parametres_recherche(groupe, debut, fin, territoires[:1]),
-            short_version="1"))
+        # Les deux formes, côte à côte. La forme courte ampute `observers[]` de
+        # `atlas_code`, `details`, `behaviours`, `timing`, `uuid`, `medias`,
+        # `extended_info`, `project_code`, `second_hand` et `name` — soit l'essentiel de
+        # ce que le module exploite. Le constat doit être visible, pas déduit.
+        for version, etiquette in (("1", "forme courte"), ("0", "forme longue")):
+            sonder(f"observations/search ({jours} j, {apercu}, {etiquette})",
+                   lambda v=version: obs.api_search(
+                       vn_api.parametres_recherche(groupe, debut, fin, territoires[:1]),
+                       short_version=v))
     else:
         click.secho("  observations/search (avec périmètre)  ignoré — aucune unité "
                     "territoriale exploitable", fg="yellow")
