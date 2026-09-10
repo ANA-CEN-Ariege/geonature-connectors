@@ -1064,3 +1064,72 @@ def test_repli_sur_id_universal():
 def test_sans_identifiant_la_valeur_est_vide_et_non_none():
     """`entity_source_pk_value` est une colonne texte : None y ferait échouer l'insert."""
     assert T.identifiant_releve({}, {}) == ""
+
+
+# ── Contenu écologique conservé ──────────────────────────────────────────────
+
+class _ResolverFactice:
+    def id(self, mnemonique, cd):
+        return 1
+
+    def defaut(self, mnemonique):
+        return 1
+
+
+def _ligne(**champs_observation):
+    import json
+    ligne = T.to_row(
+        {"date": {"@ISO8601": "2026-09-01"},
+         "species": {"@id": "1", "name": "Podarcis muralis", "taxonomy": "6"},
+         "place": {"county": "09"}},
+        {"@id": "1", "@uid": "7", "name": "Untel", "anonymous": "0",
+         "anonymous_in_export": "export",
+         "coord_lat": "42.8", "coord_lon": "1.9", **champs_observation},
+        cd_nom=1, id_dataset=1, id_source=1, id_module=1, srid=2154,
+        resolver=_ResolverFactice(), instance="i",
+        index_anonymat={"7": False}, secret_pseudo="cle")
+    return json.loads(ligne["additional_data"])
+
+
+def test_la_ventilation_par_age_et_sexe_est_conservee():
+    """`details` porte ce que `count` écrase : « 3 adultes et 2 juvéniles » -> 5.
+
+    Le module s'en sert pour déduire un statut de reproduction, puis le jetait. Le SINP
+    ne sait pas exprimer cette ventilation, mais elle a de la valeur pour un CEN.
+    """
+    details = [{"age": "AD", "sex": "M", "count": "3"},
+               {"age": "JUVENILE", "sex": "U", "count": "2"}]
+    assert _ligne(details=details)["details"] == details
+
+
+def test_les_comportements_bruts_sont_conserves():
+    """Ponte, tandem, stridulation : cinq codes seulement ont un équivalent SINP."""
+    assert _ligne(behaviours=[{"@id": "134_3"}])["behaviours"] == [{"@id": "134_3"}]
+
+
+def test_lorganisme_suit_le_sort_du_nom():
+    """Dans une petite structure, l'organisme ré-identifie aussi bien qu'un patronyme."""
+    assert _ligne(juridical_person="ANA-CEN Ariège")["juridical_person"] == "ANA-CEN Ariège"
+
+
+def test_lorganisme_est_retire_avec_le_nom():
+    import json
+    ligne = T.to_row(
+        {"date": {"@ISO8601": "2026-09-01"}, "species": {"@id": "1", "name": "X"},
+         "place": {"county": "09"}},
+        {"@id": "1", "@uid": "7", "name": "Untel", "anonymous": "1",
+         "juridical_person": "ANA-CEN Ariège",
+         "coord_lat": "42.8", "coord_lon": "1.9"},
+        cd_nom=1, id_dataset=1, id_source=1, id_module=1, srid=2154,
+        resolver=_ResolverFactice(), instance="i",
+        index_anonymat={"7": True}, secret_pseudo="cle")
+    provenance = json.loads(ligne["additional_data"])
+    assert provenance["anonymat"].startswith("anonymat demandé")
+    assert "juridical_person" not in provenance
+
+
+def test_labsence_de_ces_champs_nalourdit_pas_la_provenance():
+    """La plupart des relevés n'en portent aucun : ne pas stocker de clés vides."""
+    provenance = _ligne()
+    for champ in ("details", "behaviours", "juridical_person"):
+        assert champ not in provenance

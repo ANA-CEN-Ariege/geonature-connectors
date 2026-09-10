@@ -523,6 +523,25 @@ def to_row(sighting: dict, observation: dict, *, cd_nom: int, id_dataset: int | 
         # des lignes déjà importées (cf. `core.synthese.realigner_uuid`) et garde la
         # trace de l'identifiant sous lequel la donnée a d'abord été publiée.
         "vn_uuid_calcule": uuid_supplante or "",
+        # ── Contenu écologique conservé tel quel ────────────────────────────
+        # `details` ventile le relevé par âge, sexe, effectif et distance ;
+        # `behaviours` porte les comportements notés. Nous les consommons pour en
+        # déduire un statut de reproduction, puis nous les jetions — alors qu'ils
+        # portent une information que le SINP ne sait pas exprimer : « 3 adultes et
+        # 2 juvéniles » devenait `count = 5`, une ponte ou un tandem disparaissait.
+        #
+        # Conservés bruts plutôt que dans une table 1:1 comme le fait
+        # `gn_vn2synthese` : aucun schéma à maintenir, et `additional_data` est du
+        # jsonb indexable en GIN si l'analyse le demande. Le relevé n'est PAS déplié
+        # en plusieurs lignes de Synthèse — cf. `deplier` pour les raisons.
+        "details": observation.get("details") or None,
+        "behaviours": observation.get("behaviours") or None,
+        # ⚠ L'organisme de rattachement suit le sort du nom : dans une petite
+        # structure, il ré-identifie aussi sûrement qu'un patronyme. Il n'est donc
+        # conservé que lorsque l'observateur accepte d'être nommé.
+        "juridical_person": (observation.get("juridical_person")
+                             if nom_observateur and not nom_observateur.startswith("obs-")
+                             else None),
         "vn_empreinte": empreinte(sighting, observation),
     }
 

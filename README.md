@@ -602,6 +602,40 @@ d'observations en produisent donc cent vingt-six millions, avec la maintenance d
 correspondante. Les 32 observations par seconde mesurées l'ont été sur une Synthèse
 quasi vide ; le débit se dégrade à mesure qu'elle se remplit.
 
+### Ce que `additional_data` conserve
+
+`gn_synthese.synthese` ne sait pas tout exprimer. Ce que le SINP ignore mais que la
+donnée porte est conservé en `jsonb` — indexable en GIN si l'analyse le demande :
+
+| clé | contenu |
+|---|---|
+| `details` | ventilation par âge, sexe, effectif, distance |
+| `behaviours` | comportements notés (ponte, tandem, stridulation…) |
+| `atlas_code` | code EOAC brut, dont le SINP ignore la gradation |
+| `repro_degre`, `repro_indice` | degré déduit et code qui l'a produit |
+| `groupe_taxo` | groupe VisioNature, la classification de TAXREF ne le recoupant pas |
+| `juridical_person` | organisme de rattachement de l'observateur |
+| `precision_type`, `heure_connue`, `masquee_source`, `anonymat` | traces de décision |
+
+`gn_vn2synthese` place l'équivalent dans une table `t_c_synthese_extended` en relation
+1:1. Le choix du `jsonb` évite un schéma à maintenir et des jointures dans chaque
+requête ; rien n'empêchera d'ajouter une table typée le jour où l'analyse le justifiera,
+les données seront là.
+
+⚠️ **Le relevé brut n'est PAS conservé**, et cela ne relève pas de l'oubli. Il porte
+`observers[].name`, y compris pour ceux qui ont demandé l'anonymat : le stocker
+contredirait le dispositif autour duquel tout le module est bâti. L'expurger d'abord
+rendrait la conservation partielle — le défaut de lecture d'`anonymous_in_export`
+n'aurait pas pu être réparé par retransformation, puisque les noms auraient déjà été
+retirés. Conservation du brut et anonymisation sont en tension irréductible.
+
+Pour la même raison, `juridical_person` suit le sort du nom : dans une petite structure,
+l'organisme ré-identifie aussi sûrement qu'un patronyme.
+
+Le relevé n'est enfin **pas déplié** : `details` reste un tableau dans une ligne unique
+de Synthèse, et non plusieurs lignes. Les raisons sont dans `deplier` — absence de clé
+stable, et le fait que la reproduction soit une propriété de l'ensemble.
+
 ### Restreindre le périmètre
 
 Sans filtre, `visionature-import` moissonne **toute l'étendue de l'instance** : treize départements
