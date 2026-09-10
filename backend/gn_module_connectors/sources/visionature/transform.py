@@ -474,6 +474,15 @@ def to_row(sighting: dict, observation: dict, *, cd_nom: int, id_dataset: int | 
         "sighting_id": identifiant_releve(sighting, observation),
         "observation_id": str(observation.get("@id") or ""),
         "species_id": str(espece.get("@id") or ""),
+        # Groupe taxonomique VisioNature, en code (`TAXO_GROUP_BAT`). Sans lui, analyser
+        # ce que le dispositif de reproduction a produit oblige à passer par TAXREF,
+        # dont la classification ne recoupe pas celle de Biolovision — les chiroptères
+        # y sont des mammifères, et rien ne distingue un groupe fermé d'un groupe sans
+        # règle. Le stocker permet de compter par groupe ce qui a été déduit, et surtout
+        # ce qui ne l'a pas été.
+        "groupe_taxo": (vn_repro.code_groupe(
+            espece.get("taxonomy"), repro.index if repro else None)
+            or str(espece.get("taxonomy") or "")) if espece else "",
         "species_name": espece.get("name") or "",
         # Identifiant d'observateur pseudonymisé, jamais le nom : deux observations du
         # même observateur restent rapprochables sans qu'il soit identifiable.

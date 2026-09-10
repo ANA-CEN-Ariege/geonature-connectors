@@ -312,3 +312,33 @@ def test_repli_sur_name_si_name_constant_absent():
 
 def test_un_groupe_sans_identifiant_est_ignore():
     assert R.index_groupes([{"name_constant": "TAXO_GROUP_BAT"}]) == {}
+
+
+def test_le_groupe_taxonomique_est_conserve_dans_la_provenance():
+    """Sans lui, analyser ce que la déduction a produit oblige à passer par TAXREF.
+
+    Or la classification de TAXREF ne recoupe pas celle de Biolovision : les chiroptères
+    y sont des mammifères, et rien n'y distingue un groupe fermé au compte d'un groupe
+    sans règle. Compter par groupe ce qui a été déduit — et ce qui ne l'a pas été —
+    suppose de savoir de quel groupe VisioNature vient chaque relevé.
+    """
+    import json
+    from gn_module_connectors.sources.visionature import transform as T
+
+    class ResolverFactice:
+        def id(self, mnemonique, cd):
+            return 1
+
+        def defaut(self, mnemonique):
+            return 1
+
+    contexte = R.Contexte(index={"6": "TAXO_GROUP_REPTILIAN"})
+    ligne = T.to_row(
+        {"date": {"@ISO8601": "2026-09-01"},
+         "species": {"@id": "1", "name": "Podarcis muralis", "taxonomy": "6"},
+         "place": {"county": "09"}},
+        {"@id": "1", "@uid": "7", "coord_lat": "42.8", "coord_lon": "1.9"},
+        cd_nom=1, id_dataset=1, id_source=1, id_module=1, srid=2154,
+        resolver=ResolverFactice(), instance="i", repro=contexte)
+
+    assert json.loads(ligne["additional_data"])["groupe_taxo"] == "TAXO_GROUP_REPTILIAN"
