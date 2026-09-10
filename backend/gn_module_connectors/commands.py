@@ -522,11 +522,25 @@ def _purger(*, id_source, id_dataset, ca_uuid, libelle_source, taxon="",
     """
     from .core import purge as purge_core, datasets as ds_core
 
-    if not (taxon or max_uncertainty or id_dataset or tout):
+    # `--supprimer-jdd-vides` seul est une opération à part entière : retirer les jeux
+    # devenus vides sans purger la moindre observation. Le cas se présente après un
+    # changement de découpage — les jeux de l'ancienne clé restent, vides, dans le
+    # module Métadonnées. L'exiger accompagné d'un critère de purge obligerait à
+    # supprimer des données pour faire ce ménage.
+    menage_seul = drop_empty_datasets and not (taxon or max_uncertainty or id_dataset
+                                               or tout)
+    if not (taxon or max_uncertainty or id_dataset or tout or menage_seul):
         raise click.ClickException(
             f"Aucun critère : précisez au moins --taxon, ou ce qui désigne un jeu. "
             f"Pour vider toute la source {libelle_source}, il faut le dire avec --tout : "
-            f"une suppression totale ne doit pas pouvoir arriver par omission.")
+            f"une suppression totale ne doit pas pouvoir arriver par omission. "
+            f"Pour ne retirer que les jeux devenus vides, --supprimer-jdd-vides suffit.")
+
+    if menage_seul:
+        click.echo(f"Aucune observation ne sera supprimée — ménage des jeux vides de "
+                   f"{libelle_source} uniquement.")
+        _supprimer_jdd_vides(ca_uuid, libelle_source, yes)
+        return
 
     n = purge_core.compter(id_source, id_dataset, taxon or None, max_uncertainty or None)
     criteres = " · ".join(x for x in (
@@ -562,8 +576,21 @@ def _purger(*, id_source, id_dataset, ca_uuid, libelle_source, taxon="",
         db.session.commit()
         click.secho(f"{supprimees} observation(s) supprimée(s).", fg="green")
 
-    if not drop_empty_datasets:
-        return
+    if drop_empty_datasets:
+        _supprimer_jdd_vides(ca_uuid, libelle_source, yes)
+
+
+def _supprimer_jdd_vides(ca_uuid: str, libelle_source: str, yes: bool) -> None:
+    """Retire les jeux du cadre qui ne portent plus aucune observation.
+
+    ⚠ Le cadre d'acquisition, lui, n'est JAMAIS supprimé. Il est créé par la migration du
+    module, et `get_acquisition_framework` lève sans lui — une migration Alembic ne se
+    rejouant pas, sa disparition casserait tout import ultérieur. Il porte de surcroît
+    les métadonnées que l'exploitant a pu enrichir à la main. Sa suppression relève de la
+    désinstallation du module, pas d'une purge de données.
+    """
+    from .core import purge as purge_core, datasets as ds_core
+
     af = ds_core.get_acquisition_framework(ca_uuid)
     vides = purge_core.jdd_vides(af.id_acquisition_framework)
     if not vides:

@@ -184,3 +184,31 @@ def test_toutes_les_commandes_sont_exposees():
     exposees.discard("")
     manquantes = [f for _, f, *_ in TOUTES if f not in exposees]
     assert not manquantes, manquantes
+
+
+def test_le_menage_des_jdd_vides_ne_demande_pas_de_critere_de_purge():
+    """`--supprimer-jdd-vides` seul doit être accepté.
+
+    Le cas se présente après un changement de découpage : les jeux de l'ancienne clé
+    restent, vides, dans le module Métadonnées. Exiger en plus un critère de purge
+    obligerait à supprimer des observations pour faire ce ménage.
+    """
+    garde = SOURCE[SOURCE.index("menage_seul = "):SOURCE.index("if menage_seul:")]
+    assert "drop_empty_datasets and not" in garde, (
+        "le ménage seul doit être reconnu avant le refus pour absence de critère")
+    refus = SOURCE.index("Aucun critère")
+    assert SOURCE.index("if menage_seul:") > refus, (
+        "le refus doit précéder le traitement, pour que le ménage y échappe")
+
+
+def test_le_cadre_dacquisition_nest_jamais_supprime():
+    """Sa disparition casserait tout import ultérieur.
+
+    Il est créé par la migration du module, et `get_acquisition_framework` lève sans
+    lui — une migration Alembic ne se rejouant pas. Il porte de surcroît les métadonnées
+    que l'exploitant a pu enrichir à la main dans le module Métadonnées.
+    """
+    interdits = ("supprimer_cadre", "DELETE FROM gn_meta.t_acquisition_frameworks",
+                 "db.session.delete(af")
+    presents = [motif for motif in interdits if motif in SOURCE]
+    assert not presents, f"le cadre d'acquisition ne doit pas être supprimé : {presents}"
