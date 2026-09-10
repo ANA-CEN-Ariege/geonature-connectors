@@ -877,13 +877,13 @@ def vn_import(groupes, since, batch_size, dry_run):
                     if respecter:
                         motif = vn_conf.est_confidentielle(observation, sighting)
                         if motif:
-                            rejets.add("confidentielle", sighting.get("@id"),
+                            rejets.add("confidentielle", vn_tr.identifiant_releve(sighting, observation),
                                        (sighting.get("species") or {}).get("name"), motif)
                             continue
                     cd_nom = vn_taxo.resolve(sighting, index)
                     if not cd_nom:
                         espece = (sighting.get("species") or {})
-                        rejets.add("no_cd_nom", sighting.get("@id"), espece.get("name"),
+                        rejets.add("no_cd_nom", vn_tr.identifiant_releve(sighting, observation), espece.get("name"),
                                    f"species_id={espece.get('@id')}")
                         continue
                     ligne = vn_tr.to_row(sighting, observation, cd_nom=cd_nom,
@@ -900,7 +900,7 @@ def vn_import(groupes, since, batch_size, dry_run):
                                          version_taxref=v_taxref,
                                          repro=contexte_repro)
                     if ligne is None:
-                        rejets.add("no_coordinates", sighting.get("@id"),
+                        rejets.add("no_coordinates", vn_tr.identifiant_releve(sighting, observation),
                                    (sighting.get("species") or {}).get("name"), "")
                         continue
                     ligne["_projet"] = vn_tr.code_projet(observation) if par_projet else None
