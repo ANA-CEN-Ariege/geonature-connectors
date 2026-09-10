@@ -610,7 +610,7 @@ def test_extraire_accepte_une_liste_nue():
     """`api_diff` renvoie une liste, sans enveloppe `data`.
 
     Le client vendorisé annonce « dict or None » dans toutes ses docstrings, y compris
-    pour `api_diff`. La réalité contredit la documentation : `vn-import --since` échouait
+    pour `api_diff`. La réalité contredit la documentation : `visionature-import --since` échouait
     au premier groupe sur `AttributeError: 'list' object has no attribute 'get'`.
     """
     assert A._extraire([{"id_sighting": "1"}]) == [{"id_sighting": "1"}]

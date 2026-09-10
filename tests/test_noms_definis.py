@@ -2,7 +2,7 @@
 
 Ce fichier existe à cause d'une panne qui s'est produite deux fois. Les imports du
 module sont **locaux aux commandes** — `from .sources.visionature import (...)` à
-l'intérieur de `vn_import` — pour ne pas charger l'API Biolovision quand on lance une
+l'intérieur de `visionature_import` — pour ne pas charger l'API Biolovision quand on lance une
 commande GBIF. Un import oublié ne se voit donc ni à l'import du module, ni à la
 compilation : il attend l'exécution de la commande, après le chargement du référentiel
 d'espèces et de celui des observateurs, soit plusieurs minutes d'attente avant le

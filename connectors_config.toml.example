@@ -155,7 +155,7 @@ crontab = "0 3 * * 1"
 # le module Validation sous une file que personne ne traitera, et qui masquerait les
 # observations internes réellement à valider.
 #
-# `status` accepte un cd_nomenclature du type STATUT_VALID ou son libellé :
+# `statut` accepte un cd_nomenclature du type STATUT_VALID ou son libellé :
 #   1 Certain · 2 Probable · 3 Douteux · 4 Invalide · 5 Non réalisable · 6 Non évalué
 enabled = false
 status = "2"
@@ -188,7 +188,7 @@ taxo_groups = []
 # Générer avec :  python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 # ⚠ Ne jamais la changer une fois des données importées, et la sauvegarder ailleurs :
 # les pseudonymes n'en dérivent que d'elle, et le nom réel n'est pas conservé pour les
-# observateurs anonymisés. La remplacer rend `vn-reanonymiser` aveugle et casse le
+# observateurs anonymisés. La remplacer rend `visionature-reanonymiser` aveugle et casse le
 # rapprochement des observations d'un même contributeur.
 pseudonymisation_secret = ""
 
@@ -200,7 +200,7 @@ departements = ["09"]
 
 # Filtre appliqué CÔTÉ SERVEUR, transmis tel quel à l'API. C'est le seul moyen d'éviter
 # de télécharger l'instance entière. Lister les valeurs de votre instance avec :
-#     geonature connectors vn-territoires
+#     geonature connectors visionature-perimetres
 # ⚠ Un paramètre inconnu de l'API est ignoré SANS erreur : rien ne distingue un filtre
 # appliqué d'un filtre inexistant. D'où la vérification systématique sur `departements`,
 # et l'avertissement affiché en fin de moissonnage si le filtre serveur semble ignoré.
@@ -226,7 +226,7 @@ tranche_jours = 15
 # avant la première observation traitée. Le cache les évite pendant la mise au point.
 #
 # 0 = désactivé (défaut). Mettre 24 pour itérer, puis vider :
-#     geonature connectors vn-vider-cache
+#     geonature connectors visionature-vider-cache
 #
 # ⚠ Le référentiel des observateurs contient des NOMS DE PERSONNES. L'activer les écrit
 #   sur disque — en 0600, mais en clair — alors que tout le dispositif d'anonymisation
@@ -352,7 +352,7 @@ password = ""
 
 # ── Périmètre ─────────────────────────────────────────────────────────────────
 # Identifiant de zonage dbChiro, appliqué côté serveur. **Propre à chaque instance** :
-# `geonature connectors dbchiro-zonages` les liste. Ne recopiez pas la valeur d'une autre
+# `geonature connectors dbchiro-perimetres` les liste. Ne recopiez pas la valeur d'une autre
 # instance. Sur dbchiroc.org, l'Ariège vaut 109 et ramène 8 007 observations sur 8 039.
 area = ""
 

@@ -187,7 +187,7 @@ class VisioNatureSchemaConf(Schema):
     # Filtre appliqué côté serveur, transmis tel quel à l'API. Seul moyen d'éviter de
     # télécharger l'instance entière — mais un paramètre inconnu de l'API est ignoré sans
     # erreur, d'où la vérification systématique sur `departements` ci-dessus.
-    # `geonature connectors vn-territoires` liste les valeurs de l'instance.
+    # `geonature connectors visionature-perimetres` liste les valeurs de l'instance.
     filtre_api = fields.Dict(load_default=dict)
     # ── Moissonnage complet ──────────────────────────────────────────────────
     # Le moissonnage complet passe par `observations/search` : `api_list` est déprécié
@@ -207,7 +207,7 @@ class VisioNatureSchemaConf(Schema):
     # écrit sur disque (fichiers en 0600), ce que le reste du module évite soigneusement.
     # ⚠ Un référentiel périmé produit des correspondances taxonomiques fausses et des
     # consentements obsolètes, sans que rien ne le signale. Outil de mise au point, pas
-    # de production. `geonature connectors vn-vider-cache` efface.
+    # de production. `geonature connectors visionature-vider-cache` efface.
     cache_heures = fields.Float(load_default=0)
     # Répertoire de cache. Vide = ~/.cache/gn_module_connectors (ou XDG_CACHE_HOME).
     cache_dir = fields.String(load_default="")
@@ -247,7 +247,7 @@ class DbChiroSchemaConf(Schema):
 
     # ── Périmètre ────────────────────────────────────────────────────────────
     # Identifiant de zonage dbChiro, appliqué côté serveur. **Propre à chaque instance** :
-    # `geonature connectors dbchiro-zonages` les liste. Sur l'instance mesurée, l'Ariège
+    # `geonature connectors dbchiro-perimetres` les liste. Sur l'instance mesurée, l'Ariège
     # vaut 109 et ramène 8 007 observations sur 8 039.
     area = fields.String(load_default="")
     # Codes de département vérifiés sur les zonages de chaque observation. Double le

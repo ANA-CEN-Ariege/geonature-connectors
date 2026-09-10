@@ -9,8 +9,8 @@ from sqlalchemy import text as db_text
 from geonature.utils.env import db
 
 
-@click.command("status")
-def status():
+@click.command("statut")
+def statut():
     """Diagnostic : vérifie que le module voit bien GeoNature et son référentiel."""
     from geonature.core.gn_synthese.models import Synthese, TSources
 
@@ -47,18 +47,18 @@ def status():
         )
 
 
-@click.command("gbif-sync-datasets")
-@click.option("--gadm-gid", default=None, help="Périmètre GADM (défaut : configuration).")
-@click.option("--country", default=None, help="Pays (défaut : configuration).")
-@click.option("--dataset-key", "dataset_keys", multiple=True,
+@click.command("gbif-synchroniser-jeux")
+@click.option("--perimetre", "gadm_gid", default=None, help="Périmètre GADM (défaut : configuration).")
+@click.option("--pays", "country", default=None, help="Pays (défaut : configuration).")
+@click.option("--jeu", "dataset_keys", multiple=True,
               help="Limiter à ces jeux ; sinon, tous ceux du périmètre.")
-@click.option("--license", "licenses", multiple=True,
+@click.option("--licence", "licenses", multiple=True,
               help="Licences retenues (défaut : configuration).")
-@click.option("--limit", default=0, help="Ne traiter que les N plus gros jeux (0 = tous).")
-@click.option("--ignore-exclusions", is_flag=True,
+@click.option("--max-jeux", "limit", default=0, help="Ne traiter que les N plus gros jeux (0 = tous).")
+@click.option("--ignorer-exclusions", "ignore_exclusions", is_flag=True,
               help="Créer un JDD même pour les jeux exclus par la configuration.")
 @click.option("--dry-run", is_flag=True, help="N'écrit rien, affiche ce qui serait fait.")
-def gbif_sync_datasets(gadm_gid, country, dataset_keys, licenses, limit,
+def gbif_synchroniser_jeux(gadm_gid, country, dataset_keys, licenses, limit,
                        ignore_exclusions, dry_run):
     """Crée ou met à jour un JDD GeoNature par jeu de données GBIF du périmètre."""
     from geonature.utils.config import config as gn_config
@@ -226,38 +226,38 @@ def creer_jdd(meta, licence, uid, af, orgs_cache):
 
 
 @click.command("gbif-import")
-@click.option("--dataset-key", "dataset_keys", multiple=True,
+@click.option("--jeu", "dataset_keys", multiple=True,
               help="Jeux GBIF à importer (répétable). Sans cette option, tous les jeux "
                    "du périmètre sont examinés, moins les exclusions de la configuration. "
-                   "Le JDD doit exister : lancer gbif-sync-datasets au préalable.")
-@click.option("--skip-gridded/--no-skip-gridded", default=None,
+                   "Le JDD doit exister : lancer gbif-synchroniser-jeux au préalable.")
+@click.option("--ecarter-jeux-maille/--garder-jeux-maille", "skip_gridded", default=None,
               help="Écarter les jeux publiés à la maille (défaut : configuration).")
-@click.option("--force", is_flag=True,
+@click.option("--forcer", "force", is_flag=True,
               help="Moissonner même les jeux inchangés depuis le dernier passage. "
                    "Indispensable après une évolution du mapping : GBIF n'a alors rien "
                    "modifié, mais les données doivent tout de même être réécrites.")
-@click.option("--gadm-gid", default=None, help="Périmètre GADM (défaut : configuration).")
-@click.option("--country", default=None, help="Pays (défaut : configuration).")
-@click.option("--license", "licenses", multiple=True,
+@click.option("--perimetre", "gadm_gid", default=None, help="Périmètre GADM (défaut : configuration).")
+@click.option("--pays", "country", default=None, help="Pays (défaut : configuration).")
+@click.option("--licence", "licenses", multiple=True,
               help="Licences retenues (défaut : configuration).")
-@click.option("--max-results", default=0, help="Plafonne le nombre d'occurrences (0 = tout).")
-@click.option("--batch-size", default=None, type=int,
+@click.option("--max-resultats", "max_results", default=0, help="Plafonne le nombre d'occurrences (0 = tout).")
+@click.option("--lot", "batch_size", default=None, type=int,
               help="Taille des lots. Les triggers de synthese sont FOR EACH STATEMENT : "
                    "leur coût ne s'amortit qu'en insérant par paquets.")
-@click.option("--download-doi", default="", help="DOI du téléchargement GBIF, s'il y en a un.")
-@click.option("--max-uncertainty", default=None, type=int,
+@click.option("--doi", "download_doi", default="", help="DOI du téléchargement GBIF, s'il y en a un.")
+@click.option("--incertitude-max", "max_uncertainty", default=None, type=int,
               help="Incertitude géographique maximale en mètres (0 = pas de filtre). "
                    "Repère sur l'Ariège : <=1100 m ne retient que 39,9 %% des occurrences, "
                    "<=5000 m en retient 59,7 %%.")
-@click.option("--keep-unknown-uncertainty/--drop-unknown-uncertainty", default=None,
+@click.option("--garder-incertitude-inconnue/--ecarter-incertitude-inconnue", "keep_unknown_uncertainty", default=None,
               help="Sort des occurrences sans incertitude déclarée — 34,9 %% du corpus "
                    "ariégeois. Les garder revient à accepter une précision inconnue.")
-@click.option("--keep-specimens", is_flag=True,
+@click.option("--garder-specimens", "keep_specimens", is_flag=True,
               help="Conserver les FOSSIL_SPECIMEN et LIVING_SPECIMEN. Par défaut ils sont "
                    "écartés : ce ne sont pas des observations naturalistes et leurs "
                    "coordonnées ne désignent pas un lieu d'observation (banques de "
                    "semences, collections de muséum).")
-@click.option("--taxref-fallback/--no-taxref-fallback", default=True, show_default=True,
+@click.option("--repli-taxref/--sans-repli-taxref", "taxref_fallback", default=True, show_default=True,
               help="Pour les taxons absents de taxref_liens, interroger le référentiel "
                    "TAXREF publié sur GBIF. Un appel réseau par taxon inconnu, mis en cache.")
 @click.option("--dry-run", is_flag=True)
@@ -510,7 +510,7 @@ def _purger(*, id_source, id_dataset, ca_uuid, libelle_source, taxon="",
 
     Trois d'entre elles valaient d'être généralisées :
 
-    - **le refus de purger sans critère.** `vn-purge --yes` effaçait toute la source
+    - **le refus de purger sans critère.** `visionature-purge --yes` effaçait toute la source
       sans rien demander, là où `gbif-purge` exigeait au moins un filtre. Le refus est
       désormais la règle, et `--tout` la façon explicite de dire qu'on veut bien tout
       supprimer ;
@@ -583,18 +583,18 @@ def _purger(*, id_source, id_dataset, ca_uuid, libelle_source, taxon="",
 
 
 @click.command("gbif-purge")
-@click.option("--dataset", "reference", default="",
+@click.option("--jeu", "reference", default="",
               help="Jeu visé : datasetKey GBIF, unique_dataset_id du JDD, ou son "
                    "id_dataset.")
 @click.option("--taxon", default="",
               help="Groupe taxonomique à retirer, par son nom TAXREF : règne, phylum, "
                    "classe, ordre, famille, ou début de nom scientifique. "
                    "Exemple : --taxon Chiroptera")
-@click.option("--max-uncertainty", default=0, type=int,
+@click.option("--incertitude-max", "max_uncertainty", default=0, type=int,
               help="Retirer les observations dont l'incertitude dépasse N mètres.")
 @click.option("--tout", is_flag=True,
               help="Purger toute la source GBIF, sans autre critère.")
-@click.option("--drop-empty-datasets", is_flag=True,
+@click.option("--supprimer-jdd-vides", "drop_empty_datasets", is_flag=True,
               help="Supprimer ensuite les JDD du cadre GBIF devenus vides.")
 @click.option("--yes", is_flag=True,
               help="Exécuter réellement. Sans ce drapeau, la commande se contente "
@@ -645,16 +645,16 @@ def gbif_purge(reference, taxon, max_uncertainty, tout, drop_empty_datasets, yes
             cible=cible, tout=tout, drop_empty_datasets=drop_empty_datasets, yes=yes)
 
 
-@click.command("vn-import")
-@click.option("--taxo-group", "groupes", multiple=True,
+@click.command("visionature-import")
+@click.option("--groupe-taxo", "groupes", multiple=True,
               help="Groupes taxonomiques à moissonner (défaut : configuration, sinon tous).")
-@click.option("--since", default="",
+@click.option("--depuis", "since", default="",
               help="Date ISO 8601 : ne moissonner que les créations, modifications et "
                    "suppressions depuis. VisioNature sait signaler les suppressions, "
                    "ce que GBIF ne fait pas.")
-@click.option("--batch-size", default=None, type=int)
+@click.option("--lot", "batch_size", default=None, type=int)
 @click.option("--dry-run", is_flag=True)
-def vn_import(groupes, since, batch_size, dry_run):
+def visionature_import(groupes, since, batch_size, dry_run):
     """Importe des observations VisioNature dans la Synthèse."""
     from geonature.utils.config import config as gn_config
     from sqlalchemy import select as sa_select
@@ -733,7 +733,7 @@ def vn_import(groupes, since, batch_size, dry_run):
         fichier = cache_core.enregistrer(nom, instance, contenu, heures, dossier_cache)
         if fichier and personnel:
             click.secho(f"  ⚠ {nom} mis en cache dans {fichier} — il contient des noms "
-                        f"de personnes. Fichier en 0600 ; `vn-vider-cache` l'efface.",
+                        f"de personnes. Fichier en 0600 ; `visionature-vider-cache` l'efface.",
                         fg="yellow")
         return contenu
 
@@ -840,14 +840,14 @@ def vn_import(groupes, since, batch_size, dry_run):
                 "Le moissonnage exige [visionature] departements : l'API refuse "
                 "une recherche sans périmètre territorial, et sans lui vous "
                 "moissonneriez toute l'étendue de l'instance. "
-                "`vn-territoires` liste les valeurs disponibles.")
+                "`visionature-perimetres` liste les valeurs disponibles.")
         unites = referentiel("territoires", lambda: vn_api.unites_territoriales(cfg))
         territoires = [t for t in (vn_api.identifiant_territoire(u) for u in unites
                                    if str(u.get("short_name") or "") in voulus) if t]
         if not territoires:
             raise click.ClickException(
                 f"Aucune unité territoriale de l'instance ne correspond à "
-                f"{sorted(voulus)}. Vérifiez avec `vn-territoires`.")
+                f"{sorted(voulus)}. Vérifiez avec `visionature-perimetres`.")
         click.echo(f"  {'incrémental (date de saisie)' if since else 'moissonnage complet'} : "
                    f"{date_debut} → {date_fin}, "
                    f"territoire(s) {', '.join(territoires)}, "
@@ -997,7 +997,7 @@ def vn_import(groupes, since, batch_size, dry_run):
         click.secho("  Un 403 sur `search` signale que le périmètre de la clé d'API ne "
                     "couvre pas ce groupe : la clé est valide — une clé inconnue "
                     "renverrait 401 — mais pas habilitée sur ces observations. "
-                    "`vn-diagnostic --taxo-group <id>` détaille les points d'entrée "
+                    "`visionature-diagnostic --taxo-group <id>` détaille les points d'entrée "
                     "ouverts et fermés, à porter à l'administrateur de l'instance.",
                     fg="yellow")
     if hors_perimetre:
@@ -1008,7 +1008,7 @@ def vn_import(groupes, since, batch_size, dry_run):
         if filtre_api and hors_perimetre > total_lus / 10:
             click.secho("  ⚠ le filtre serveur semble ignoré par l'API : la quasi-totalité "
                         "de l'instance a été téléchargée avant d'être écartée ici. "
-                        "Vérifiez le nom du paramètre avec `vn-territoires`.", fg="yellow")
+                        "Vérifiez le nom du paramètre avec `visionature-perimetres`.", fg="yellow")
     suffixe = f", {total_supprimes} supprimée(s)" if total_supprimes else ""
     verbes = ("à écrire", "déjà en base") if dry_run else ("écrite(s)", "mise(s) à jour")
     click.secho(f"\n{'DRY-RUN — ' if dry_run else ''}{total_lus} observation(s) lue(s), "
@@ -1138,9 +1138,9 @@ def _jdd_visionature(instance: str, af, projet: str | None = None):
     return jdd
 
 
-@click.command("vn-reanonymiser")
+@click.command("visionature-reanonymiser")
 @click.option("--yes", is_flag=True, help="Exécuter réellement. Sinon, simulation.")
-def vn_reanonymiser(yes):
+def visionature_reanonymiser(yes):
     """Réaligne les noms d'observateurs sur leur consentement courant.
 
     Un observateur peut demander l'anonymat après coup, ou le lever. Ce changement ne
@@ -1194,8 +1194,8 @@ def vn_reanonymiser(yes):
         click.secho("Relancez avec --yes pour appliquer.", fg="yellow")
 
 
-@click.command("vn-territoires")
-def vn_territoires():
+@click.command("visionature-perimetres")
+def visionature_perimetres():
     """Liste les unités territoriales de l'instance VisioNature.
 
     Sert à renseigner `[visionature] filtre_api`. Le `short_name` est le code employé
@@ -1232,8 +1232,8 @@ def vn_territoires():
                "périmètre : un paramètre inconnu de l'API est ignoré sans erreur.")
 
 
-@click.command("vn-groupes")
-def vn_groupes():
+@click.command("visionature-groupes")
+def visionature_groupes():
     """Liste les groupes taxonomiques de l'instance VisioNature.
 
     Sert à renseigner `--taxo-group`, et à vérifier la correspondance employée par le
@@ -1269,17 +1269,17 @@ def vn_groupes():
 
 
 @click.command("dbchiro-import")
-@click.option("--area", default="", help="Identifiant de zonage dbChiro (défaut : configuration).")
+@click.option("--perimetre", "area", default="", help="Identifiant de zonage dbChiro (défaut : configuration).")
 @click.option("--departement", "departements", multiple=True,
               help="Codes de département à conserver (défaut : configuration).")
 @click.option("--importer-absences/--ecarter-absences", default=None,
               help="Verser les codes d'absence en STATUT_OBS « Non observé » "
                    "(défaut : configuration).")
-@click.option("--max-results", default=0, type=int,
+@click.option("--max-resultats", "max_results", default=0, type=int,
               help="Plafonne le nombre d'observations moissonnées (0 = tout). Les plus "
                    "récemment modifiées d'abord — pour un premier essai d'écriture, pas "
                    "pour un échantillon représentatif.")
-@click.option("--batch-size", default=None, type=int)
+@click.option("--lot", "batch_size", default=None, type=int)
 @click.option("--dry-run", is_flag=True)
 def dbchiro_import(area, departements, importer_absences, max_results, batch_size,
                    dry_run):
@@ -1443,7 +1443,7 @@ def dbchiro_import(area, departements, importer_absences, max_results, batch_siz
         if cfg.get("area") and hors_perimetre > lus / 10:
             click.secho("  ⚠ le filtre serveur `area` semble ignoré : la quasi-totalité "
                         "de l'instance a été téléchargée avant d'être écartée ici. "
-                        "Vérifiez l'identifiant avec `dbchiro-zonages`.", fg="yellow")
+                        "Vérifiez l'identifiant avec `dbchiro-perimetres`.", fg="yellow")
 
     verbes = ("à écrire", "déjà en base") if dry_run else ("écrite(s)", "mise(s) à jour")
     click.secho(f"\n{'DRY-RUN — ' if dry_run else ''}{lus} observation(s) lue(s), "
@@ -1486,9 +1486,9 @@ def _jdd_dbchiro(instance: str, af):
     return jdd
 
 
-@click.command("dbchiro-zonages")
-@click.option("--q", "recherche", default="", help="Filtre sur le nom du zonage.")
-def dbchiro_zonages(recherche):
+@click.command("dbchiro-perimetres")
+@click.option("--nom", "recherche", default="", help="Filtre sur le nom du zonage.")
+def dbchiro_perimetres(recherche):
     """Liste les zonages de l'instance dbChiro, pour renseigner [dbchiro] area."""
     from geonature.utils.config import config as gn_config
     from .sources.dbchiro import api as db_api
@@ -1511,8 +1511,8 @@ def dbchiro_zonages(recherche):
         click.echo(f"  {str(zone.get('id') or ''):>8}  {zone.get('text') or ''}")
     click.echo("\nReportez l'identifiant voulu dans [dbchiro] area. Il est propre à "
                "cette instance : ne le recopiez pas d'une autre.")
-@click.command("vn-vider-cache")
-def vn_vider_cache():
+@click.command("visionature-vider-cache")
+def visionature_vider_cache():
     """Efface le cache disque des référentiels.
 
     À faire dès que la mise au point est terminée : le cache des observateurs contient
@@ -1527,19 +1527,19 @@ def vn_vider_cache():
     click.secho(f"{n} fichier(s) de cache supprimé(s).", fg="green" if n else None)
 
 
-@click.command("vn-diagnostic")
-@click.option("--taxo-group", "groupe", default="1", help="Groupe à sonder (défaut : 1).")
-@click.option("--debug", is_flag=True,
+@click.command("visionature-diagnostic")
+@click.option("--groupe-taxo", "groupe", default="1", help="Groupe à sonder (défaut : 1).")
+@click.option("--trace", "debug", is_flag=True,
               help="Journalise la requête réelle, pour comparer avec transfer_vn.")
 @click.option("--jours", default=60,
               help="Fenêtre des sondes de recherche, en jours (défaut : 60).")
 @click.option("--fin", default="",
               help="Date de fin des sondes de recherche (AAAA-MM-JJ). Par défaut, "
                    "aujourd'hui. Sert à sonder une période ancienne.")
-@click.option("--territoire", default="",
+@click.option("--perimetre", "territoire", default="",
               help="Unité territoriale à sonder (id_country + short_name, ex. 109). "
                    "Par défaut, celles déduites de [visionature] departements.")
-def vn_diagnostic(groupe, debug, jours, fin, territoire):
+def visionature_diagnostic(groupe, debug, jours, fin, territoire):
     """Sonde les points d'entrée de l'API et rapporte ce que le compte peut faire.
 
     Les droits Biolovision ne sont pas uniformes : `observations/diff` peut fonctionner
@@ -1794,15 +1794,15 @@ def vn_diagnostic(groupe, debug, jours, fin, territoire):
                "                                           tranches de dates.\n"
                "  tout en 403                           -> alors seulement, demander\n"
                "                                           l'ouverture du droit.\n"
-               "\n`access_mode` de vn-groupes indique par ailleurs les groupes fermés au\n"
+               "\n`access_mode` de visionature-groupes indique par ailleurs les groupes fermés au\n"
                "compte : `transfer_vn` saute ceux dont il vaut « none ».")
 
 
-@click.command("vn-volumetrie")
+@click.command("visionature-volumetrie")
 @click.option("--jours", default=1, help="Fenêtre de mesure, en jours (défaut : 1).")
-@click.option("--recherche/--sans-recherche", default=True,
+@click.option("--via-recherche/--sans-recherche", "recherche", default=True,
               help="Sonder aussi `search` groupe par groupe (défaut : oui).")
-def vn_volumetrie(jours, recherche):
+def visionature_volumetrie(jours, recherche):
     """Mesure le nombre de modifications quotidiennes, groupe par groupe.
 
     Question à laquelle elle répond : quels groupes peut-on réellement moissonner ?
@@ -1904,24 +1904,24 @@ def vn_volumetrie(jours, recherche):
                "  taxo_groups = [\"2\", \"6\", \"7\"]   # identifiants ci-dessus")
 
 
-@click.command("vn-purge")
+@click.command("visionature-purge")
 @click.option("--projet", default="",
               help="Code projet VisioNature dont le JDD est visé.")
 @click.option("--taxon", default="",
               help="Groupe taxonomique à retirer, par son nom TAXREF : règne, phylum, "
                    "classe, ordre, famille, ou début de nom scientifique. "
                    "Exemple : --taxon Reptilia")
-@click.option("--max-uncertainty", default=0, type=int,
+@click.option("--incertitude-max", "max_uncertainty", default=0, type=int,
               help="Retirer les observations dont l'incertitude dépasse N mètres. "
                    "Alimentée depuis place.loc_precision, quand l'instance la donne.")
 @click.option("--tout", is_flag=True,
               help="Purger toute la source VisioNature, sans autre critère.")
-@click.option("--drop-empty-datasets", is_flag=True,
+@click.option("--supprimer-jdd-vides", "drop_empty_datasets", is_flag=True,
               help="Supprimer ensuite les JDD du cadre VisioNature devenus vides.")
 @click.option("--yes", is_flag=True,
               help="Exécuter réellement. Sans ce drapeau, la commande se contente "
                    "d'afficher ce qu'elle supprimerait.")
-def vn_purge(projet, taxon, max_uncertainty, tout, drop_empty_datasets, yes):
+def visionature_purge(projet, taxon, max_uncertainty, tout, drop_empty_datasets, yes):
     """Supprime des observations VisioNature déjà importées.
 
     Indispensable après une correction du connecteur : ce qui est en base a été écrit
@@ -1968,7 +1968,7 @@ def vn_purge(projet, taxon, max_uncertainty, tout, drop_empty_datasets, yes):
                    "un sens : --taxon Rhinolophus, --taxon Vespertilionidae.")
 @click.option("--tout", is_flag=True,
               help="Purger toute la source dbChiro, sans autre critère.")
-@click.option("--drop-empty-datasets", is_flag=True,
+@click.option("--supprimer-jdd-vides", "drop_empty_datasets", is_flag=True,
               help="Supprimer ensuite les JDD du cadre dbChiro devenus vides.")
 @click.option("--yes", is_flag=True,
               help="Exécuter réellement. Sans ce drapeau, la commande se contente "
@@ -1995,9 +1995,11 @@ def dbchiro_purge(taxon, tout, drop_empty_datasets, yes):
             drop_empty_datasets=drop_empty_datasets, yes=yes)
 
 
-connectors_cli = [status, gbif_sync_datasets, gbif_import, gbif_purge, vn_import,
-                  vn_reanonymiser, vn_territoires,
-                  vn_groupes, vn_vider_cache, vn_diagnostic, vn_purge,
-                  vn_volumetrie,
-                  dbchiro_import, dbchiro_zonages,
-                  dbchiro_purge]
+connectors_cli = [
+    statut,
+    gbif_synchroniser_jeux, gbif_import, gbif_purge,
+    visionature_import, visionature_purge, visionature_reanonymiser,
+    visionature_perimetres, visionature_groupes, visionature_vider_cache,
+    visionature_diagnostic, visionature_volumetrie,
+    dbchiro_import, dbchiro_purge, dbchiro_perimetres,
+]

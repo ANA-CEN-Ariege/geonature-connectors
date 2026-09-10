@@ -63,7 +63,7 @@ pip install requests_oauthlib
 Vérifier :
 
 ```bash
-geonature connectors status
+geonature connectors statut
 ```
 
 La commande affiche le nombre d'observations en Synthèse, les sources déclarées, et
@@ -81,6 +81,79 @@ occurrence n'est importable : autant le savoir avant de lancer un import plutôt
 La source suffit à obtenir, sans une ligne de frontend, le bouton « voir la donnée
 source » de la fiche d'observation : l'interface concatène `url_source` et
 `entity_source_pk_value`, où le module stocke le `gbifID`.
+
+---
+
+## Conventions des commandes
+
+Les commandes se nomment `<source>-<action>`, la source portant son nom entier :
+`gbif-`, `visionature-`, `dbchiro-`. Une seule exception, `statut`, qui ne dépend
+d'aucune source.
+
+Les options sont en **français**, avec deux exceptions assumées : `--dry-run` et `--yes`,
+que tout utilisateur de ligne de commande reconnaît et que traduire desservirait.
+
+Le comportement par défaut est **asymétrique, et c'est voulu** :
+
+| | par défaut | pour agir |
+|---|---|---|
+| `*-import` | écrit | `--dry-run` pour simuler |
+| `*-purge` | simule | `--yes` pour exécuter |
+
+Un import s'ajoute et se rejoue sans dommage — les identifiants sont déterministes, une
+seconde exécution ne produit rien. Une purge détruit. Qu'elle exige un geste explicite
+est une protection, pas une incohérence, et `tests/test_commandes.py` le vérifie pour
+qu'on ne le « corrige » pas par mégarde.
+
+`tests/test_commandes.py` ancre le reste de ces conventions : chaque drapeau doit figurer
+dans une liste explicite, aucun ne peut employer un terme anglais hors des deux
+exceptions, les trois purges doivent offrir les mêmes garanties, et toute option doit
+correspondre à un paramètre de sa fonction. Cette dernière vérification n'est pas
+théorique : renommer un drapeau sans figer son nom Python fait échouer la commande à
+l'exécution seulement, jamais à l'import.
+
+### Renommages
+
+Les noms ont changé sans conserver d'alias. Correspondance :
+
+| avant | après |
+|---|---|
+| `status` | `statut` |
+| `gbif-sync-datasets` | `gbif-synchroniser-jeux` |
+| `vn-*` | `visionature-*` |
+| `vn-territoires`, `dbchiro-zonages` | `visionature-perimetres`, `dbchiro-perimetres` |
+| `--batch-size` | `--lot` |
+| `--dataset`, `--dataset-key` | `--jeu` |
+| `--drop-empty-datasets` | `--supprimer-jdd-vides` |
+| `--max-uncertainty` | `--incertitude-max` |
+| `--max-results` | `--max-resultats` |
+| `--limit` | `--max-jeux` |
+| `--gadm-gid`, `--area`, `--territoire` | `--perimetre` |
+| `--country` | `--pays` |
+| `--license` | `--licence` |
+| `--taxo-group` | `--groupe-taxo` |
+| `--since` | `--depuis` |
+| `--force` | `--forcer` |
+| `--download-doi` | `--doi` |
+| `--keep-specimens` | `--garder-specimens` |
+| `--keep-unknown-uncertainty` | `--garder-incertitude-inconnue` |
+| `--skip-gridded` | `--ecarter-jeux-maille` |
+| `--taxref-fallback` | `--repli-taxref` |
+| `--ignore-exclusions` | `--ignorer-exclusions` |
+| `--debug` | `--trace` |
+| `--q` | `--nom` |
+
+Trois de ces renommages ne sont pas cosmétiques. `vn-territoires` et `dbchiro-zonages`
+faisaient la même chose sous deux noms, en servant une option elle-même nommée
+différemment sur chaque source : les trois s'appellent maintenant `perimetre`, et la
+commande qui en liste les valeurs porte le même mot. `--dataset-key` et `--dataset`
+désignaient le même objet dans deux commandes voisines. Et `--limit` plafonnait des jeux
+là où `--max-results` plafonnait des observations, sans que rien ne le laisse deviner.
+
+⚠️ **Les clés de configuration n'ont pas été touchées.** `connectors_config.toml` reste
+tel quel — `batch_size`, `gadm_gid`, `taxo_groups` y côtoient `departements` et
+`importer_absences`. C'est la même incohérence, sur une autre surface, et la corriger
+casserait les configurations en place sans le dire.
 
 ---
 
@@ -117,7 +190,7 @@ Emplacements recherchés, dans l'ordre :
 ### 1. Prévisualiser (facultatif)
 
 ```bash
-geonature connectors gbif-sync-datasets --dry-run
+geonature connectors gbif-synchroniser-jeux --dry-run
 ```
 
 Crée ou met à jour **un JDD GeoNature par jeu de données GBIF**, rattaché au cadre
@@ -137,19 +210,19 @@ laisser un JDD vide dans le module Métadonnées. Sur un périmètre départemen
 200 jeux sont taggés « grillés » par GBIF et n'auraient jamais reçu la moindre
 observation.
 
-`gbif-sync-datasets` reste utile pour prévisualiser le périmètre, et pour rafraîchir les
+`gbif-synchroniser-jeux` reste utile pour prévisualiser le périmètre, et pour rafraîchir les
 métadonnées — titre, citation, DOI — quand un producteur les corrige.
 
 ### 2. Importer les occurrences
 
 ```bash
 geonature connectors gbif-import \
-    --dataset-key <clé> --gadm-gid FRA.11.1_1 \
-    --max-uncertainty 1000 --dry-run
+    --jeu <clé> --perimetre FRA.11.1_1 \
+    --incertitude-max 1000 --dry-run
 ```
 
-Options utiles : `--max-results` pour plafonner, `--batch-size`, `--download-doi`,
-`--keep-unknown-uncertainty` / `--drop-unknown-uncertainty`.
+Options utiles : `--max-resultats` pour plafonner, `--lot`, `--doi`,
+`--garder-incertitude-inconnue` / `--ecarter-incertitude-inconnue`.
 
 Le JDD est créé à la volée si des occurrences survivent aux filtres. L'import est
 **idempotent** : `unique_id_sinp` est déterministe, et réutilise l'UUID
@@ -218,7 +291,7 @@ Une cadence plus fine ne rapporterait rien : aucun des 60 plus gros jeux d'un p�
 départemental n'avait été modifié dans les 7 derniers jours, et la dernière modification
 de certains remontait à 901 jours.
 
-⚠️ `--force` est indispensable après un changement de mapping : GBIF n'a alors rien
+⚠️ `--forcer` est indispensable après un changement de mapping : GBIF n'a alors rien
 modifié, mais les données doivent tout de même être réécrites.
 
 ---
@@ -237,16 +310,16 @@ pseudonymisation_secret = "…"   # obligatoire, voir plus bas
 ```
 
 ```bash
-geonature connectors vn-import --dry-run
-geonature connectors vn-import
-geonature connectors vn-import --since 2026-01-01   # incrémental
-geonature connectors vn-reanonymiser                # simulation
-geonature connectors vn-reanonymiser --yes
-geonature connectors vn-purge --taxon Reptilia       # simulation
-geonature connectors vn-purge --taxon Reptilia --yes
+geonature connectors visionature-import --dry-run
+geonature connectors visionature-import
+geonature connectors visionature-import --depuis 2026-01-01   # incrémental
+geonature connectors visionature-reanonymiser                # simulation
+geonature connectors visionature-reanonymiser --yes
+geonature connectors visionature-purge --taxon Reptilia       # simulation
+geonature connectors visionature-purge --taxon Reptilia --yes
 ```
 
-⚠️ **`--since` ne remonte pas au-delà de dix semaines.** C'est la fenêtre que l'API
+⚠️ **`--depuis` ne remonte pas au-delà de dix semaines.** C'est la fenêtre que l'API
 Biolovision couvre en différentiel (`api_diff`). Au-delà, les créations et les
 suppressions de l'intervalle seraient perdues sans le moindre message : la commande
 refuse plutôt que de produire une base incomplète en silence, et invite à un moissonnage
@@ -288,7 +361,7 @@ donc ni le moissonnage incrémental ni le court-circuit sur la date de modificat
 rattrapent. Les observations déjà en Synthèse resteraient figées sur le consentement en
 vigueur au moment de l'import.
 
-`vn-reanonymiser` réaligne `synthese.observers` sur le référentiel courant, dans les deux
+`visionature-reanonymiser` réaligne `synthese.observers` sur le référentiel courant, dans les deux
 sens. L'appariement se fait sur l'identifiant pseudonymisé conservé dans
 `additional_data.observateur` — seule clé disponible, le nom réel n'étant pas stocké pour
 les observateurs anonymisés. Les lignes dont l'observateur a disparu du référentiel sont
@@ -310,7 +383,7 @@ cache_heures = 24        # 0 = désactivé, et c'est le défaut
 ```
 
 ```bash
-geonature connectors vn-vider-cache
+geonature connectors visionature-vider-cache
 ```
 
 ⚠️ **Désactivé par défaut, et à laisser désactivé en production**, pour deux raisons
@@ -432,11 +505,11 @@ la différence est dans les identifiants, quoi qu'on en pense par ailleurs.
 **Les commandes de diagnostic** existent pour mener cette élimination sans tâtonner :
 
 ```bash
-geonature connectors vn-diagnostic --taxo-group 6      # points d'entrée, champs reçus
-geonature connectors vn-diagnostic --territoire 111 --fin 2019-01-20 --jours 10
-geonature connectors vn-volumetrie                     # les 49 groupes d'un coup
-geonature connectors vn-territoires                    # identifiants à employer
-geonature connectors vn-groupes                        # codes et access_mode
+geonature connectors visionature-diagnostic --groupe-taxo 6      # points d'entrée, champs reçus
+geonature connectors visionature-diagnostic --perimetre 111 --fin 2019-01-20 --jours 10
+geonature connectors visionature-volumetrie                     # les 49 groupes d'un coup
+geonature connectors visionature-perimetres                    # identifiants à employer
+geonature connectors visionature-groupes                        # codes et access_mode
 ```
 
 ⚠️ **401 et 403 ne disent pas la même chose**, et les confondre coûte cher :
@@ -490,7 +563,7 @@ d'une URL.
 
 ### Restreindre le périmètre
 
-Sans filtre, `vn-import` moissonne **toute l'étendue de l'instance** : treize départements
+Sans filtre, `visionature-import` moissonne **toute l'étendue de l'instance** : treize départements
 sur Faune-Occitanie, la France entière sur Faune-France. Deux réglages, complémentaires :
 
 ```toml
@@ -509,8 +582,8 @@ le laisser passer ferait du filtre une passoire silencieuse.
 d'éviter de **télécharger** ce qu'on va jeter. Découvrir les valeurs de l'instance :
 
 ```bash
-geonature connectors vn-territoires
-geonature connectors vn-groupes        # groupes taxonomiques et couverture reproduction
+geonature connectors visionature-perimetres
+geonature connectors visionature-groupes        # groupes taxonomiques et couverture reproduction
 ```
 
 Le `short_name` qu'affiche cette commande est le code employé par `Client_API_VN` — sa
@@ -554,7 +627,7 @@ par un tiers, donc réidentifiables.
 
 Elle est exigée même si aucun observateur ne demande l'anonymat : le module écrit
 systématiquement un identifiant pseudonymisé dans `additional_data.observateur`, quel que
-soit le sort du nom. Sans elle, `vn-import` refuse de démarrer.
+soit le sort du nom. Sans elle, `visionature-import` refuse de démarrer.
 
 Le consentement est lu **dans le relevé lui-même** : la forme longue de l'API porte
 `anonymous` et `anonymous_in_export` sur chaque observation. C'est la source la plus
@@ -567,7 +640,7 @@ plus souvent jamais : sur Faune-Occitanie il pèse 246 699 inscrits, soit plusie
 minutes de téléchargement et autant de noms de personnes en mémoire, qu'il serait absurde
 de payer d'avance pour un cas devenu rare.
 
-⚠️ `vn-reanonymiser`, lui, le charge toujours : c'est sa raison d'être, puisqu'il sert
+⚠️ `visionature-reanonymiser`, lui, le charge toujours : c'est sa raison d'être, puisqu'il sert
 précisément à rattraper les changements d'avis exprimés après l'import.
 
 #### Générer la clé de pseudonymisation
@@ -593,7 +666,7 @@ Les pseudonymes n'en dérivent que d'elle et de l'identifiant d'observateur ; le
 n'est stocké nulle part pour les observateurs anonymisés. La perdre ou la remplacer après
 un import a deux conséquences irréversibles :
 
-- `vn-reanonymiser` ne retrouve plus aucune ligne — il apparie sur le pseudonyme conservé
+- `visionature-reanonymiser` ne retrouve plus aucune ligne — il apparie sur le pseudonyme conservé
   dans `additional_data.observateur`, et rien d'autre ;
 - le moissonnage suivant produit des pseudonymes différents pour les mêmes observateurs,
   qui cessent donc d'être rapprochables entre eux.
@@ -839,7 +912,7 @@ transit, on dérive un uuid5 de `id_form_universal` : reproductible sans rien st
 
 `reference_biblio` n'est **pas** renseigné, contrairement à eux qui y écrivent
 `t_sources.url_source || entity_source_pk_value`. C'est exactement ce que GeoNature
-reconstruit déjà depuis `t_sources.url_source`, que `vn-import` renseigne : dupliquer le
+reconstruit déjà depuis `t_sources.url_source`, que `visionature-import` renseigne : dupliquer le
 lien sur chaque ligne d'un corpus de plusieurs centaines de milliers d'observations
 n'apporterait rien.
 
@@ -881,13 +954,13 @@ departements = ["09"]
 ```
 
 ```bash
-geonature connectors dbchiro-zonages --q ariege   # trouver l'identifiant de zonage
+geonature connectors dbchiro-perimetres --nom ariege   # trouver l'identifiant de zonage
 geonature connectors dbchiro-import --dry-run
-geonature connectors dbchiro-import --max-results 25   # premier essai d'écriture
+geonature connectors dbchiro-import --max-resultats 25   # premier essai d'écriture
 geonature connectors dbchiro-import
 ```
 
-⚠ `--max-results` ramène les observations **les plus récemment modifiées**, l'API triant
+⚠ `--max-resultats` ramène les observations **les plus récemment modifiées**, l'API triant
 sur `-timestamp_update`. C'est fait pour éprouver une écriture sur une instance de
 travail, pas pour prélever un échantillon représentatif.
 
@@ -1053,7 +1126,7 @@ Les trois sources ont la même commande, avec les mêmes garanties :
 
 ```bash
 geonature connectors gbif-purge --taxon Chiroptera
-geonature connectors vn-purge --projet ATLAS --yes
+geonature connectors visionature-purge --projet ATLAS --yes
 geonature connectors dbchiro-purge --tout --yes
 ```
 
@@ -1061,7 +1134,7 @@ geonature connectors dbchiro-purge --tout --yes
 |---|---|
 | `--taxon` | nom TAXREF : règne, phylum, classe, ordre, famille, ou début de nom scientifique |
 | `--tout` | vider toute la source, sans autre critère |
-| `--drop-empty-datasets` | supprimer ensuite les JDD du cadre devenus vides |
+| `--supprimer-jdd-vides` | supprimer ensuite les JDD du cadre devenus vides |
 | `--yes` | exécuter. Sans lui, la commande simule et n'écrit rien |
 
 Trois propriétés valent d'être connues, parce qu'elles ont manqué à l'une ou l'autre des
@@ -1069,7 +1142,7 @@ commandes avant leur mutualisation :
 
 **Une purge sans critère est refusée.** Il faut `--tout` pour vider une source, et le
 dire explicitement. Une suppression totale ne doit pas pouvoir arriver par omission d'un
-filtre — `vn-purge --yes` l'a permis un temps.
+filtre — `visionature-purge --yes` l'a permis un temps.
 
 **Un `--taxon` sans correspondance affiche les rangs réellement présents.** « 0
 observation concernée » alors que l'interface en montre des milliers laisse croire à une
@@ -1091,7 +1164,7 @@ une erreur de critère. Le trigger `tri_log_delete_synthese` consigne les suppre
 dans `gn_synthese.t_log_synthese`, elles restent donc traçables.
 
 `dbchiro-purge` n'a ni option de jeu de données — dbChiro n'en produit qu'un par
-instance, faute d'exposer `study` — ni `--max-uncertainty`, la colonne `precision`
+instance, faute d'exposer `study` — ni `--incertitude-max`, la colonne `precision`
 restant NULL puisque l'API ne publie aucune incertitude. L'offrir laisserait croire à un
 filtre qui ne retiendrait jamais rien.
 
@@ -1103,7 +1176,7 @@ filtre qui ne retiendrait jamais rien.
 python3 -m pytest tests/ -q
 ```
 
-308 tests, sans dépendance à GeoNature ni à la base. Ils couvrent les cas qui ont
+360 tests, sans dépendance à GeoNature ni à la base. Ils couvrent les cas qui ont
 réellement mordu pendant le développement : le faux-ami `Nymph` / « Nymphe », les dates
 en intervalle ISO, l'asymétrie énumération/URL des licences, la distinction entre origine
 du taxon et état de l'individu, et le déterminisme de l'identifiant unique.
@@ -1158,7 +1231,7 @@ détecter supposerait de comparer l'ensemble des identifiants du périmètre à 
 passage, ce qui annulerait le bénéfice du court-circuit.
 
 **Le court-circuit repose sur `dataset.modified`.** Si un producteur pousse des données
-sans mettre cette date à jour, le jeu sera sauté à tort. Une exécution `--force`
+sans mettre cette date à jour, le jeu sera sauté à tort. Une exécution `--forcer`
 trimestrielle est une précaution raisonnable.
 
 ---
