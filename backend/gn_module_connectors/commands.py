@@ -1358,7 +1358,13 @@ def dbchiro_import(area, departements, importer_absences, batch_size, dry_run):
         i, u = _ecrire(lot)
         ecrits += i; maj += u
     if dry_run:
-        ecrits = len(lot)
+        # Sans cette interrogation, la simulation annonce comme « à écrire » des
+        # observations déjà présentes. dbChiro relit tout le corpus à chaque passage,
+        # faute d'incrémental : à partir du deuxième moissonnage, la quasi-totalité des
+        # lignes est déjà en base et l'`ON CONFLICT` n'y touchera pas.
+        deja = syn_core.compter_existants(lot)
+        ecrits = len(lot) - deja
+        maj = deja
     else:
         db.session.commit()
 
@@ -1372,8 +1378,9 @@ def dbchiro_import(area, departements, importer_absences, batch_size, dry_run):
                         "de l'instance a été téléchargée avant d'être écartée ici. "
                         "Vérifiez l'identifiant avec `dbchiro-zonages`.", fg="yellow")
 
+    verbes = ("à écrire", "déjà en base") if dry_run else ("écrite(s)", "mise(s) à jour")
     click.secho(f"\n{'DRY-RUN — ' if dry_run else ''}{lus} observation(s) lue(s), "
-                f"{ecrits} écrite(s), {maj} mise(s) à jour, {len(rejets)} rejetée(s).",
+                f"{ecrits} {verbes[0]}, {maj} {verbes[1]}, {len(rejets)} rejetée(s).",
                 fg="green")
     for ligne in rejets.summary_lines():
         click.echo(ligne)
