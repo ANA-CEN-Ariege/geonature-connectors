@@ -241,6 +241,8 @@ geonature connectors vn-import
 geonature connectors vn-import --since 2026-01-01   # incrémental
 geonature connectors vn-reanonymiser                # simulation
 geonature connectors vn-reanonymiser --yes
+geonature connectors vn-purge                       # simulation
+geonature connectors vn-purge --taxon Reptilia --yes
 ```
 
 ⚠️ **`--since` ne remonte pas au-delà de dix semaines.** C'est la fenêtre que l'API

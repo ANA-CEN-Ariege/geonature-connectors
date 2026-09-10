@@ -1569,7 +1569,79 @@ def vn_volumetrie(jours, recherche):
                "  taxo_groups = [\"2\", \"6\", \"7\"]   # identifiants ci-dessus")
 
 
+@click.command("vn-purge")
+@click.option("--projet", default="",
+              help="Code projet VisioNature dont le JDD est visé. Sans cette option, "
+                   "la purge porte sur toutes les observations VisioNature.")
+@click.option("--taxon", default="",
+              help="Groupe taxonomique à retirer, par son nom TAXREF : règne, phylum, "
+                   "classe, ordre, famille, ou début de nom scientifique. "
+                   "Exemple : --taxon Reptilia")
+@click.option("--drop-empty-datasets", is_flag=True,
+              help="Supprimer ensuite les JDD du cadre VisioNature devenus vides.")
+@click.option("--yes", is_flag=True,
+              help="Exécuter réellement. Sans ce drapeau, la commande se contente "
+                   "d'afficher ce qu'elle supprimerait.")
+def vn_purge(projet, taxon, drop_empty_datasets, yes):
+    """Supprime des observations VisioNature déjà importées.
+
+    Indispensable après une correction du connecteur : ce qui est en base a été écrit
+    par le code de l'époque, et aucune réécriture ne rattrape un champ qui n'était pas
+    lu — un observateur pseudonymisé faute d'avoir su lire son consentement le reste.
+
+    La suppression est toujours bornée à la source VisioNature. Les données saisies
+    localement, celles d'Occtax et celles des autres connecteurs ne sont jamais touchées.
+    """
+    from sqlalchemy import select as sa_select
+    from geonature.core.gn_meta.models import TDatasets
+    from geonature.utils.config import config as gn_config
+    from .core import purge as purge_core, synthese as syn_core, datasets as ds_core
+    from .migrations.e91b4c07a2d8_source_visionature import SOURCE_NAME, CA_UUID
+
+    cfg = (gn_config.get("CONNECTORS") or {}).get("visionature", {})
+    id_source = syn_core.get_source_id(SOURCE_NAME)
+
+    id_dataset = None
+    if projet:
+        instance = str(cfg.get("url") or "").rstrip("/")
+        if not instance:
+            raise click.ClickException(
+                "[visionature] url est nécessaire pour retrouver le JDD d'un projet.")
+        cible = str(ds_core.dataset_uuid("VisioNature", f"{instance}:{projet}", ""))
+        jdd = db.session.scalar(
+            sa_select(TDatasets).where(TDatasets.unique_dataset_id == cible))
+        if jdd is None:
+            raise click.ClickException(
+                f"Aucun JDD ne correspond au projet « {projet} » sur {instance}.")
+        id_dataset = jdd.id_dataset
+        click.echo(f"Jeu visé : {jdd.dataset_name[:60]} (id_dataset={id_dataset})")
+
+    n = purge_core.compter(id_source, id_dataset, taxon or None)
+    quoi = " et ".join(filter(None, [
+        f"projet {projet}" if projet else "",
+        f"taxon {taxon}" if taxon else "",
+    ])) or "toutes sources VisioNature confondues"
+    click.echo(f"{n} observation(s) concernée(s) — {quoi}.")
+
+    if not n:
+        return
+    if not yes:
+        click.secho("Simulation. Relancez avec --yes pour supprimer.", fg="yellow")
+        return
+
+    supprimees = purge_core.supprimer(id_source, id_dataset, taxon or None)
+    db.session.commit()
+    click.secho(f"{supprimees} observation(s) supprimée(s).", fg="green")
+
+    if drop_empty_datasets:
+        af = ds_core.get_acquisition_framework(CA_UUID)
+        vides = purge_core.jdd_vides(af.id_acquisition_framework) if af else []
+        partis = sum(1 for id_jdd, _nom in vides if purge_core.supprimer_jdd(id_jdd))
+        db.session.commit()
+        click.echo(f"{partis} JDD vide(s) supprimé(s).")
+
+
 connectors_cli = [status, gbif_sync_datasets, gbif_import, gbif_purge, vn_import,
                   vn_reanonymiser, vn_territoires,
-                  vn_groupes, vn_vider_cache, vn_diagnostic,
+                  vn_groupes, vn_vider_cache, vn_diagnostic, vn_purge,
                   vn_volumetrie]
