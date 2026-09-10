@@ -2165,6 +2165,889 @@ def dbchiro_purge(taxon, tout, drop_empty_datasets, yes):
             drop_empty_datasets=drop_empty_datasets, yes=yes)
 
 
+def _cfg_geonature(id_export=None):
+    """Configuration du connecteur GeoNature, validée avant tout appel réseau."""
+    from geonature.utils.config import config as gn_config
+
+    cfg = dict((gn_config.get("CONNECTORS") or {}).get("geonature", {}))
+    if not cfg.get("enabled"):
+        raise click.ClickException(
+            "Connecteur GeoNature désactivé. Renseignez [geonature] dans la "
+            "configuration et passez `enabled = true`.")
+    if id_export:
+        cfg["id_export"] = id_export
+    if not cfg.get("url"):
+        raise click.ClickException("[geonature] url manquante.")
+    if not cfg.get("id_export"):
+        raise click.ClickException(
+            "[geonature] id_export manquant. Cet identifiant est propre à l'instance "
+            "distante et son administrateur est le seul à pouvoir le donner : la route "
+            "qui liste les exports exige un compte et une permission, là où le jeton "
+            "n'ouvre que l'export auquel il se rapporte.")
+    if not cfg.get("jeton"):
+        raise click.ClickException(
+            "[geonature] jeton manquant. L'export « Synthèse SINP » n'est plus déclaré "
+            "public par défaut : sans jeton, l'API répond 403.")
+    return cfg
+
+
+def _emprise_ref_geo(code: str) -> str:
+    """WKT de l'**enveloppe** d'un zonage local, pour le filtre `geometry` du distant.
+
+    L'enveloppe et non le polygone : cinq points au lieu de milliers, une URL qui reste
+    dans les limites de tous les serveurs intermédiaires, et la sur-sélection qui en
+    résulte est rattrapée par le filtre local sur la bbox.
+
+    C'est notre `ref_geo` qui est interrogé, pas celui du distant : nous avons PostGIS,
+    lui a l'emprise, et il n'existe aucune API pour lui demander la géométrie d'un
+    département.
+    """
+    wkt = db.session.execute(
+        db_text("""SELECT ST_AsText(ST_Envelope(ST_Transform(a.geom, 4326)))
+                   FROM ref_geo.l_areas a
+                   JOIN ref_geo.bib_areas_types t ON t.id_type = a.id_type
+                   WHERE a.area_code = :c AND a.enable
+                   ORDER BY t.type_code
+                   LIMIT 1"""),
+        {"c": str(code)},
+    ).scalar()
+    if not wkt:
+        raise click.ClickException(
+            f"Aucun zonage de code « {code} » dans ref_geo.l_areas. Employez le code "
+            f"d'une zone locale (« 09 » pour l'Ariège), ou renseignez directement "
+            f"[geonature] perimetre_wkt.")
+    return wkt
+
+
+def _bbox_de(wkt: str):
+    """Emprise (ouest, sud, est, nord) d'un WKT d'enveloppe, pour le double filtre local."""
+    import re as _re
+
+    valeurs = [float(v) for v in _re.findall(r"-?\d+\.?\d*(?:[eE][-+]?\d+)?", wkt or "")]
+    if len(valeurs) < 4:
+        return None
+    lons, lats = valeurs[0::2], valeurs[1::2]
+    return (min(lons), min(lats), max(lons), max(lats))
+
+
+def _contexte_geonature(cfg):
+    """Identifiants et référentiels de l'instance locale, communs à toutes les commandes."""
+    from geonature.utils.config import config as gn_config
+    from .core import synthese as syn_core, datasets as ds_core
+    from .migrations.f7b204e9c318_source_geonature import SOURCE_NAME, CA_UUID
+
+    id_source = syn_core.get_source_id(SOURCE_NAME)
+    id_module = syn_core.get_module_id("CONNECTORS")
+    srid = syn_core.local_srid()
+    v_taxref = syn_core.version_taxref()
+    af_repli = ds_core.get_acquisition_framework(CA_UUID)
+    instance = str(cfg["url"]).rstrip("/")
+
+    click.secho(f"instance={instance} export={cfg['id_export']} source={id_source} "
+                f"srid={srid} taxref={v_taxref or 'inconnu'}", fg="green")
+    if not v_taxref:
+        click.secho("  ⚠ paramètre `taxref_version` absent de gn_commons.t_parameters : "
+                    "meta_v_taxref restera NULL.", fg="yellow")
+
+    # `url_source` pointe sur la redirection du module : le permalien d'une observation
+    # GeoNature contient un fragment (`/#/synthese/occurrence/<id>`), que la concaténation
+    # du cœur — `url_source + '/' + entity_source_pk_value` — ne peut pas produire.
+    api = str(gn_config.get("API_ENDPOINT") or "").rstrip("/")
+    if api:
+        db.session.execute(
+            db_text("UPDATE gn_synthese.t_sources SET url_source = :u "
+                    "WHERE id_source = :s AND url_source IS DISTINCT FROM :u"),
+            {"u": f"{api}/connectors/geonature", "s": id_source})
+    else:
+        click.secho("  ⚠ API_ENDPOINT absent de la configuration GeoNature : le bouton "
+                    "« voir la donnée source » ne sera pas alimenté.", fg="yellow")
+
+    return {"id_source": id_source, "id_module": id_module, "srid": srid,
+            "version_taxref": v_taxref, "af_repli": af_repli, "instance": instance}
+
+
+def _filtres_geonature(cfg, perimetre: str, depuis: str = "", champ_date: str = ""):
+    """(filtres serveur, bbox locale). Résout `--perimetre` en emprise si besoin."""
+    from .sources.geonature import api as gn_api
+
+    wkt = str(cfg.get("perimetre_wkt") or "")
+    if perimetre:
+        wkt = perimetre if perimetre.upper().startswith(
+            ("POLYGON", "MULTIPOLYGON")) else _emprise_ref_geo(perimetre)
+
+    bbox = tuple(cfg.get("bbox") or ()) or (_bbox_de(wkt) if wkt else None)
+    if bbox and len(bbox) != 4:
+        raise click.ClickException(
+            "[geonature] bbox doit compter exactement quatre valeurs : ouest, sud, est, "
+            "nord.")
+    filtres = gn_api.filtres_serveur(
+        cfg, depuis=depuis, champ_date=champ_date or "date_modification",
+        perimetre_wkt=wkt)
+    return (filtres, bbox)
+
+
+def _moissonner_geonature(cfg, filtres, depuis: str, journal, max_results: int):
+    """Moissonne, en couvrant créations **et** modifications quand l'import est incrémental.
+
+    ⚠ Deux passes, et ce n'est pas de la prudence excessive. `date_modification` est le
+    `meta_update_date` de la Synthèse distante, **NULL tant que la ligne n'a jamais été
+    modifiée**. Un incrémental sur ce seul champ manquerait donc toutes les créations — et
+    définitivement, puisque le passage suivant remonte encore le filigrane sans jamais
+    revenir les chercher. Le surcoût est une pagination de plus ; le défaut évité est une
+    perte silencieuse et irrattrapable.
+
+    Les deux passes sont fusionnées sur `id_synthese` : une ligne créée puis modifiée
+    depuis le filigrane revient dans les deux, et ne doit être traitée qu'une fois.
+    """
+    from .sources.geonature import api as gn_api
+
+    items, meta = gn_api.moissonner(cfg, filtres, journal=journal,
+                                    max_results=max_results)
+    if not depuis:
+        return (items, meta)
+
+    journal("  seconde passe sur les créations (date_modification est NULL tant que la "
+            "ligne n'a jamais été modifiée)")
+    filtres_creation = dict(filtres)
+    filtres_creation.pop("filter_d_up_date_modification", None)
+    filtres_creation["filter_d_up_date_creation"] = depuis
+    creations, meta_creations = gn_api.moissonner(
+        cfg, filtres_creation, journal=journal, max_results=max_results)
+
+    vus = {str(i.get("id_synthese")) for i in items}
+    ajouts = [i for i in creations if str(i.get("id_synthese")) not in vus]
+    journal(f"  {len(ajouts)} création(s) que la passe sur les modifications n'aurait "
+            f"pas vue(s)")
+    items.extend(ajouts)
+    meta["complet"] = meta["complet"] and meta_creations["complet"]
+    return (items, meta)
+
+
+def _verifier_export(items, meta, filtres, cfg, journal) -> None:
+    """Refuse un export incompatible avant tout traitement, et signale ce qui manquera."""
+    from .sources.geonature import api as gn_api
+
+    for message in gn_api.diagnostiquer_page(
+            {"total": meta.get("total"), "total_filtered": meta.get("total_filtered"),
+             "items": items, "license": meta.get("license") or {}}, filtres):
+        click.secho(f"  ⚠ {message}", fg="yellow")
+
+    if not items:
+        return
+    bloquantes, degradantes = gn_api.verifier_colonnes(items[0])
+    if bloquantes:
+        raise click.ClickException(
+            f"L'export {cfg['id_export']} n'expose pas : {', '.join(bloquantes)}. Ce "
+            f"n'est pas une vue de type `gn_exports.v_synthese_sinp` — une vue floutée "
+            f"ou une vue maison ne convient pas. Demandez à l'administrateur distant un "
+            f"export bâti sur la vue SINP fournie avec le module.")
+    if degradantes:
+        journal(f"  {len(degradantes)} colonne(s) absente(s) de la vue :")
+        for colonne in degradantes:
+            journal(f"    {colonne} — {gn_api.COLONNES_ATTENDUES[colonne]}")
+
+    licences = [l.strip() for l in (cfg.get("licences_acceptees") or []) if l.strip()]
+    nom_licence = str((meta.get("license") or {}).get("name") or "")
+    if licences and nom_licence not in licences:
+        raise click.ClickException(
+            f"L'export est publié sous « {nom_licence or 'licence non déclarée'} », "
+            f"absente de [geonature] licences_acceptees.")
+
+
+@click.command("geonature-couverture")
+@click.option("--export", "id_export", default=None, type=int,
+              help="Identifiant d'export distant (défaut : configuration).")
+@click.option("--perimetre", default="",
+              help="Code d'un zonage local (« 09 ») ou WKT en 4326.")
+@click.option("--max-resultats", "max_results", default=0, type=int,
+              help="Plafonne le sondage (0 = tout l'export).")
+def geonature_couverture(id_export, perimetre, max_results):
+    """Diagnostique un export distant, sans rien écrire.
+
+    À lire **avant** le premier import, et à relire après toute montée de version de part
+    ou d'autre. C'est le service que `statut` rend pour les correspondances GBIF : ce que
+    la commande montre ici ne se découvrirait sinon qu'une fois les données en base.
+
+    Cinq choses n'apparaissent nulle part ailleurs : l'écart de version TAXREF entre les
+    deux instances, les `cd_nom` que le référentiel local ne connaît pas, les
+    observations dont l'UUID est déjà en Synthèse sous une autre source, les jeux de
+    données que l'instance possède déjà, et les libellés de nomenclature que le
+    référentiel local ne sait pas résoudre.
+    """
+    from sqlalchemy import select as sa_select
+    from geonature.core.gn_meta.models import TDatasets, TAcquisitionFramework
+    from .core import synthese as syn_core, nomenclatures as nomen_core
+    from .sources.geonature import (api as gn_api, conflits as gn_conflits,
+                                    taxonomy as gn_taxo, nomenclatures as gn_nomen)
+
+    cfg = _cfg_geonature(id_export)
+    contexte = _contexte_geonature(cfg)
+    filtres, bbox = _filtres_geonature(cfg, perimetre)
+
+    try:
+        items, meta = gn_api.moissonner(cfg, filtres, journal=click.echo,
+                                        max_results=max_results)
+    except gn_api.ErreurGeoNature as exc:
+        raise click.ClickException(str(exc))
+
+    licence = (meta.get("license") or {}).get("name") or "non déclarée"
+    click.secho(f"\nexport {cfg['id_export']} — licence « {licence} »", fg="green")
+    if not items:
+        click.secho("Aucun enregistrement : rien à diagnostiquer.", fg="yellow")
+        return
+
+    _verifier_export(items, meta, filtres, cfg, click.echo)
+
+    # ── Taxonomie ────────────────────────────────────────────────────────────
+    distants = {str(i.get("version_taxref") or "") for i in items} - {""}
+    locale = contexte["version_taxref"] or "inconnue"
+    if distants and distants != {str(locale)}:
+        click.secho(f"  ⚠ TAXREF distant {', '.join(sorted(distants))} / local {locale} : "
+                    f"un cd_nom retiré entre deux versions ne serait pas rattrapé par la "
+                    f"clé étrangère.", fg="yellow")
+
+    connus = gn_taxo.charger_index(gn_taxo.codes_a_verifier(items))
+    couv = gn_taxo.couverture(items, connus)
+    total = couv["directs"] + couv["replis"] + couv["rejetes"]
+    part = (100 * (couv["directs"] + couv["replis"]) / total) if total else 0
+    click.echo(f"  cd_nom : {couv['distincts']} distinct(s), "
+               f"{couv['directs'] + couv['replis']} résolu(s) ({part:.1f} %), "
+               f"{couv['replis']} par cd_ref, {couv['rejetes']} hors TAXREF")
+    for (cd_nom, cd_ref, nom), combien in couv["manquants"][:10]:
+        click.secho(f"      cd_nom {cd_nom} (cd_ref {cd_ref}) {nom[:40]} — "
+                    f"{combien} observation(s)", fg="yellow")
+
+    # ── Identifiants ─────────────────────────────────────────────────────────
+    avec_uuid = sum(1 for i in items if str(i.get("id_perm_sinp") or "").strip())
+    click.echo(f"  id_perm_sinp : {avec_uuid} / {len(items)} renseigné(s)")
+    if avec_uuid < len(items):
+        click.secho(f"    ⚠ {len(items) - avec_uuid} observation(s) sans identifiant "
+                    f"permanent : un UUID sera dérivé, moins fidèle et non reconnu par "
+                    f"un dépôt SINP.", fg="yellow")
+
+    uuids = [str(i.get("id_perm_sinp")).strip() for i in items
+             if str(i.get("id_perm_sinp") or "").strip()]
+    conflits = syn_core.conflits_autre_source(
+        [{"unique_id_sinp": u} for u in uuids], contexte["id_source"])
+    if conflits:
+        par_source: dict[str, int] = {}
+        for _, (_, nom) in conflits.items():
+            par_source[nom] = par_source.get(nom, 0) + 1
+        detail = ", ".join(f"{nom} ({n})" for nom, n in sorted(par_source.items()))
+        click.secho(f"  ⚠ {len(conflits)} UUID déjà en Synthèse sous une autre source : "
+                    f"{detail}.", fg="yellow")
+        click.echo("      Le bon remède est en amont : une observation ne doit être "
+                   "moissonnée que par un seul connecteur.")
+        click.echo("      [gbif] exclude_dataset_keys pour écarter les jeux que ce "
+                   "GeoNature publie déjà, ou [geonature] jdd_uuids pour restreindre "
+                   "celui-ci.")
+
+    # Conflits devenus invisibles : la ligne porte notre id_source mais le contenu d'un
+    # autre connecteur. `conflits_autre_source` ne peut plus les voir, l'id_source ne les
+    # distinguant plus.
+    for message in gn_conflits.diagnostic_ecrasement(
+            *syn_core.lignes_ecrasees(contexte["id_source"], "gn_empreinte")):
+        click.secho(f"  ⚠ {message}" if not message.startswith("    ") else message,
+                    fg="yellow")
+
+    # ── Métadonnées ──────────────────────────────────────────────────────────
+    jdds = {str(i.get("jdd_uuid") or "").strip() for i in items} - {""}
+    cadres = {str(i.get("ca_uuid") or "").strip() for i in items} - {""}
+    presents = {
+        str(j.unique_dataset_id): j
+        for j in db.session.scalars(
+            sa_select(TDatasets).where(TDatasets.unique_dataset_id.in_(list(jdds)))
+        ).all()
+    } if jdds else {}
+    click.echo(f"  jeux de données : {len(jdds)} distinct(s), "
+               f"{len(presents)} déjà présent(s) localement")
+    for uid, jdd in list(presents.items())[:10]:
+        etat = "actif" if jdd.active else "DÉSACTIVÉ — sera refusé"
+        click.echo(f"      {uid[:8]}… « {str(jdd.dataset_name)[:44]} » — {etat}")
+
+    cadres_presents = db.session.scalars(
+        sa_select(TAcquisitionFramework).where(
+            TAcquisitionFramework.unique_acquisition_framework_id.in_(list(cadres)))
+    ).all() if cadres else []
+    click.echo(f"  cadres d'acquisition : {len(cadres)} distinct(s), "
+               f"{len(cadres_presents)} déjà présent(s) localement")
+
+    # ── Nomenclatures ────────────────────────────────────────────────────────
+    resolver = nomen_core.Resolver()
+    manques: dict[tuple, int] = {}
+    for item in items:
+        for colonne, mnemonique in gn_nomen.COLONNES_VUE.items():
+            brut = str(item.get(colonne) or "").strip()
+            if brut and resolver.id_souple(mnemonique, brut) is None:
+                manques[(mnemonique, brut)] = manques.get((mnemonique, brut), 0) + 1
+    if manques:
+        click.secho(f"  ⚠ {len(manques)} libellé(s) de nomenclature non résolu(s) — ces "
+                    f"observations prendront la valeur par défaut :", fg="yellow")
+        for (mnemonique, valeur), combien in sorted(manques.items(),
+                                                    key=lambda kv: -kv[1])[:10]:
+            click.echo(f"      {mnemonique} « {valeur} » — {combien} observation(s)")
+    else:
+        click.echo("  nomenclatures : tous les libellés résolus")
+
+    click.secho("\nRien n'a été écrit. Ne lancez l'import qu'une fois chaque ligne "
+                "ci-dessus comprise.", fg="green")
+
+
+def _cadre_geonature(item, af_repli, cfg, caches):
+    """Cadre d'acquisition local pour cette observation, sous l'UUID du producteur.
+
+    ⚠ Ordre impératif : création → `flush()` → `qualifier_cadre`. Sans le flush, le cadre
+    n'a pas encore d'`id_acquisition_framework` et `qualifier_cadre` **retourne en
+    silence** — le cadre sortirait sans territoire ni contact principal, que le formulaire
+    de GeoNature refuse ensuite d'enregistrer, sans que rien ne l'ait signalé.
+    """
+    from .core import datasets as ds_core
+
+    uid = str(item.get("ca_uuid") or "").strip()
+    if not uid:
+        return af_repli
+    if uid in caches["cadres"]:
+        return caches["cadres"][uid]
+
+    try:
+        af, cree = ds_core.upsert_acquisition_framework(
+            uid=uid,
+            nom=str(item.get("ca_nom") or "").strip() or "Cadre d'acquisition importé",
+            description=(
+                f"Cadre d'acquisition repris de l'instance GeoNature "
+                f"{cfg['url']}, sous son identifiant SINP d'origine."),
+        )
+    except ValueError:
+        click.secho(f"  ⚠ ca_uuid « {uid} » malformé : cadre de repli du module employé.",
+                    fg="yellow")
+        caches["cadres"][uid] = af_repli
+        return af_repli
+
+    db.session.flush()
+    if cree:
+        click.secho(f"  + cadre d'acquisition créé : {af.id_acquisition_framework} "
+                    f"({uid[:8]}…)", fg="green")
+        ds_core.qualifier_cadre(
+            af, territoires=cfg.get("territoires"),
+            contact_principal=cfg.get("organisme_contact_principal", ""),
+            objectifs=cfg.get("objectifs_cadre"),
+            financement=cfg.get("financement_cadre", ""),
+            niveau_territorial=cfg.get("niveau_territorial", ""),
+            journal=lambda m: click.secho(f"    {m}", fg="yellow"))
+    caches["cadres"][uid] = af
+    return af
+
+
+def _jdd_geonature(item, cfg, contexte, caches):
+    """Jeu de données local pour cette observation, sous l'UUID du producteur.
+
+    Retourne (jdd, refus). `refus` non vide signifie que l'observation doit être écartée.
+    """
+    from sqlalchemy import select as sa_select
+    from geonature.core.gn_meta.models import TDatasets
+    from .core import datasets as ds_core
+    from .sources.geonature import metadata as gn_meta
+
+    uid = str(item.get("jdd_uuid") or "").strip()
+    if not uid:
+        return (None, "l'export ne livre aucun jdd_uuid")
+    if uid in caches["jdds"]:
+        return caches["jdds"][uid]
+
+    import uuid as _uuid
+    try:
+        _uuid.UUID(uid)
+    except (ValueError, AttributeError):
+        resultat = (None, f"jdd_uuid « {uid} » malformé")
+        caches["jdds"][uid] = resultat
+        return resultat
+
+    existant = db.session.scalar(
+        sa_select(TDatasets).where(TDatasets.unique_dataset_id == uid))
+    autres = 0
+    if existant is not None:
+        autres = db.session.execute(
+            db_text("""SELECT count(*) FROM gn_synthese.synthese
+                       WHERE id_dataset = :d AND id_source IS DISTINCT FROM :s"""),
+            {"d": existant.id_dataset, "s": contexte["id_source"]},
+        ).scalar() or 0
+
+    af = _cadre_geonature(item, contexte["af_repli"], cfg, caches)
+    action, motif = gn_meta.decider_jdd(
+        existe=existant is not None,
+        actif=bool(getattr(existant, "active", True)),
+        lignes_autres_sources=autres,
+        cadre_local=getattr(existant, "id_acquisition_framework", None),
+        cadre_vise=af.id_acquisition_framework)
+
+    if action == "refuser":
+        resultat = (None, motif)
+        caches["jdds"][uid] = resultat
+        return resultat
+    if motif:
+        click.secho(f"  ⚠ jeu {uid[:8]}… : {motif}", fg="yellow")
+
+    licence = (cfg.get("_licence") or {})
+    jdd, cree = ds_core.upsert_dataset(
+        source="GeoNature", cle=uid, licence="",
+        uid=uid,
+        rafraichir=(action == "upsert"
+                    or cfg.get("mettre_a_jour_jdd_existants", False)),
+        nom=gn_meta.nom_jdd(item.get("jdd_nom"), contexte["instance"]),
+        description=gn_meta.description_jdd(
+            item, instance=contexte["instance"], id_export=cfg["id_export"],
+            licence=licence.get("name", ""), licence_url=licence.get("href", "")),
+        id_acquisition_framework=af.id_acquisition_framework,
+    )
+    # ⚠ Le flush précède toute écriture en table de liaison : sans identifiant, PostgreSQL
+    # rejette sur une contrainte NOT NULL dont la trace ne dit pas la cause.
+    db.session.flush()
+
+    if cree:
+        click.secho(f"  + JDD créé : {jdd.id_dataset} ({uid[:8]}… « "
+                    f"{str(item.get('jdd_nom') or '')[:40]} »)", fg="green")
+        ds_core.attacher_territoires(
+            jdd, cfg.get("territoires"),
+            journal=lambda m: click.secho(f"    {m}", fg="yellow"))
+        # Les organismes cités par la vue sont **rapprochés**, jamais créés : des noms
+        # tirés d'une API arrivent en autant de variantes qu'il y a de saisies.
+        inconnus = []
+        for nom in gn_meta.acteurs_jdd(item.get("jdd_acteurs")):
+            id_org = ds_core.resoudre_organisme(nom)
+            if id_org is None:
+                inconnus.append(nom)
+            else:
+                ds_core.attacher_acteur(jdd.id_dataset, id_org,
+                                        ds_core.ROLE_PRODUCTEUR)
+        if inconnus:
+            click.secho(f"    producteur(s) non déclaré(s) dans "
+                        f"utilisateurs.bib_organismes : {', '.join(inconnus[:3])}"
+                        f"{'…' if len(inconnus) > 3 else ''}", fg="yellow")
+        contact = cfg.get("organisme_contact_principal", "")
+        if contact:
+            id_org = ds_core.resoudre_organisme(contact)
+            if id_org is not None:
+                ds_core.attacher_acteur(jdd.id_dataset, id_org,
+                                        ds_core.ROLE_CONTACT_PRINCIPAL)
+
+    resultat = (jdd, "")
+    caches["jdds"][uid] = resultat
+    return resultat
+
+
+@click.command("geonature-import")
+@click.option("--export", "id_export", default=None, type=int,
+              help="Identifiant d'export distant (défaut : configuration).")
+@click.option("--jeu", "jeux", multiple=True,
+              help="Restreindre à un ou plusieurs jdd_uuid distants (défaut : configuration).")
+@click.option("--depuis", "depuis", default="",
+              help="Date ISO 8601 : ne moissonner que ce qui a été créé ou modifié "
+                   "depuis. Sans elle, le filigrane du dernier passage est calculé.")
+@click.option("--tout", "complet", is_flag=True,
+              help="Relire tout le corpus distant, sans filtre de date. Nécessaire avant "
+                   "geonature-reconcilier.")
+@click.option("--perimetre", default="",
+              help="Code d'un zonage local (« 09 ») ou WKT en 4326.")
+@click.option("--max-resultats", "max_results", default=0, type=int,
+              help="Plafonne le nombre d'enregistrements moissonnés (0 = tout).")
+@click.option("--lot", "batch_size", default=None, type=int)
+@click.option("--dry-run", is_flag=True)
+def geonature_import(id_export, jeux, depuis, complet, perimetre, max_results,
+                     batch_size, dry_run):
+    """Importe dans la Synthèse les observations d'une autre instance GeoNature."""
+    from geonature.utils.config import config as gn_config
+    from .core import (report as report_core, synthese as syn_core,
+                       nomenclatures as nomen_core, purge as purge_core)
+    from .sources.geonature import (api as gn_api, conflits as gn_conflits,
+                                    taxonomy as gn_taxo, transform as gn_tr)
+
+    cfg = _cfg_geonature(id_export)
+    pseudonymiser = cfg.get("pseudonymiser_observateurs", False)
+    secret = cfg.get("pseudonymisation_secret", "")
+    if pseudonymiser and not secret:
+        raise click.ClickException(
+            "[geonature] pseudonymisation_secret manquant alors que "
+            "pseudonymiser_observateurs est actif. Une clé par défaut rendrait les "
+            "pseudonymes recalculables par un tiers, donc réidentifiables.")
+    try:
+        politique, avertissements = gn_conflits.decider(
+            cfg.get("sur_conflit_autre_source"),
+            gbif_actif=bool((gn_config.get("CONNECTORS") or {}).get(
+                "gbif", {}).get("enabled")))
+    except ValueError as exc:
+        raise click.ClickException(f"[geonature] {exc}")
+    for message in avertissements:
+        click.secho(f"  ⚠ {message}", fg="yellow")
+
+    batch_size = batch_size or cfg.get("batch_size", 1000)
+    contexte = _contexte_geonature(cfg)
+    liste_blanche = {str(u).strip() for u in (list(jeux) or cfg.get("jdd_uuids") or [])
+                     if str(u).strip()}
+
+    # ── Filigrane de l'incrémental ───────────────────────────────────────────
+    if complet:
+        depuis = ""
+        click.echo("Relecture complète demandée : aucun filtre de date.")
+    elif not depuis:
+        dernier = db.session.execute(
+            db_text("""SELECT max(GREATEST(meta_create_date,
+                                COALESCE(meta_update_date, meta_create_date)))
+                       FROM gn_synthese.synthese WHERE id_source = :s"""),
+            {"s": contexte["id_source"]},
+        ).scalar()
+        if dernier is not None:
+            import datetime as _dt
+            marge = int(cfg.get("marge_heures", 24))
+            depuis = (dernier - _dt.timedelta(hours=marge)).strftime("%Y-%m-%d %H:%M:%S")
+            click.echo(f"Incrémental depuis {depuis} (dernier passage {dernier}, "
+                       f"moins {marge} h de marge).")
+
+    filtres, bbox = _filtres_geonature(cfg, perimetre, depuis=depuis)
+
+    try:
+        items, meta = _moissonner_geonature(cfg, filtres, depuis, click.echo,
+                                            max_results)
+    except gn_api.ErreurGeoNature as exc:
+        raise click.ClickException(str(exc))
+    click.echo(f"  {len(items)} enregistrement(s) reçu(s).")
+    if not items:
+        click.secho("Rien à importer.", fg="green")
+        return
+
+    _verifier_export(items, meta, filtres, cfg, click.echo)
+    cfg["_licence"] = meta.get("license") or {}
+    licence = cfg["_licence"].get("name", "")
+    if licence:
+        click.echo(f"  licence de l'export : {licence}")
+
+    # ── Référentiels ─────────────────────────────────────────────────────────
+    connus = gn_taxo.charger_index(gn_taxo.codes_a_verifier(items))
+    resolver = nomen_core.Resolver()
+    cfg_valid = (gn_config.get("CONNECTORS") or {}).get("validation", {})
+    statut_validation = cfg_valid.get("status") if cfg_valid.get("enabled") else None
+    if not pseudonymiser:
+        click.echo("  observateurs repris en clair — le producteur distant a déjà "
+                   "arbitré ce qu'il diffuse.")
+
+    rejets = report_core.Rejects()
+    manques: set = set()
+    caches = {"jdds": {}, "cadres": {}}
+    lot, lus, ecrits, maj = [], 0, 0, 0
+    hors_perimetre = hors_liste = replis_cd_ref = sans_uuid = conflits_vus = 0
+
+    def _ecrire(lignes):
+        nonlocal conflits_vus
+        if not lignes:
+            return (0, 0)
+        concurrents = syn_core.conflits_autre_source(lignes, contexte["id_source"])
+        if concurrents:
+            conflits_vus += len(concurrents)
+            if politique == "remplacer":
+                partis = purge_core.supprimer_par_uuid(list(concurrents),
+                                                       contexte["id_source"])
+                click.secho(f"    {partis} ligne(s) d'une autre source supprimée(s) "
+                            f"pour être remplacée(s).", fg="yellow")
+            else:
+                for ligne in lignes:
+                    cle = str(ligne["unique_id_sinp"])
+                    if cle in concurrents:
+                        _, nom = concurrents[cle]
+                        rejets.add("deja_presente_autre_source",
+                                   ligne["entity_source_pk_value"],
+                                   ligne.get("nom_cite") or "",
+                                   f"déjà en base sous « {nom} »")
+                lignes = [l for l in lignes
+                          if str(l["unique_id_sinp"]) not in concurrents]
+                if not lignes:
+                    return (0, 0)
+        # Renomme les lignes qui portaient un UUID dérivé, désormais supplanté par celui
+        # du producteur : sans quoi elles deviendraient des doublons invisibles.
+        syn_core.realigner_uuid(lignes, contexte["id_source"], cle="gn_uuid_calcule")
+        return syn_core.insert_batch(lignes)
+
+    for item in items:
+        lus += 1
+        identifiant = str(item.get("id_synthese") or "")
+        nom = str(item.get("nom_cite") or item.get("nom_valide") or "")
+
+        if liste_blanche and str(
+                item.get("jdd_uuid") or "").strip() not in liste_blanche:
+            hors_liste += 1
+            continue
+        if not gn_tr.dans_bbox(item, bbox):
+            hors_perimetre += 1
+            rejets.add("hors_perimetre", identifiant, nom, "hors de l'emprise demandée")
+            continue
+
+        cd_nom, motif = gn_taxo.choisir(item.get("cd_nom"), item.get("cd_ref"), connus)
+        if cd_nom is None:
+            rejets.add("cd_nom_hors_taxref", identifiant, nom,
+                       f"cd_nom={item.get('cd_nom')} cd_ref={item.get('cd_ref')} "
+                       f"taxref source={item.get('version_taxref')}")
+            continue
+        if motif == "repli_cd_ref":
+            replis_cd_ref += 1
+
+        jdd, refus = _jdd_geonature(item, cfg, contexte, caches) if not dry_run \
+            else (None, "")
+        if refus:
+            rejets.add("jdd_inactif", identifiant, nom, refus)
+            continue
+
+        ligne = gn_tr.to_row(
+            item, cd_nom=cd_nom, id_dataset=(jdd.id_dataset if jdd else None),
+            id_source=contexte["id_source"], id_module=contexte["id_module"],
+            srid=contexte["srid"], resolver=resolver, instance=contexte["instance"],
+            id_export=str(cfg["id_export"]), statut_validation=statut_validation,
+            pseudonymiser=pseudonymiser, secret_pseudo=secret,
+            code_diffusion=cfg.get("niveau_diffusion", ""),
+            code_diffusion_si_sensible=cfg.get("niveau_diffusion_si_sensible", ""),
+            version_taxref=contexte["version_taxref"],
+            licence=cfg["_licence"].get("name", ""),
+            licence_url=cfg["_licence"].get("href", ""), manques=manques)
+        if ligne is None:
+            rejets.add("no_coordinates", identifiant, nom,
+                       "géométrie non ponctuelle ou date absente")
+            continue
+        if not str(item.get("id_perm_sinp") or "").strip():
+            sans_uuid += 1
+
+        lot.append(ligne)
+        if len(lot) >= batch_size and not dry_run:
+            i, u = _ecrire(lot)
+            ecrits += i; maj += u
+            db.session.commit(); lot = []
+            click.echo(f"    … {ecrits} écrites, {maj} mises à jour")
+
+    if lot and not dry_run:
+        i, u = _ecrire(lot)
+        ecrits += i; maj += u
+    if dry_run:
+        deja = syn_core.compter_existants(lot)
+        ecrits = len(lot) - deja
+        maj = deja
+    else:
+        db.session.commit()
+
+    # ── Bilan ────────────────────────────────────────────────────────────────
+    if hors_liste:
+        click.echo(f"  {hors_liste} enregistrement(s) écarté(s) par la liste blanche "
+                   f"de jeux de données.")
+    if hors_perimetre:
+        click.secho(f"  {hors_perimetre} enregistrement(s) hors emprise écarté(s).",
+                    fg="yellow" if filtres.get("geometry") else None)
+        if filtres.get("geometry") and hors_perimetre > lus / 10:
+            click.secho("  ⚠ le filtre serveur `geometry` semble ignoré : la quasi-"
+                        "totalité de l'export a été téléchargée avant d'être écartée "
+                        "ici.", fg="yellow")
+    if replis_cd_ref:
+        click.echo(f"  {replis_cd_ref} taxon(s) résolu(s) par cd_ref plutôt que par "
+                   f"cd_nom (écart de version TAXREF).")
+    if sans_uuid:
+        click.secho(f"  ⚠ {sans_uuid} observation(s) sans id_perm_sinp : un UUID a été "
+                    f"dérivé, et sera remplacé par l'UUID natif dès que le producteur le "
+                    f"publiera.", fg="yellow")
+    if conflits_vus:
+        verbe = "remplacée(s)" if politique == "remplacer" else "écartée(s)"
+        click.secho(f"  {conflits_vus} observation(s) déjà en base sous une autre "
+                    f"source : {verbe}.", fg="yellow")
+    if manques:
+        click.secho(f"  ⚠ {len(manques)} libellé(s) de nomenclature non résolu(s) — "
+                    f"valeur par défaut appliquée :", fg="yellow")
+        for mnemonique, valeur in sorted(manques)[:10]:
+            click.echo(f"      {mnemonique} « {valeur} »")
+
+    if not dry_run:
+        for message in gn_conflits.diagnostic_ecrasement(
+                *syn_core.lignes_ecrasees(contexte["id_source"], "gn_empreinte")):
+            click.secho(f"  ⚠ {message}" if not message.startswith("    ") else message,
+                        fg="yellow")
+
+    verbes = ("à écrire", "déjà en base") if dry_run else ("écrite(s)", "mise(s) à jour")
+    click.secho(f"\n{'DRY-RUN — ' if dry_run else ''}{lus} enregistrement(s) lu(s), "
+                f"{ecrits} {verbes[0]}, {maj} {verbes[1]}, {len(rejets)} rejeté(s).",
+                fg="green")
+    for ligne in rejets.summary_lines():
+        click.echo(ligne)
+    chemin = rejets.write_csv(Path("geonature_rejets.csv"))
+    if chemin:
+        click.echo(f"  Journal détaillé : {chemin}")
+
+    if not dry_run and meta["complet"] and not depuis and not liste_blanche:
+        click.echo("\nMoisson complète : geonature-reconcilier peut maintenant "
+                   "répercuter les suppressions faites à la source.")
+
+
+@click.command("geonature-reconcilier")
+@click.option("--export", "id_export", default=None, type=int,
+              help="Identifiant d'export distant (défaut : configuration).")
+@click.option("--perimetre", default="",
+              help="Code d'un zonage local (« 09 ») ou WKT en 4326. Doit être identique "
+                   "à celui de l'import, sans quoi le périmètre exclu passerait pour "
+                   "supprimé.")
+@click.option("--plafond", default=None, type=int,
+              help="Part maximale du corpus supprimable, en pourcentage "
+                   "(défaut : configuration).")
+@click.option("--yes", is_flag=True,
+              help="Exécuter réellement. Sans ce drapeau, la commande se contente "
+                   "d'afficher ce qu'elle supprimerait.")
+def geonature_reconcilier(id_export, perimetre, plafond, yes):
+    """Répercute les suppressions faites sur l'instance distante.
+
+    L'API d'export ne publie aucun journal de suppression : une observation retirée
+    là-bas cesse simplement d'apparaître. On relit donc tout le corpus, et ce qui n'est
+    pas revenu a disparu.
+
+    ⚠ **Commande séparée de l'import, et qui simule par défaut.** Un import écrit ; y
+    loger une suppression de masse violerait l'asymétrie sur laquelle repose tout le
+    module. Quatre garde-fous, dont aucun n'est de trop — sans eux, un filtre mal réglé
+    vide la Synthèse : la moisson doit être complète, la suppression est bornée aux jeux
+    réellement relus, elle est bornée au couple instance/export, et un plafond refuse une
+    hécatombe qu'un changement d'identifiants chez le producteur suffirait à provoquer.
+    """
+    from .core import purge as purge_core
+    from .sources.geonature import api as gn_api, transform as gn_tr
+
+    cfg = _cfg_geonature(id_export)
+    contexte = _contexte_geonature(cfg)
+    filtres, bbox = _filtres_geonature(cfg, perimetre)
+
+    try:
+        items, meta = gn_api.moissonner(cfg, filtres, journal=click.echo)
+    except gn_api.ErreurGeoNature as exc:
+        raise click.ClickException(str(exc))
+
+    if not meta["complet"]:
+        raise click.ClickException(
+            "La moisson n'est pas complète : la réconciliation ne peut pas distinguer "
+            "une observation supprimée d'une observation non relue. Reprenez sans "
+            "plafond de résultats, et vérifiez la pagination.")
+    _verifier_export(items, meta, filtres, cfg, click.echo)
+
+    # Les UUID tels que l'import les aurait écrits : natif quand il existe, dérivé sinon.
+    uuids = []
+    for item in items:
+        if not gn_tr.dans_bbox(item, bbox):
+            continue
+        identifiant, _ = gn_tr.identifiant_sinp(
+            item, contexte["instance"], str(cfg["id_export"]))
+        uuids.append(identifiant)
+    if not uuids:
+        raise click.ClickException(
+            "Aucun identifiant relu : la réconciliation supprimerait tout ce que la "
+            "source a écrit. Refus.")
+
+    lignes = db.session.execute(
+        db_text("""SELECT DISTINCT id_dataset FROM gn_synthese.synthese
+                   WHERE id_source = :s
+                     AND additional_data->>'gn_instance' = :i
+                     AND additional_data->>'gn_export' = :e"""),
+        {"s": contexte["id_source"], "i": contexte["instance"],
+         "e": str(cfg["id_export"])},
+    ).all()
+    jdds = [r[0] for r in lignes]
+    if not jdds:
+        click.secho("Aucune observation de cet export en base : rien à réconcilier.",
+                    fg="green")
+        return
+
+    marqueurs = {"gn_instance": contexte["instance"], "gn_export": str(cfg["id_export"])}
+    absents = purge_core.compter_absents(contexte["id_source"], jdds, uuids, marqueurs)
+    corpus = db.session.execute(
+        db_text("""SELECT count(*) FROM gn_synthese.synthese
+                   WHERE id_source = :s AND id_dataset = ANY(:d)
+                     AND additional_data->>'gn_instance' = :i
+                     AND additional_data->>'gn_export' = :e"""),
+        {"s": contexte["id_source"], "d": jdds, "i": contexte["instance"],
+         "e": str(cfg["id_export"])},
+    ).scalar() or 0
+
+    click.echo(f"\n{len(uuids)} observation(s) relue(s) à la source, {corpus} en base "
+               f"pour cet export, {absents} absente(s) du corpus distant.")
+    if not absents:
+        click.secho("Rien à supprimer.", fg="green")
+        return
+
+    part = int(plafond if plafond is not None else cfg.get("plafond_suppressions", 5))
+    seuil = max(100, corpus * part // 100)
+    if absents > seuil:
+        raise click.ClickException(
+            f"{absents} suppressions demandées, pour un plafond de {seuil} "
+            f"({part} % de {corpus}, minimum 100). Refus : un producteur qui republie "
+            f"sous de nouveaux identifiants ferait tout disparaître d'un coup. Vérifiez "
+            f"que le périmètre est bien celui de l'import, puis relevez --plafond en "
+            f"connaissance de cause.")
+
+    if not yes:
+        click.secho(f"\nSimulation : {absents} observation(s) seraient supprimées, ainsi "
+                    f"que leurs rattachements aux zonages. Relancez avec --yes pour "
+                    f"exécuter.", fg="yellow")
+        return
+
+    supprimees = purge_core.supprimer_absents(contexte["id_source"], jdds, uuids,
+                                              marqueurs)
+    db.session.commit()
+    click.secho(f"{supprimees} observation(s) supprimée(s).", fg="green")
+
+
+@click.command("geonature-purge")
+@click.option("--jeu", "reference", default="",
+              help="Jeu visé : unique_dataset_id distant, ou id_dataset local.")
+@click.option("--taxon", default="",
+              help="Groupe taxonomique à retirer, par son nom TAXREF : règne, phylum, "
+                   "classe, ordre, famille, ou début de nom scientifique.")
+@click.option("--incertitude-max", "max_uncertainty", default=0, type=int,
+              help="Retirer les observations dont la précision dépasse N mètres.")
+@click.option("--tout", is_flag=True,
+              help="Purger toute la source GeoNature distante, sans autre critère.")
+@click.option("--supprimer-jdd-vides", "drop_empty_datasets", is_flag=True,
+              help="Supprimer ensuite les JDD du cadre de repli devenus vides.")
+@click.option("--yes", is_flag=True,
+              help="Exécuter réellement. Sans ce drapeau, la commande se contente "
+                   "d'afficher ce qu'elle supprimerait.")
+def geonature_purge(reference, taxon, max_uncertainty, tout, drop_empty_datasets, yes):
+    """Supprime des observations importées depuis une autre instance GeoNature.
+
+    ⚠ `--supprimer-jdd-vides` ne nettoie que le **cadre de repli** du module. Les jeux
+    créés sous l'UUID du producteur sont rattachés aux cadres du producteur, et le ménage
+    ne les voit donc pas. C'est délibéré : ces cadres peuvent porter des jeux qu'un autre
+    canal — un dépôt SINP, une saisie manuelle — possède légitimement, et les vider parce
+    qu'ils sont vides à un instant donné dépasserait ce que ce module a le droit de faire.
+    """
+    from sqlalchemy import select as sa_select
+    from geonature.core.gn_meta.models import TDatasets
+    from .core import synthese as syn_core
+    from .migrations.f7b204e9c318_source_geonature import SOURCE_NAME, CA_UUID
+
+    id_source = syn_core.get_source_id(SOURCE_NAME)
+    id_dataset, cible = None, ""
+    if reference:
+        jdd = None
+        if reference.isdigit():
+            jdd = db.session.get(TDatasets, int(reference))
+        if jdd is None:
+            # L'UUID est celui du producteur, repris verbatim : aucune dérivation à
+            # tenter, contrairement à GBIF où la licence entre dans la clé.
+            import uuid as _uuid
+            try:
+                _uuid.UUID(reference)
+            except (ValueError, AttributeError):
+                raise click.ClickException(
+                    f"« {reference} » n'est ni un id_dataset ni un UUID de jeu.")
+            jdd = db.session.scalar(
+                sa_select(TDatasets).where(TDatasets.unique_dataset_id == reference))
+        if jdd is None:
+            raise click.ClickException(f"Aucun JDD ne correspond à « {reference} ».")
+        id_dataset = jdd.id_dataset
+        cible = f"jeu {id_dataset}"
+        click.echo(f"Jeu visé : {jdd.dataset_name[:60]} (id_dataset={id_dataset})")
+
+    _purger(id_source=id_source, id_dataset=id_dataset, ca_uuid=CA_UUID,
+            libelle_source="GeoNature distant", taxon=taxon,
+            max_uncertainty=max_uncertainty, cible=cible, tout=tout,
+            drop_empty_datasets=drop_empty_datasets, yes=yes)
+
+
 connectors_cli = [
     statut,
     gbif_synchroniser_jeux, gbif_import, gbif_purge,
@@ -2172,4 +3055,5 @@ connectors_cli = [
     visionature_perimetres, visionature_groupes, visionature_vider_cache,
     visionature_diagnostic, visionature_volumetrie,
     dbchiro_import, dbchiro_purge, dbchiro_perimetres,
+    geonature_couverture, geonature_import, geonature_reconcilier, geonature_purge,
 ]

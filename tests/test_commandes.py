@@ -31,7 +31,7 @@ UNIVERSELLES = {"--dry-run", "--yes"}
 
 # Sources connues. Une commande porte le nom complet de sa source, jamais une
 # abréviation : `vn-` a longtemps côtoyé `gbif-` et `dbchiro-` sans raison.
-SOURCES = ("gbif", "visionature", "dbchiro")
+SOURCES = ("gbif", "visionature", "dbchiro", "geonature")
 
 # Toute option du module. Ajouter un drapeau ici est un geste délibéré : c'est le moment
 # de vérifier qu'il est en français et qu'il ne redouble pas un nom déjà employé pour le
@@ -50,6 +50,8 @@ DRAPEAUX_ADMIS = UNIVERSELLES | {
     "--via-recherche/--sans-recherche",
     # dbChiro
     "--departement", "--importer-absences/--ecarter-absences", "--nom",
+    # GeoNature distant
+    "--export", "--plafond",
 }
 
 
@@ -139,15 +141,33 @@ def test_aucune_option_en_anglais_hors_conventions():
     assert not fautifs, fautifs
 
 
-def test_les_trois_purges_offrent_les_memes_garanties():
+def test_les_purges_offrent_les_memes_garanties():
     """Elles ont divergé : l'une refusait de tout purger sans critère, l'autre non ;
     l'une diagnostiquait un taxon inconnu, l'autre non."""
     purges = {nom: set(drapeaux) for nom, _, drapeaux, _, _ in TOUTES
               if nom.endswith("-purge")}
-    assert len(purges) == 3, f"trois purges attendues, trouvé {sorted(purges)}"
+    assert set(purges) == {f"{s}-purge" for s in SOURCES}, (
+        f"une purge par source attendue, trouvé {sorted(purges)}")
     commun = {"--taxon", "--tout", "--supprimer-jdd-vides", "--yes"}
     for nom, drapeaux in purges.items():
         assert commun <= drapeaux, f"{nom} : manque {sorted(commun - drapeaux)}"
+
+
+def test_les_suppressions_de_masse_simulent_par_defaut():
+    """`geonature-reconcilier` supprime en masse sans s'appeler `-purge`.
+
+    Le nom seul ne la range pas parmi les commandes destructrices, et rien dans les
+    conventions ne l'y obligerait. Elle doit pourtant offrir la même garantie : `--yes`
+    pour agir, et surtout **pas** de `--dry-run`, qui laisserait croire que l'exécution
+    est le comportement par défaut.
+    """
+    destructrices = {nom: set(drapeaux) for nom, _, drapeaux, _, _ in TOUTES
+                     if nom.endswith("-purge") or nom.endswith("-reconcilier")}
+    assert "geonature-reconcilier" in destructrices
+    for nom, drapeaux in destructrices.items():
+        assert "--yes" in drapeaux, f"{nom} : une suppression de masse exige --yes"
+        assert "--dry-run" not in drapeaux, (
+            f"{nom} : simule par défaut, --dry-run n'aurait aucun sens")
 
 
 def test_lister_les_perimetres_porte_le_meme_nom_partout():

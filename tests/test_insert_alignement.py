@@ -29,16 +29,32 @@ sys.path.insert(0, str(RACINE))
 from gn_module_connectors.sources.gbif import transform as gbif_tr  # noqa: E402
 from gn_module_connectors.sources.visionature import transform as vn_tr  # noqa: E402
 from gn_module_connectors.sources.dbchiro import transform as db_tr  # noqa: E402
+from gn_module_connectors.sources.geonature import transform as gn_tr  # noqa: E402
+from gn_module_connectors.sources.geonature import nomenclatures as gn_nomen  # noqa: E402
 
 
 class ResolverFactice:
-    """Résolveur de nomenclatures sans base : renvoie une valeur lisible et non nulle."""
+    """Résolveur de nomenclatures sans base : renvoie une valeur lisible et non nulle.
+
+    Les deux familles de méthodes du vrai résolveur sont distinguées, et c'est essentiel
+    pour le connecteur GeoNature : `id` attend un `cd_nomenclature`, `id_souple` accepte
+    aussi un libellé. Un factice qui les confondrait laisserait passer précisément le
+    défaut qu'on cherche à empêcher.
+    """
 
     def id(self, mnemonique, cd):
         return f"{mnemonique}={cd}" if cd is not None else self.defaut(mnemonique)
 
     def defaut(self, mnemonique):
         return f"{mnemonique}=defaut"
+
+    def id_souple(self, mnemonique, valeur):
+        valeur = str(valeur or "").strip()
+        return f"{mnemonique}~{valeur}" if valeur else None
+
+    def id_souple_ou_defaut(self, mnemonique, valeur):
+        trouve = self.id_souple(mnemonique, valeur)
+        return trouve if trouve is not None else self.defaut(mnemonique)
 
 
 def _source_insert() -> str:
@@ -131,10 +147,96 @@ FEATURE_DBCHIRO = {
 }
 
 
+# Enregistrement tel que le rend `GET /api/exports/api/<id>` sur la vue par défaut du
+# module d'export, `gn_exports.v_synthese_sinp`.
+#
+# ⚠ **Reconstitué depuis la définition SQL de la vue** (gn_module_export,
+# `migrations/data/exports.sql`), et non relevé sur une instance : le connecteur a été
+# écrit sans accès à un GeoNature distant. Les noms et les types de colonnes sont donc
+# exacts — ils sont lus dans le SQL —, mais la distribution réelle des valeurs ne l'est
+# pas. À remplacer par un sondage réel dès qu'une instance sera disponible : le README
+# rappelle que trois défauts du module ont vécu sous un test vert écrit à partir du code
+# plutôt que des données.
+#
+# Deux traits de la vue à ne jamais perdre de vue, tous deux vérifiés plus bas :
+#   - les colonnes de nomenclature portent des LIBELLÉS (`label_default`), pas des codes ;
+#   - `date_debut` est un timestamp avec fuseau, pas une date.
+ITEM_GEONATURE = {
+    "id_synthese": 481902,
+    "id_source": "obs_2024_11837",
+    "id_perm_sinp": "3f2b8c4d-5e60-4a17-9a17-0d7e4a2f9b13",
+    "id_perm_grp_sinp": "7c1e9d02-4b83-4f56-8a29-6d0b1e3f5c74",
+    "date_debut": "2024-06-01T10:53:58+02:00",
+    "date_fin": "2024-06-01T11:30:00+02:00",
+    "cd_nom": 1958,
+    "cd_ref": 1958,
+    "version_taxref": "Taxref V17.0",
+    "nom_cite": "Anas crecca",
+    "nom_valide": "Anas crecca Linnaeus, 1758",
+    "regne": "Animalia", "group1_inpn": "Chordés", "group2_inpn": "Oiseaux",
+    "classe": "Aves", "ordre": "Anseriformes", "famille": "Anatidae", "rang_taxo": 84,
+    "nombre_min": 3, "nombre_max": 3,
+    "altitude_min": 365, "altitude_max": 365,
+    "profondeur_min": None, "profondeur_max": None,
+    "observateurs": "Untel",
+    "determinateur": "Unetelle",
+    "validateur": "Untel Tiers",
+    "numero_preuve": None,
+    "preuve_numerique": "https://exemple.fr/photo/42.jpg",
+    "preuve_non_numerique": None,
+    "comment_releve": "prospection matinale",
+    "comment_occurrence": "au bord de l'eau",
+    "date_creation": "2024-06-02T09:12:00+02:00",
+    "date_modification": "2024-06-11T14:02:31+02:00",
+    "derniere_action": "2024-06-11T14:02:31+02:00",
+    "jdd_uuid": "4d331cae-65e4-4948-b0b2-a11bc5bb46c2",
+    "jdd_nom": "Inventaire ZNIEFF de l'Ariège",
+    "jdd_acteurs": "CEN Ariège (Producteur du jeu de données), ANA (Fournisseur)",
+    "ca_uuid": "1b6f0a54-9c27-4e81-b3d5-2a8e7f04c916",
+    "ca_nom": "Inventaires naturalistes départementaux",
+    "reference_biblio": None,
+    "code_habitat": None, "habitat": None,
+    "nom_lieu": "Étang de Lers",
+    "precision": 100,
+    "donnees_additionnelles": '{"protocole": "IPA", "point": "12"}',
+    "wkt_4326": "POINT(1.9 42.8)",
+    "x_centroid_4326": 1.9,
+    "y_centroid_4326": 42.8,
+    # ⚠ Libellés, pas de cd_nomenclature — c'est tout l'enjeu du connecteur.
+    "nature_objet_geo": "Stationnel",
+    "type_regroupement": "Session",
+    "methode_regroupement": "Relevé de terrain",
+    "comportement": "Alimentation",
+    "technique_obs": "Vu",
+    "statut_biologique": "Non renseigné",
+    "etat_biologique": "Vivant",
+    "naturalite": "Sauvage",
+    "preuve_existante": "Oui",
+    "precision_diffusion": "Précise",
+    "stade_vie": "Adulte",
+    "sexe": "Femelle",
+    "objet_denombrement": "Individu",
+    "type_denombrement": "Compté",
+    "niveau_sensibilite": "Non sensible",
+    "statut_observation": "Présent",
+    "floutage_dee": "Non",
+    "statut_source": "Terrain",
+    "type_info_geo": "Géoréférencement",
+    "methode_determination": "Autre méthode de détermination",
+}
+
+
 def ligne_dbchiro():
     return db_tr.to_row(FEATURE_DBCHIRO, cd_nom=60506, id_dataset=1, id_source=1,
                         id_module=1, srid=2154, resolver=ResolverFactice(),
                         instance="https://dbchiroc.org")
+
+
+def ligne_geonature(**surcharges):
+    return gn_tr.to_row({**ITEM_GEONATURE, **surcharges}, cd_nom=1958, id_dataset=1,
+                        id_source=1, id_module=1, srid=2154,
+                        resolver=ResolverFactice(),
+                        instance="https://geonature.exemple.fr", id_export="12")
 
 
 def ligne_gbif():
@@ -150,7 +252,8 @@ def ligne_vn():
 
 
 @pytest.mark.parametrize("nom, fabrique", [("gbif", ligne_gbif), ("visionature", ligne_vn),
-                                           ("dbchiro", ligne_dbchiro)])
+                                           ("dbchiro", ligne_dbchiro),
+                                           ("geonature", ligne_geonature)])
 def test_to_row_fournit_tous_les_parametres_lies(nom, fabrique):
     """Sans quoi le premier `insert_batch` échoue, et rien n'est importé."""
     manquants = parametres_lies() - set(fabrique())
@@ -158,7 +261,8 @@ def test_to_row_fournit_tous_les_parametres_lies(nom, fabrique):
 
 
 @pytest.mark.parametrize("nom, fabrique", [("gbif", ligne_gbif), ("visionature", ligne_vn),
-                                           ("dbchiro", ligne_dbchiro)])
+                                           ("dbchiro", ligne_dbchiro),
+                                           ("geonature", ligne_geonature)])
 def test_to_row_ne_produit_rien_dinutile(nom, fabrique):
     """Une clé que l'INSERT ne porte pas est un calcul jeté en silence."""
     inutiles = set(fabrique()) - parametres_lies()
@@ -175,7 +279,8 @@ def test_toutes_les_colonnes_de_nomenclature_sont_couvertes():
     """Le dictionnaire de chaque source doit couvrir les colonnes `id_nomenclature_*`."""
     attendues = {c for c in colonnes_insert()
                  if c.startswith("id_nomenclature_")} - RESOLUES_A_PART
-    for nom, module in (("gbif", gbif_tr), ("visionature", vn_tr), ("dbchiro", db_tr)):
+    for nom, module in (("gbif", gbif_tr), ("visionature", vn_tr), ("dbchiro", db_tr),
+                        ("geonature", gn_nomen)):
         manquantes = attendues - set(module.COLONNES_NOMENCLATURE)
         assert not manquantes, f"{nom} : {sorted(manquantes)}"
 
@@ -218,6 +323,41 @@ def test_lempreinte_visionature_est_prise_en_compte():
     where = _source_insert().split("ON CONFLICT")[-1]
     assert "vn_empreinte" in where
     assert "gbif_empreinte" in where
+
+
+def test_lempreinte_geonature_est_prise_en_compte():
+    """Même exigence pour la source GeoNature distante.
+
+    Le cas est même plus aigu qu'ailleurs : la réconciliation des suppressions impose une
+    relecture complète du corpus, donc un passage de toutes les lignes dans l'ON CONFLICT.
+    Sans `gn_empreinte` dans la clause, les deux côtés du COALESCE valent NULL sur ces
+    lignes — `IS DISTINCT FROM` est faux — et une coordonnée rectifiée à la source ne
+    serait jamais reprise.
+    """
+    where = _source_insert().split("ON CONFLICT")[-1]
+    assert "gn_empreinte" in where
+    assert "gn_empreinte" in ligne_geonature()["additional_data"]
+
+
+def test_les_cles_dempreinte_suivent_lordre_du_coalesce():
+    """`CLES_EMPREINTE` doit énumérer exactement les clés du COALESCE, dans le même ordre.
+
+    Un désaccord ne casse aucune insertion, et c'est précisément ce qui le rend
+    dangereux : `empreinte_de` — qui sert au décompte du bilan — retiendrait une clé que
+    la base n'a pas retenue, et l'import annoncerait des mises à jour qui n'ont pas eu
+    lieu, ou l'inverse. Le genre de défaut qui vit longtemps sous un test vert.
+    """
+    source = _source_insert()
+    where = source.split("ON CONFLICT (unique_id_sinp) DO UPDATE SET")[1]
+    # Premier COALESCE de la clause WHERE : celui qui lit la ligne déjà en base.
+    premier = where.split("IS DISTINCT FROM")[0]
+    dans_sql = re.findall(r"additional_data->>'([a-z_]+_empreinte)'", premier)
+
+    declarees = re.search(r"CLES_EMPREINTE = \(([^)]*)\)", source).group(1)
+    dans_python = re.findall(r'"([a-z_]+_empreinte)"', declarees)
+
+    assert dans_python == dans_sql, (
+        f"ordre divergent — Python {dans_python} / SQL {dans_sql}")
 
 
 # ── Colonnes ajoutées pour VisioNature, mais portées par l'INSERT commun ─────

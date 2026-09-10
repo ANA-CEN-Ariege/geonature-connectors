@@ -71,3 +71,27 @@ def voir_dans_dbchiro(id_sighting):
         abort(400, "Identifiant d'observation invalide.")
 
     return redirect(f"{instance}/sighting/{cle}/detail", code=302)
+
+
+@blueprint.route("/geonature/<id_synthese>", methods=["GET"])
+def voir_dans_geonature(id_synthese):
+    """Renvoie vers la fiche d'une observation sur l'instance GeoNature d'origine.
+
+    Troisième variante du même problème, et la plus nette : le permalien d'une observation
+    GeoNature est `<url>/#/synthese/occurrence/<id_synthese>`, c'est-à-dire que tout se
+    joue **après un fragment**. Loger ce fragment dans `url_source` ferait que le
+    séparateur et l'identifiant ajoutés par le cœur s'y perdraient — un fragment n'est
+    jamais envoyé au serveur. La redirection est donc le seul moyen, comme pour dbChiro.
+    """
+    from geonature.utils.config import config as gn_config
+
+    cfg = (gn_config.get("CONNECTORS") or {}).get("geonature", {})
+    instance = str(cfg.get("url") or "").rstrip("/")
+    if not instance:
+        abort(404, "Connecteur GeoNature non configuré.")
+
+    cle = str(id_synthese).strip()
+    if not cle.isdigit():
+        abort(400, "Identifiant d'observation invalide.")
+
+    return redirect(f"{instance}/#/synthese/occurrence/{cle}", code=302)

@@ -7,6 +7,7 @@ Module GeoNature d'alimentation de la Synthèse depuis des sources externes.
 | **GBIF** (Global Biodiversity Information Facility) | fonctionnel |
 | **VisioNature / Biolovision** | fonctionnel — client Biolovision vendorisé depuis `Client_API_VN` |
 | **dbChiro** (dbchiroweb) | fonctionnel — chiroptères, une instance régionale par configuration |
+| **GeoNature** (autre instance) | fonctionnel — via l'API du module d'export du distant |
 
 Le module tourne **dans** GeoNature. Il utilise donc `db.session` directement : aucun
 identifiant PostgreSQL à distribuer, insertion par lots plutôt qu'une requête HTTP par
@@ -87,8 +88,8 @@ source » de la fiche d'observation : l'interface concatène `url_source` et
 ## Conventions des commandes
 
 Les commandes se nomment `<source>-<action>`, la source portant son nom entier :
-`gbif-`, `visionature-`, `dbchiro-`. Une seule exception, `statut`, qui ne dépend
-d'aucune source.
+`gbif-`, `visionature-`, `dbchiro-`, `geonature-`. Une seule exception, `statut`, qui
+ne dépend d'aucune source.
 
 Les options sont en **français**, avec deux exceptions assumées : `--dry-run` et `--yes`,
 que tout utilisateur de ligne de commande reconnaît et que traduire desservirait.
@@ -99,6 +100,7 @@ Le comportement par défaut est **asymétrique, et c'est voulu** :
 |---|---|---|
 | `*-import` | écrit | `--dry-run` pour simuler |
 | `*-purge` | simule | `--yes` pour exécuter |
+| `geonature-reconcilier` | simule | `--yes` pour exécuter |
 
 Un import s'ajoute et se rejoue sans dommage — les identifiants sont déterministes, une
 seconde exécution ne produit rien. Une purge détruit. Qu'elle exige un geste explicite
@@ -107,7 +109,8 @@ qu'on ne le « corrige » pas par mégarde.
 
 `tests/test_commandes.py` ancre le reste de ces conventions : chaque drapeau doit figurer
 dans une liste explicite, aucun ne peut employer un terme anglais hors des deux
-exceptions, les trois purges doivent offrir les mêmes garanties, et toute option doit
+exceptions, chaque source doit avoir sa purge et toutes doivent offrir les mêmes
+garanties, et toute option doit
 correspondre à un paramètre de sa fonction. Cette dernière vérification n'est pas
 théorique : renommer un drapeau sans figer son nom Python fait échouer la commande à
 l'exécution seulement, jamais à l'import.
@@ -1242,14 +1245,257 @@ finir en erreur de décodage JSON.
 
 ---
 
+## GeoNature
+
+Moissonne une **autre instance GeoNature**. C'est la seule source qui parle déjà le même
+langage que la destination : mêmes nomenclatures SINP, même TAXREF, mêmes identifiants
+permanents. Cela rend le connecteur plus simple sur bien des points — et lui pose deux
+problèmes que les autres n'ont pas.
+
+### Pourquoi pas api2GN
+
+[api2GN](https://github.com/PnX-SI/api2GN) fait la même chose et il vise **le bon
+endroit**, dont ce connecteur reprend l'idée. Il n'a pourtant pas été adopté :
+
+- c'est un **module GeoNature à part entière**, avec ses tables, sa CLI
+  (`geonature parser run`) et ses parsers déclarés dans un fichier Python de
+  configuration. L'employer reviendrait à installer un second module d'alimentation de la
+  Synthèse à côté de celui-ci, avec deux journaux, deux façons de purger et deux endroits
+  où chercher quand une donnée manque ;
+- il insère par `db.session.add(Synthese(...))`, **sans `ON CONFLICT`** — c'est le défaut
+  que `core/synthese.py` documente déjà à propos de son parser GBIF : un moissonnage
+  rejoué duplique ou échoue ;
+- son `GeoNatureParser` passe les colonnes de nomenclature à
+  `ref_nomenclatures.get_id_nomenclature()`, **qui attend un `cd_nomenclature`**, alors
+  que la vue `gn_exports.v_synthese_sinp` livre des `label_default` — des libellés
+  français. La fonction rend NULL, l'insertion réussit, et les quinze colonnes de
+  nomenclature se remplissent de rien. Aucune erreur, aucun message.
+
+Ce dernier point est le cœur du connecteur écrit ici, et une bonne moitié de
+`tests/test_geonature.py` existe pour qu'il ne puisse pas se reproduire sans qu'un test
+rougisse.
+
+### Pourquoi l'API du module d'export, et non celle de la Synthèse
+
+| | pagination | plafond | authentification |
+|---|---|---|---|
+| `POST /synthese/export_observations` | **aucune** | `NB_MAX_OBS_EXPORT`, 50 000 par défaut | compte + permission `E` |
+| `GET /synthese/for_web` | `limit` seul | `NB_MAX_OBS_MAP` | compte |
+| `GET /api/exports/api/<id>` | `limit` + `offset` | par page seulement | **jeton d'export** |
+
+L'API du cœur rend un *fichier*, sans `limit` ni `offset`, et tronque en silence au-delà
+du plafond. On ne peut pas bâtir un moissonnage là-dessus. `/synthese/for_web` sert une
+vue d'affichage cartographique, sans nomenclatures ni identifiants de jeu.
+
+Le distant doit donc avoir `gn_module_export` installé, un export déclaré sur
+`gn_exports.v_synthese_sinp`, et un jeton pour cet export.
+
+⚠ **Aucune commande ne peut lister les exports du distant.** La route `GET /` du module
+d'export est `@permissions_required` : elle exige un compte, là où le jeton n'ouvre que
+`/api/exports/api/<id>`. L'`id_export` se demande à l'administrateur distant, il ne se
+découvre pas.
+
+### Configuration
+
+Minimum vital, dans `connectors_config.toml` :
+
+```toml
+[geonature]
+enabled = true
+url = "https://geonature.exemple.fr"
+id_export = 12
+jeton = "…"
+territoires = ["METROP"]
+organisme_contact_principal = "Association des Naturalistes de l'Ariège"
+```
+
+Le fichier `connectors_config.toml.example` commente chaque réglage.
+
+### Diagnostiquer avant d'importer
+
+```bash
+geonature connectors geonature-couverture
+```
+
+N'écrit rien, et montre cinq choses qui ne se découvriraient sinon qu'une fois les
+données en base :
+
+```
+export 12 — licence « Licence Ouverte v2.0 »
+  48 210 enregistrement(s) annoncé(s)
+  ⚠ le serveur semble avoir ignoré les filtres ['geometry'] : total_filtered égale total
+  colonne(s) absente(s) de la vue :
+    id_perm_grp_sinp — identifiant de regroupement
+  ⚠ TAXREF distant Taxref V17.0 / local Taxref V16.0
+  cd_nom : 1 284 distinct(s), 1 279 résolu(s) (99,6 %), 3 par cd_ref, 2 hors TAXREF
+      cd_nom 452301 (cd_ref 60295) Rhinolophus ferrumequinum — 84 observation(s)
+  id_perm_sinp : 48 210 / 48 210 renseigné(s)
+  ⚠ 312 UUID déjà en Synthèse sous une autre source : GBIF (312)
+  jeux de données : 7 distinct(s), 2 déjà présent(s) localement
+      4d331cae… « Inventaire ZNIEFF de l'Ariège » — actif
+  cadres d'acquisition : 3 distinct(s), 0 présent(s) localement
+  ⚠ 2 libellé(s) de nomenclature non résolu(s) :
+      STATUT_BIO « Reproducteur probable » — 412 observation(s)
+```
+
+Ne lancez l'import qu'une fois chaque ligne comprise.
+
+### Importer
+
+```bash
+geonature connectors geonature-import --dry-run
+geonature connectors geonature-import
+geonature connectors geonature-import --perimetre 09 --jeu 4d331cae-65e4-4948-b0b2-a11bc5bb46c2
+```
+
+| | |
+|---|---|
+| `--export` | identifiant d'export distant (défaut : configuration) |
+| `--jeu` | restreindre à un ou plusieurs `jdd_uuid` distants, répétable |
+| `--depuis` | date ISO 8601 ; sans elle, le filigrane du dernier passage est calculé |
+| `--tout` | relire tout le corpus, sans filtre de date — requis avant `geonature-reconcilier` |
+| `--perimetre` | code d'un zonage local (`09`) ou WKT en 4326 |
+| `--max-resultats` | plafonner la moisson, pour un premier essai d'écriture |
+
+**L'incrémental fait deux passes de date, et ce n'est pas une précaution excessive.**
+`date_modification` est le `meta_update_date` de la Synthèse distante, **NULL tant que la
+ligne n'a jamais été modifiée**. Filtrer sur ce seul champ manquerait toutes les
+*créations* — et définitivement, puisque le passage suivant remonte encore le filigrane
+sans jamais revenir les chercher. Le connecteur interroge donc aussi `date_creation` et
+fusionne les deux sur `id_synthese`. Un filigrane reculé de `marge_heures` (24 par
+défaut) couvre l'écart d'horloge entre les deux instances.
+
+### Ce que le connecteur reprend du producteur
+
+C'est le seul connecteur à recréer les métadonnées **sous les identifiants SINP du
+producteur** — c'est ce que dit le standard : un jeu de données garde son identité d'une
+plateforme à l'autre.
+
+| | |
+|---|---|
+| `unique_id_sinp` | l'`id_perm_sinp` distant, verbatim |
+| `unique_id_sinp_grp` | l'`id_perm_grp_sinp` distant, verbatim |
+| jeu de données | un par `jdd_uuid` distant, portant ce même `unique_dataset_id` |
+| cadre d'acquisition | un par `ca_uuid` distant, portant ce même UUID |
+| `entity_source_pk_value` | l'`id_synthese` distant |
+| `id_nomenclature_diffusion_level` | le `precision_diffusion` du producteur |
+
+Cela a trois conséquences qu'il faut connaître.
+
+**Un jeu déjà présent localement est alimenté, pas dupliqué.** Même UUID = même objet
+SINP. Mais ses métadonnées ne sont pas réécrites : il a pu être créé par un dépôt SINP ou
+enrichi à la main, et le nom que l'API nous donne n'est pas forcément meilleur.
+`mettre_a_jour_jdd_existants = true` force le rafraîchissement. Un jeu **désactivé** est
+refusé : GeoNature le masque, et y verser des observations les rendrait invisibles.
+
+**Une observation peut déjà être en base sous une autre source**, et ce n'est pas un cas
+limite. `sources/gbif/transform.sinp_uuid` reprend l'UUID contenu dans `occurrenceID`
+quand c'en est un : **100 % des jeux publiés par PatriNat**, soit **75,8 % du corpus GBIF
+ariégeois** (`docs/gbif-ariege.md`), et précisément ce qu'une instance partenaire détient
+aussi — Faune Occitanie, SICEN, ANA, LIFE Desman, Natura 2000. Moissonner un GeoNature
+voisin *et* le GBIF sur le même territoire produit des collisions par milliers.
+
+⚠ **Le conflit ne peut pas être arbitré à l'écriture, et il faut le comprendre avant de
+choisir un réglage.** `INSERT_SQL` ne réécrit jamais `id_source` — la colonne reste au
+premier connecteur qui a inséré la ligne — mais son `DO UPDATE` écrase tout le contenu,
+`additional_data` compris. Ce qui donne, en partant d'une ligne déjà importée du GBIF :
+
+| étape | `id_source` | contenu |
+|---|---|---|
+| `gbif-import` | GBIF | GBIF |
+| `geonature-import`, `« remplacer »` → DELETE puis INSERT | GeoNature | GeoNature |
+| **`gbif-import` suivant** — `ON CONFLICT`, empreintes différentes → UPDATE | **GeoNature** | **GBIF** |
+| `geonature-import` suivant — même comparaison en sens inverse | GeoNature | GeoNature |
+
+À partir de la troisième ligne, `conflits_autre_source` **ne détecte plus rien** : la
+ligne est bien sous notre `id_source`. Les deux connecteurs se réécrivent alors en
+silence, une fois par exécution, sans fin.
+
+`« remplacer »` ne supprime donc pas l'oscillation — **il la déclenche**, sauf si l'autre
+connecteur cesse de moissonner ces observations. `« ignorer »` (le défaut) est la seule
+option stable, parce que le connecteur n'écrit tout simplement pas ; le prix est de
+conserver la copie du GBIF, qui a pu perdre en précision géographique et en nomenclatures
+lors de la republication.
+
+**Le bon remède est en amont** : écarter les jeux que ce GeoNature publie déjà, côté GBIF,
+par `[gbif] exclude_dataset_keys` — puis seulement passer à `« remplacer »` pour reprendre
+les lignes déjà en base. `geonature-import` avertit quand `« remplacer »` est demandé
+alors que `[gbif] enabled` est vrai.
+
+Comme un conflit installé devient indétectable par `id_source`, `geonature-couverture` et
+le bilan d'import comptent séparément les lignes **portant notre `id_source` mais
+dépourvues de `gn_empreinte`** : nos `to_row` l'écrivent systématiquement, son absence
+prouve donc qu'un autre connecteur est passé après nous. C'est le seul moyen de voir la
+bagarre.
+
+**Un `id_perm_sinp` absent est le cas le plus dangereux**, parce qu'il ne casse rien :
+`unique_id_sinp` est nullable, NULL n'est jamais égal à NULL, l'index unique ne
+dédoublonne pas et *chaque passage recréerait tout le corpus*. Un uuid5 est donc dérivé de
+`(instance, export, id_synthese)` et conservé sous `gn_uuid_calcule` — le jour où le
+producteur publiera son UUID natif, `core.synthese.realigner_uuid` renommera la ligne au
+lieu de la dupliquer, exactement comme cela s'est fait pour VisioNature.
+
+### Répercuter les suppressions
+
+L'API d'export ne publie aucun journal de suppression : une observation retirée là-bas
+cesse simplement d'apparaître. On relit donc tout, et ce qui n'est pas revenu a disparu.
+
+```bash
+geonature connectors geonature-import --tout
+geonature connectors geonature-reconcilier          # simule
+geonature connectors geonature-reconcilier --yes    # exécute
+```
+
+Commande **séparée de l'import**, et qui simule par défaut : un import écrit, et y loger
+une suppression de masse violerait l'asymétrie sur laquelle repose tout le module.
+
+Quatre garde-fous, dont aucun n'est de trop — sans eux, un filtre mal réglé vide la
+Synthèse :
+
+1. **la moisson doit être complète.** Un plafond de résultats, un filtre de date ou une
+   pagination interrompue rendraient absentes des lignes bien vivantes ;
+2. **bornée aux jeux réellement relus.** Un jeu hors du périmètre courant n'est pas vidé
+   sous prétexte qu'on ne l'a pas lu ;
+3. **bornée au couple instance/export**, par `additional_data`. Deux exports alimentant la
+   même source ne peuvent pas se supprimer l'un l'autre ;
+4. **un plafond** (`plafond_suppressions`, 5 % du corpus, minimum 100 lignes). Un
+   producteur qui republierait sous de nouveaux identifiants ferait sinon tout disparaître
+   d'un coup.
+
+### Limites connues
+
+**Les géométries non ponctuelles sont ramenées à leur centroïde.** `core/synthese.py`
+n'insère que des points (`ST_MakePoint`). Une placette, une maille ou un polygone de
+prospection perd donc sa forme. `nature_objet_geo` et `type_info_geo` du producteur sont
+conservés dans `additional_data` pour que la fiche dise de quoi ce point est le centre,
+mais l'information géométrique, elle, est perdue.
+
+**`determiner` et `validator` ne vont pas en colonne.** Elles existent en Synthèse mais
+pas dans `INSERT_SQL`, et les y ajouter obligerait les trois autres `to_row` à fournir le
+paramètre lié — `tests/test_insert_alignement.py` l'impose dans les deux sens. Elles
+partent en `additional_data` sous `gn_determinateur` et `gn_validateur`. Les ajouter à
+l'INSERT commun est un suivi identifié.
+
+**Deux nomenclatures ne sont pas transposables** faute de figurer dans la vue :
+`id_nomenclature_biogeo_status` (`STAT_BIOGEO`, absente de `v_synthese_sinp`) et
+`id_nomenclature_valid_status` (la vue publie `validateur`, un nom de personne, pas un
+statut — il vient donc de `[validation]`). Les deux prennent le défaut de leur colonne.
+
+**`[geonature.schedule]` n'est pas câblé**, comme `[visionature.schedule]` et
+`[dbchiro.schedule]` : `tasks.py` n'ordonnance que GBIF. Planifier l'import passe par
+cron.
+
+---
+
 ## Purger
 
-Les trois sources ont la même commande, avec les mêmes garanties :
+Les quatre sources ont la même commande, avec les mêmes garanties :
 
 ```bash
 geonature connectors gbif-purge --taxon Chiroptera
 geonature connectors visionature-purge --projet ATLAS --yes
 geonature connectors dbchiro-purge --tout --yes
+geonature connectors geonature-purge --jeu 4d331cae-65e4-4948-b0b2-a11bc5bb46c2 --yes
 ```
 
 | | |
@@ -1290,6 +1536,13 @@ instance, faute d'exposer `study` — ni `--incertitude-max`, la colonne `precis
 restant NULL puisque l'API ne publie aucune incertitude. L'offrir laisserait croire à un
 filtre qui ne retiendrait jamais rien.
 
+⚠ **`geonature-purge --supprimer-jdd-vides` ne nettoie que le cadre de repli du module.**
+Les jeux moissonnés depuis une autre instance sont créés sous l'UUID du producteur et
+rattachés à *ses* cadres d'acquisition, que le ménage ne parcourt donc pas. C'est
+délibéré : ces cadres peuvent porter des jeux qu'un autre canal — un dépôt SINP, une
+saisie manuelle — possède légitimement, et les retirer parce qu'ils sont vides à un
+instant donné dépasserait ce que ce module a le droit de faire.
+
 ---
 
 ## Tests
@@ -1298,7 +1551,7 @@ filtre qui ne retiendrait jamais rien.
 python3 -m pytest tests/ -q
 ```
 
-360 tests, sans dépendance à GeoNature ni à la base. Ils couvrent les cas qui ont
+490 tests, sans dépendance à GeoNature ni à la base. Ils couvrent les cas qui ont
 réellement mordu pendant le développement : le faux-ami `Nymph` / « Nymphe », les dates
 en intervalle ISO, l'asymétrie énumération/URL des licences, la distinction entre origine
 du taxon et état de l'individu, et le déterminisme de l'identifiant unique.
@@ -1309,6 +1562,21 @@ une frontière de famille, le contresens « Estivage » → estivation, et la pr
 détermination douteuse sur la pré-validation globale. Les données de référence viennent
 d'un sondage réel de l'instance, pas d'exemples inventés.
 
+Côté GeoNature, les cas tournent d'abord autour du défaut d'api2GN : un libellé de
+nomenclature doit être résolu **comme un libellé**, et un libellé que le référentiel local
+ne connaît pas doit être *collecté* et affiché en fin d'import, jamais avalé. Le résolveur
+factice y est volontairement strict — sa méthode `id()`, celle des trois autres
+connecteurs, lève si on lui passe autre chose qu'un `cd_nomenclature`. Viennent ensuite
+les trois pièges de pagination de l'API d'export : `offset` est un numéro de page et non
+un décalage de lignes, la limite est rabotée par le serveur sans qu'il le dise, et un
+`offset` ignoré boucle indéfiniment.
+
+⚠ Les cas GeoNature sont bâtis sur un enregistrement **reconstitué depuis la définition
+SQL de `gn_exports.v_synthese_sinp`**, faute d'accès à une instance distante au moment de
+l'écriture. Les noms et les types de colonnes sont donc exacts, la distribution réelle des
+valeurs ne l'est pas. À confronter à un sondage réel dès qu'une instance sera disponible —
+c'est précisément la réserve que formule l'avertissement en fin de section.
+
 `tests/test_noms_definis.py` passe le module à l'analyse statique. Les imports sont
 locaux aux commandes — pour ne pas charger l'API Biolovision quand on lance une commande
 GBIF —, si bien qu'un import oublié ne se voit ni à l'import du module ni à la
@@ -1316,10 +1584,13 @@ compilation : il attend l'exécution, après le chargement des référentiels d'
 d'observateurs, soit plusieurs minutes avant le `NameError`. C'est arrivé deux fois.
 
 `tests/test_insert_alignement.py` mérite une mention à part : il confronte les `to_row`
-des trois sources au texte de `INSERT_SQL`, dans les deux sens. Un paramètre lié manquant
+des quatre sources au texte de `INSERT_SQL`, dans les deux sens. Un paramètre lié manquant
 fait échouer l'insertion d'un lot entier ; une clé produite en trop est un calcul jeté en
 silence. C'est ce contrôle qui manquait quand le connecteur VisioNature a été écrit avec
-huit colonnes de nomenclature là où l'INSERT en portait quatorze.
+huit colonnes de nomenclature là où l'INSERT en portait quatorze. Il vérifie aussi que
+`CLES_EMPREINTE` énumère les clés du `COALESCE` **dans le même ordre** que le SQL : un
+désaccord ne casse aucune insertion, il fait seulement mentir le bilan, qui annoncerait
+des mises à jour que la base n'a pas faites.
 
 ⚠️ Un test écrit à partir du code plutôt que de la donnée ne prouve rien. Trois défauts
 de ce module ont vécu sous un test vert qui vérifiait l'hypothèse fausse du code qu'il
@@ -1347,10 +1618,18 @@ personnelle : à porter au registre de traitement.
 **Penser à filtrer `gn_profiles.v_synthese_for_profiles`** sur `id_source`, sinon les
 profils de taxons sont alimentés par de la donnée externe.
 
-**La suppression n'est pas gérée côté GBIF** — elle l'est côté VisioNature, via
-`api_diff`. Une occurrence retirée de GBIF reste en base : la
+**La suppression n'est pas gérée côté GBIF** — elle l'est côté VisioNature via
+`api_diff`, et côté GeoNature via `geonature-reconcilier`, qui relit tout le corpus et
+purge ce qui n'est pas revenu. Une occurrence retirée de GBIF reste en base : la
 détecter supposerait de comparer l'ensemble des identifiants du périmètre à chaque
 passage, ce qui annulerait le bénéfice du court-circuit.
+
+**Le référentiel de sensibilité local peut être moins couvrant que celui d'une
+instance distante.** `id_nomenclature_sensitivity` est recalculée à l'insertion par le
+trigger de la Synthèse : une observation protégée chez le producteur peut donc se
+retrouver **moins protégée ici qu'à la source**. Le réglage
+`[geonature] niveau_diffusion_si_sensible` rétablit une restriction dès que le producteur
+déclare l'observation sensible, mais c'est un choix d'exploitation, pas un automatisme.
 
 **Le court-circuit repose sur `dataset.modified`.** Si un producteur pousse des données
 sans mettre cette date à jour, le jeu sera sauté à tort. Une exécution `--forcer`

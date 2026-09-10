@@ -534,3 +534,178 @@ batch_size = 1000
 [dbchiro.schedule]
 enabled = false
 crontab = "0 5 * * 1"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GeoNature — moissonnage d'une AUTRE instance GeoNature
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# La source est l'API du **module d'export** du GeoNature distant, pas celle de sa
+# Synthèse. Le choix n'est pas de commodité : `POST /synthese/export_observations` rend un
+# fichier, sans `limit` ni `offset`, et sa requête est plafonnée en dur par
+# `NB_MAX_OBS_EXPORT` (50 000 par défaut). Au-delà, la donnée est tronquée sans que rien ne
+# le dise. L'API d'export, elle, pagine réellement et filtre côté serveur.
+#
+# Ce que l'instance distante doit avoir :
+#   - `gn_module_export` installé ;
+#   - un export déclaré sur `gn_exports.v_synthese_sinp` (la vue fournie avec le module) ;
+#   - un jeton pour cet export, ou l'export marqué « public ».
+#
+# ⚠ Ce connecteur reprend **les identifiants SINP du producteur** : l'`unique_id_sinp` de
+# chaque observation, l'`unique_dataset_id` de chaque jeu, l'UUID de chaque cadre
+# d'acquisition. C'est ce que dit le SINP — un jeu garde son identité d'une plateforme à
+# l'autre — et cela a deux conséquences qu'il faut avoir en tête avant d'importer :
+#   - un jeu de données déjà présent localement sous le même UUID sera **alimenté**, pas
+#     dupliqué. Ses métadonnées ne seront pas réécrites (voir mettre_a_jour_jdd_existants) ;
+#   - une observation déjà en base sous une autre source (le GBIF republie les données
+#     GeoNature françaises avec leur UUID SINP) entre en collision. Voir
+#     sur_conflit_autre_source.
+#
+# Lancez `geonature connectors geonature-couverture` avant tout import : la commande
+# n'écrit rien et montre l'écart de version TAXREF, les cd_nom non résolus, les collisions
+# d'UUID, les jeux déjà présents et les libellés de nomenclature non reconnus.
+[geonature]
+enabled = false
+
+# URL de l'instance distante, sans barre oblique finale.
+url = ""
+
+# ⚠ Identifiant **propre à l'instance distante**, que seul son administrateur peut donner :
+# la route qui liste les exports exige un compte et une permission, là où le jeton n'ouvre
+# que l'export auquel il se rapporte. Il n'existe donc aucune commande pour le découvrir.
+id_export = 0
+
+# Jeton de l'export, transmis dans l'en-tête HTTP `api-key` — jamais en chaîne de requête,
+# où il finirait en clair dans les journaux du serveur distant et de tout proxy.
+jeton = ""
+
+# ── Périmètre ─────────────────────────────────────────────────────────────────
+# WKT en 4326, appliqué côté serveur. Une **enveloppe** suffit : cinq points au lieu de
+# milliers, une URL qui reste courte, et la sur-sélection est rattrapée par la bbox
+# ci-dessous. `geonature-import --perimetre 09` la calcule depuis le ref_geo local.
+perimetre_wkt = ""
+
+# Emprise (ouest, sud, est, nord) vérifiée sur chaque observation. Double le filtre
+# serveur, pour la raison qui vaut partout ici : un paramètre inconnu de l'API est ignoré
+# **sans erreur**. Le diagnostic est meilleur que pour les autres connecteurs — un
+# `total_filtered` égal à `total` trahit un filtre ignoré dès la première page — mais ce
+# second rideau reste utile si l'emprise serveur est plus large que l'emprise voulue.
+bbox = []
+
+# Liste blanche d'`unique_dataset_id` distants. Souvent le vrai besoin : « je veux ce
+# jeu-là de cette instance », et non tout son corpus.
+jdd_uuids = []
+
+# Filtres bruts transmis tels quels à l'API d'export. Conventions du module :
+#   <col>=val   ilike<col>=val   filter_d_up_<col>=date   filter_n_up_<col>=nombre
+filtre_api = {}
+
+# ── Incrémental ───────────────────────────────────────────────────────────────
+# Recul appliqué au filigrane du dernier passage. Les horloges des deux instances
+# diffèrent et un import long chevauche la borne : sans marge, les lignes modifiées
+# pendant le passage précédent seraient perdues **définitivement**, le filigrane montant
+# quand même.
+#
+# ⚠ L'import fait deux passes de date, sur `date_modification` et sur `date_creation`.
+# La première est `meta_update_date`, NULL tant que la ligne n'a jamais été modifiée :
+# s'y fier seule ferait manquer toutes les créations.
+marge_heures = 24
+
+# ── Conflits d'identifiants ───────────────────────────────────────────────────
+# ⚠ À lire avant de changer la valeur.
+#
+# Ce connecteur reprend l'unique_id_sinp du producteur. Le connecteur GBIF fait de même
+# quand l'occurrenceID contient un UUID — ce qui est le cas de 100 % des jeux publiés par
+# PatriNat, soit 75,8 % du corpus GBIF ariégeois (docs/gbif-ariege.md), et couvre
+# précisément ce qu'une instance partenaire détient aussi : Faune Occitanie, SICEN, ANA,
+# LIFE Desman, Natura 2000. Les collisions se comptent donc par milliers.
+#
+# ⚠ **Le conflit ne se règle pas ici.** `INSERT_SQL` ne réécrit jamais id_source — la
+# colonne reste au premier connecteur qui a inséré la ligne — mais il écrase tout le
+# contenu. Deux connecteurs qui moissonnent la même observation se réécrivent donc l'un
+# l'autre à chaque exécution, indéfiniment, et le conflit devient invisible puisque
+# l'id_source ne les distingue plus.
+#
+# Le seul vrai remède est en amont : **une observation ne doit être moissonnée que par un
+# seul connecteur.** Écartez les jeux que ce GeoNature publie déjà, côté GBIF, par
+# [gbif] exclude_dataset_keys — la liste couvre déjà Faune Occitanie, Faune France,
+# SICEN, ANA, LIFE Desman, Natura 2000, PRA.
+#
+#   « ignorer »   la ligne distante est écartée et tracée dans geonature_rejets.csv.
+#                 Seule option **stable** : le connecteur n'écrit pas, rien n'oscille.
+#                 Le prix est de conserver la copie du GBIF, qui a pu perdre en précision
+#                 géographique et en nomenclatures lors de la republication.
+#   « remplacer » la ligne concurrente est supprimée, puis remplacée par la nôtre, plus
+#                 fidèle. ⚠ N'a de sens que si l'autre connecteur cesse de moissonner ces
+#                 observations : sinon il les reprend au passage suivant et le conflit
+#                 devient indétectable. L'import avertit quand [gbif] enabled est vrai.
+sur_conflit_autre_source = "ignorer"
+
+# Rafraîchir nom et description d'un jeu déjà présent localement sous le même UUID.
+# Faux par défaut : le jeu local a pu être enrichi à la main, et le nom que l'API nous
+# donne n'est pas forcément meilleur que celui qui s'y trouve.
+mettre_a_jour_jdd_existants = false
+
+# ── Confidentialité ───────────────────────────────────────────────────────────
+# ⚠ Faux par défaut, contrairement à [dbchiro], et pour une raison de fond : une instance
+# GeoNature est un producteur SINP conforme, qui a déjà arbitré ce qu'il diffuse. L'export
+# existe parce qu'un administrateur l'a créé, et chaque observation porte son niveau de
+# sensibilité et de diffusion. Refaire cet arbitrage ici substituerait notre jugement au
+# sien. L'option reste offerte pour les conventions de partage qui interdisent la
+# republication des noms.
+pseudonymiser_observateurs = false
+pseudonymisation_secret = ""
+
+# cd_nomenclature ou libellé NIV_PRECIS imposé à TOUTES les observations.
+#   0 Standard   1 Commune   2 Maille   3 Département   4 Aucune   5 Précise
+# Vide = on reprend le `precision_diffusion` du producteur, ce qui vaut mieux : son
+# arbitrage est porté par la donnée, observation par observation.
+niveau_diffusion = ""
+
+# ⚠ Restriction appliquée aux seules observations que le producteur déclare sensibles.
+# Parade au décalage des référentiels : `id_nomenclature_sensitivity` est recalculée
+# localement par le trigger de la Synthèse, et si notre référentiel de sensibilité couvre
+# moins d'espèces que celui du distant, la donnée serait **moins protégée ici qu'à la
+# source**. Renseigner « 2 » (maille) ou « 3 » (département) rétablit une protection.
+niveau_diffusion_si_sensible = ""
+
+# Licences acceptées, par leur nom tel que l'export le déclare. Vide = tout accepter.
+# L'import refuse de tourner si la licence de l'export n'y figure pas.
+licences_acceptees = []
+
+# ── Métadonnées SINP des cadres et jeux créés ─────────────────────────────────
+# Le formulaire de GeoNature exige un territoire et un contact principal : sans eux, ni le
+# cadre ni le jeu ne peuvent être enregistrés depuis l'interface, et rien ne le signale
+# tant qu'on ne les ouvre pas.
+territoires = ["METROP"]
+# Nom exact d'un organisme de utilisateurs.bib_organismes. ⚠ Le module ne CRÉE jamais
+# d'organisme à partir des données d'une API : les producteurs cités par l'export sont
+# rapprochés s'ils existent, et signalés sinon.
+organisme_contact_principal = ""
+objectifs_cadre = []
+financement_cadre = ""
+niveau_territorial = ""
+
+# ── Réconciliation ────────────────────────────────────────────────────────────
+# `geonature-reconcilier` répercute les suppressions faites à la source : l'API d'export ne
+# publie aucun journal, on relit donc tout et ce qui n'est pas revenu a disparu. Elle
+# simule par défaut et exige --yes.
+#
+# Part maximale du corpus supprimable en une fois, en pourcentage (minimum 100 lignes).
+# Au-delà, elle refuse : un producteur qui republierait sous de nouveaux identifiants
+# ferait sinon tout disparaître d'un coup.
+plafond_suppressions = 5
+
+# ── Moissonnage ───────────────────────────────────────────────────────────────
+# `max_page_size_api` vaut 1000 côté serveur et rabote sans le dire. La valeur réellement
+# appliquée est relue sur la première page.
+page_size = 1000
+timeout = 120
+batch_size = 1000
+
+# ⚠ Comme [visionature.schedule] et [dbchiro.schedule], cette section est lue par le
+# schéma de configuration mais **pas encore câblée** dans tasks.py, qui n'ordonnance que
+# GBIF. Planifier l'import passe pour l'instant par cron.
+[geonature.schedule]
+enabled = false
+crontab = "0 4 * * 1"

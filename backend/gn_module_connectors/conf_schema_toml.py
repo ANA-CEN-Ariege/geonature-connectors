@@ -360,10 +360,102 @@ class DbChiroSchemaConf(Schema):
     schedule = fields.Nested(ScheduleSchemaConf, load_default=lambda: ScheduleSchemaConf().load({}))
 
 
+class GeoNatureSchemaConf(Schema):
+    """Connecteur GeoNature (moissonnage d'une autre instance GeoNature)."""
+
+    enabled = fields.Boolean(load_default=False)
+    # URL de l'instance distante, p. ex. https://geonature.exemple.fr
+    url = fields.String(load_default="")
+    # ⚠ La source est l'API du **module d'export** du distant, pas celle de la Synthèse du
+    # cœur : cette dernière ne pagine pas et plafonne à NB_MAX_OBS_EXPORT (50 000 par
+    # défaut) en tronquant sans le dire.
+    #
+    # `id_export` est **propre à l'instance distante**, et son administrateur est le seul à
+    # pouvoir le donner : la route qui liste les exports exige un compte et une permission,
+    # là où le jeton n'ouvre que l'export auquel il se rapporte.
+    id_export = fields.Integer(load_default=0)
+    # Jeton de l'export, transmis dans l'en-tête HTTP `api-key`. Jamais en chaîne de
+    # requête, où il finirait dans les journaux du serveur distant et de tout proxy.
+    jeton = fields.String(load_default="")
+
+    # ── Périmètre ────────────────────────────────────────────────────────────
+    # WKT en 4326, appliqué côté serveur (`geometry=`). Une **enveloppe** suffit : cinq
+    # points au lieu de milliers, une URL qui reste courte, et la sur-sélection est
+    # rattrapée par le filtre local. `--perimetre <code de zonage>` le calcule depuis le
+    # ref_geo local plutôt que de le faire écrire à la main.
+    perimetre_wkt = fields.String(load_default="")
+    # Emprise (ouest, sud, est, nord) vérifiée sur chaque observation. Double le filtre
+    # serveur, qui peut être ignoré sans erreur — même précaution que pour dbChiro.
+    bbox = fields.List(fields.Float(), load_default=list)
+    # Liste blanche d'`unique_dataset_id` distants. Souvent le vrai besoin : « je veux ce
+    # jeu-là de cette instance », et non tout son corpus.
+    jdd_uuids = fields.List(fields.String(), load_default=list)
+    # Filtres bruts transmis tels quels à l'API d'export (`cd_nom=`, `ilikenom_cite=`,
+    # `filter_n_up_altitude_min=`…).
+    filtre_api = fields.Dict(load_default=dict)
+
+    # ── Incrémental ──────────────────────────────────────────────────────────
+    # Recul appliqué au filigrane du moissonnage précédent. Les horloges des deux
+    # instances diffèrent, et un import long chevauche la borne : sans marge, les lignes
+    # modifiées pendant le passage précédent seraient perdues définitivement, puisque le
+    # filigrane monte quand même.
+    marge_heures = fields.Integer(load_default=24)
+
+    # ── Conflits d'identifiants ──────────────────────────────────────────────
+    # Ce connecteur reprend l'`unique_id_sinp` du producteur. Une observation peut donc
+    # déjà être en base sous une autre source — le GBIF republie les données GeoNature
+    # françaises en plaçant leur UUID SINP dans `occurrenceID`.
+    #   « ignorer »   : la ligne distante est écartée et tracée (défaut)
+    #   « remplacer » : la ligne concurrente est supprimée, puis remplacée
+    sur_conflit_autre_source = fields.String(load_default="ignorer")
+    # Rafraîchir nom et description d'un jeu de données déjà présent localement sous le
+    # même UUID. Faux par défaut : le jeu local a pu être enrichi à la main.
+    mettre_a_jour_jdd_existants = fields.Boolean(load_default=False)
+
+    # ── Confidentialité ──────────────────────────────────────────────────────
+    # ⚠ Défaut à faux, contrairement à dbChiro, et pour une raison de fond : une instance
+    # GeoNature est un producteur SINP conforme, qui a déjà arbitré ce qu'elle diffuse.
+    # Refaire cet arbitrage ici substituerait notre jugement au sien.
+    pseudonymiser_observateurs = fields.Boolean(load_default=False)
+    pseudonymisation_secret = fields.String(load_default="")
+    # cd_nomenclature ou libellé NIV_PRECIS imposé à TOUTES les observations. Vide = on
+    # reprend le `precision_diffusion` du producteur, ce qui vaut mieux.
+    niveau_diffusion = fields.String(load_default="")
+    # Restriction appliquée aux seules observations que le producteur déclare sensibles.
+    # ⚠ Parade au décalage des référentiels de sensibilité : la sensibilité est recalculée
+    # localement par le trigger de la Synthèse, et si notre référentiel couvre moins
+    # d'espèces que le sien, la donnée serait moins protégée ici qu'à la source.
+    niveau_diffusion_si_sensible = fields.String(load_default="")
+    # Licences acceptées, par leur nom tel que l'export le déclare. Vide = tout accepter.
+    licences_acceptees = fields.List(fields.String(), load_default=list)
+
+    # ── Métadonnées SINP des cadres et jeux créés ────────────────────────────
+    territoires = fields.List(fields.String(), load_default=list)
+    organisme_contact_principal = fields.String(load_default="")
+    objectifs_cadre = fields.List(fields.String(), load_default=list)
+    financement_cadre = fields.String(load_default="")
+    niveau_territorial = fields.String(load_default="")
+
+    # ── Réconciliation ───────────────────────────────────────────────────────
+    # Part maximale du corpus que `geonature-reconcilier` s'autorise à supprimer en une
+    # fois, en pourcentage. Au-delà, elle refuse : un producteur qui republierait sous de
+    # nouveaux identifiants ferait sinon tout disparaître d'un coup.
+    plafond_suppressions = fields.Integer(load_default=5)
+
+    # ── Moissonnage ──────────────────────────────────────────────────────────
+    # `max_page_size_api` vaut 1000 côté serveur et rabote sans le dire.
+    page_size = fields.Integer(load_default=1000)
+    timeout = fields.Integer(load_default=120)
+    batch_size = fields.Integer(load_default=1000)
+    schedule = fields.Nested(ScheduleSchemaConf, load_default=lambda: ScheduleSchemaConf().load({}))
+
+
 class GnModuleSchemaConf(Schema):
     gbif = fields.Nested(GbifSchemaConf, load_default=GbifSchemaConf().load({}))
     visionature = fields.Nested(VisioNatureSchemaConf,
                                 load_default=lambda: VisioNatureSchemaConf().load({}))
     dbchiro = fields.Nested(DbChiroSchemaConf,
                             load_default=lambda: DbChiroSchemaConf().load({}))
+    geonature = fields.Nested(GeoNatureSchemaConf,
+                              load_default=lambda: GeoNatureSchemaConf().load({}))
     validation = fields.Nested(ValidationSchemaConf, load_default=ValidationSchemaConf().load({}))
