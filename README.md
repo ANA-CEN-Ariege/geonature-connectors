@@ -242,7 +242,7 @@ geonature connectors vn-import
 geonature connectors vn-import --since 2026-01-01   # incrémental
 geonature connectors vn-reanonymiser                # simulation
 geonature connectors vn-reanonymiser --yes
-geonature connectors vn-purge                       # simulation
+geonature connectors vn-purge --taxon Reptilia       # simulation
 geonature connectors vn-purge --taxon Reptilia --yes
 ```
 
@@ -1044,6 +1044,56 @@ sexuel) ne sont pas exposés par `/api/v1/search` : seul `total_count` remonte.
 Enfin, une instance protégée par un filtre anti-robot bloquera le connecteur —
 `demo.dbchiro.org` l'est. Le cas est détecté et signalé explicitement plutôt que de
 finir en erreur de décodage JSON.
+
+---
+
+## Purger
+
+Les trois sources ont la même commande, avec les mêmes garanties :
+
+```bash
+geonature connectors gbif-purge --taxon Chiroptera
+geonature connectors vn-purge --projet ATLAS --yes
+geonature connectors dbchiro-purge --tout --yes
+```
+
+| | |
+|---|---|
+| `--taxon` | nom TAXREF : règne, phylum, classe, ordre, famille, ou début de nom scientifique |
+| `--tout` | vider toute la source, sans autre critère |
+| `--drop-empty-datasets` | supprimer ensuite les JDD du cadre devenus vides |
+| `--yes` | exécuter. Sans lui, la commande simule et n'écrit rien |
+
+Trois propriétés valent d'être connues, parce qu'elles ont manqué à l'une ou l'autre des
+commandes avant leur mutualisation :
+
+**Une purge sans critère est refusée.** Il faut `--tout` pour vider une source, et le
+dire explicitement. Une suppression totale ne doit pas pouvoir arriver par omission d'un
+filtre — `vn-purge --yes` l'a permis un temps.
+
+**Un `--taxon` sans correspondance affiche les rangs réellement présents.** « 0
+observation concernée » alors que l'interface en montre des milliers laisse croire à une
+panne, quand c'est le nom de rang qui n'existe pas sous cette forme dans TAXREF :
+
+```
+0 observation(s) concernée(s) — taxon « Chauvesouris »
+  ⚠ aucun taxon ne correspond, alors que la source porte 25 observation(s). Rangs présents :
+    classe      ordre       famille              n
+    Mammalia    Chiroptera  Vespertilionidae    19
+    Mammalia    Chiroptera  Rhinolophidae        5
+```
+
+**Les JDD vides sont listés avant d'être supprimés**, jamais retirés en silence.
+
+Toute opération est bornée à une seule `id_source` : les données saisies localement,
+celles d'Occtax et celles des autres connecteurs ne peuvent pas être touchées, même sur
+une erreur de critère. Le trigger `tri_log_delete_synthese` consigne les suppressions
+dans `gn_synthese.t_log_synthese`, elles restent donc traçables.
+
+`dbchiro-purge` n'a ni option de jeu de données — dbChiro n'en produit qu'un par
+instance, faute d'exposer `study` — ni `--max-uncertainty`, la colonne `precision`
+restant NULL puisque l'API ne publie aucune incertitude. L'offrir laisserait croire à un
+filtre qui ne retiendrait jamais rien.
 
 ---
 

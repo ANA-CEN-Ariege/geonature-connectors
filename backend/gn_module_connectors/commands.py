@@ -501,23 +501,105 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
         click.echo(l)
 
 
+def _purger(*, id_source, id_dataset, ca_uuid, libelle_source, taxon="",
+            max_uncertainty=0, cible="", tout=False, drop_empty_datasets=False,
+            yes=False):
+    """Corps commun des purges. La seule chose propre à chaque source est la façon de
+    désigner un JDD ; tout le reste est identique, et l'était déjà à quelques
+    divergences près — chacune privant une source d'un garde-fou que l'autre avait.
+
+    Trois d'entre elles valaient d'être généralisées :
+
+    - **le refus de purger sans critère.** `vn-purge --yes` effaçait toute la source
+      sans rien demander, là où `gbif-purge` exigeait au moins un filtre. Le refus est
+      désormais la règle, et `--tout` la façon explicite de dire qu'on veut bien tout
+      supprimer ;
+    - **le diagnostic d'un `--taxon` sans correspondance.** « 0 observation concernée »
+      alors que l'interface en montre des milliers laisse croire à une panne : les noms
+      de rangs TAXREF ne sont pas ceux du langage courant ;
+    - **l'affichage des JDD avant leur suppression.** GBIF les listait, VisioNature les
+      supprimait en silence.
+    """
+    from .core import purge as purge_core, datasets as ds_core
+
+    if not (taxon or max_uncertainty or id_dataset or tout):
+        raise click.ClickException(
+            f"Aucun critère : précisez au moins --taxon, ou ce qui désigne un jeu. "
+            f"Pour vider toute la source {libelle_source}, il faut le dire avec --tout : "
+            f"une suppression totale ne doit pas pouvoir arriver par omission.")
+
+    n = purge_core.compter(id_source, id_dataset, taxon or None, max_uncertainty or None)
+    criteres = " · ".join(x for x in (
+        cible,
+        f"taxon « {taxon} »" if taxon else "",
+        f"incertitude > {max_uncertainty} m" if max_uncertainty else "",
+    ) if x) or f"toute la source {libelle_source}"
+    click.echo(f"{n} observation(s) concernée(s) — {criteres}")
+
+    if not n:
+        total = purge_core.compter(id_source, id_dataset)
+        if taxon and total:
+            click.secho(f"  ⚠ aucun taxon ne correspond à « {taxon} », alors que la "
+                        f"source porte {total} observation(s). Rangs présents :",
+                        fg="yellow")
+            click.echo(f"    {'classe':<20}  {'ordre':<20}  {'famille':<24}  n")
+            for classe, ordre, famille, combien in purge_core.rangs_presents(
+                    id_source, id_dataset):
+                click.echo(f"    {str(classe or '—'):<20}  {str(ordre or '—'):<20}  "
+                           f"{str(famille or '—'):<24}  {combien}")
+            click.echo("  Reprenez --taxon avec l'un de ces noms, ou employez --tout "
+                       "pour purger toute la source.")
+        else:
+            click.secho("Rien à supprimer.", fg="green")
+    elif not yes:
+        click.secho(f"\nSimulation : {n} observation(s) seraient supprimées, ainsi que "
+                    f"leurs rattachements aux zonages. Relancez avec --yes pour "
+                    f"exécuter.", fg="yellow")
+        return
+    else:
+        supprimees = purge_core.supprimer(id_source, id_dataset, taxon or None,
+                                          max_uncertainty or None)
+        db.session.commit()
+        click.secho(f"{supprimees} observation(s) supprimée(s).", fg="green")
+
+    if not drop_empty_datasets:
+        return
+    af = ds_core.get_acquisition_framework(ca_uuid)
+    vides = purge_core.jdd_vides(af.id_acquisition_framework)
+    if not vides:
+        click.echo(f"Aucun JDD vide dans le cadre d'acquisition {libelle_source}.")
+        return
+    click.echo(f"\n{len(vides)} JDD vide(s) :")
+    for identifiant, nom in vides[:10]:
+        click.echo(f"  {identifiant} — {nom[:62]}")
+    if len(vides) > 10:
+        click.echo(f"  … et {len(vides) - 10} autre(s)")
+    if not yes:
+        click.secho("Relancez avec --yes pour les supprimer.", fg="yellow")
+        return
+    partis = sum(1 for identifiant, _ in vides if purge_core.supprimer_jdd(identifiant))
+    db.session.commit()
+    click.secho(f"{partis} JDD supprimé(s).", fg="green")
+
+
 @click.command("gbif-purge")
 @click.option("--dataset", "reference", default="",
               help="Jeu visé : datasetKey GBIF, unique_dataset_id du JDD, ou son "
-                   "id_dataset. Sans cette option, la purge porte sur toutes les "
-                   "observations GBIF.")
+                   "id_dataset.")
 @click.option("--taxon", default="",
               help="Groupe taxonomique à retirer, par son nom TAXREF : règne, phylum, "
                    "classe, ordre, famille, ou début de nom scientifique. "
                    "Exemple : --taxon Chiroptera")
 @click.option("--max-uncertainty", default=0, type=int,
               help="Retirer les observations dont l'incertitude dépasse N mètres.")
+@click.option("--tout", is_flag=True,
+              help="Purger toute la source GBIF, sans autre critère.")
 @click.option("--drop-empty-datasets", is_flag=True,
               help="Supprimer ensuite les JDD du cadre GBIF devenus vides.")
 @click.option("--yes", is_flag=True,
               help="Exécuter réellement. Sans ce drapeau, la commande se contente "
                    "d'afficher ce qu'elle supprimerait.")
-def gbif_purge(reference, taxon, max_uncertainty, drop_empty_datasets, yes):
+def gbif_purge(reference, taxon, max_uncertainty, tout, drop_empty_datasets, yes):
     """Supprime des observations GBIF déjà importées.
 
     Utile après coup : une exclusion ajoutée à la configuration ne rattrape pas ce qui
@@ -526,13 +608,12 @@ def gbif_purge(reference, taxon, max_uncertainty, drop_empty_datasets, yes):
     """
     from sqlalchemy import select as sa_select
     from geonature.core.gn_meta.models import TDatasets
-    from .core import purge as purge_core, synthese as syn_core, datasets as ds_core
+    from .core import synthese as syn_core, datasets as ds_core
     from .migrations.c4e8a2b95d16_source_gbif import SOURCE_NAME
     from .migrations.b2d7e9f31a04_cadre_acquisition_gbif import CA_UUID
 
     id_source = syn_core.get_source_id(SOURCE_NAME)
-
-    id_dataset = None
+    id_dataset, cible = None, ""
     if reference:
         jdd = None
         if reference.isdigit():
@@ -556,52 +637,12 @@ def gbif_purge(reference, taxon, max_uncertainty, drop_empty_datasets, yes):
         if jdd is None:
             raise click.ClickException(f"Aucun JDD ne correspond à « {reference} ».")
         id_dataset = jdd.id_dataset
+        cible = f"jeu {id_dataset}"
         click.echo(f"Jeu visé : {jdd.dataset_name[:60]} (id_dataset={id_dataset})")
 
-    if not (taxon or max_uncertainty or reference):
-        raise click.ClickException(
-            "Aucun critère : précisez au moins --dataset, --taxon ou --max-uncertainty. "
-            "Purger toute la source GBIF sans le dire explicitement serait trop facile.")
-
-    n = purge_core.compter(id_source, id_dataset, taxon or None, max_uncertainty or None)
-    criteres = " · ".join(x for x in (
-        f"jeu {id_dataset}" if id_dataset else "",
-        f"taxon « {taxon} »" if taxon else "",
-        f"incertitude > {max_uncertainty} m" if max_uncertainty else "",
-    ) if x) or "toute la source GBIF"
-    click.echo(f"{n} observation(s) concernée(s) — {criteres}")
-
-    if not n:
-        click.secho("Rien à supprimer.", fg="green")
-    elif not yes:
-        click.secho(f"\nSimulation : {n} observation(s) seraient supprimées, ainsi que "
-                    f"leurs rattachements aux zonages. Relancez avec --yes pour exécuter.",
-                    fg="yellow")
-        return
-    else:
-        supprimees = purge_core.supprimer(id_source, id_dataset, taxon or None,
-                                          max_uncertainty or None)
-        db.session.commit()
-        click.secho(f"{supprimees} observation(s) supprimée(s).", fg="green")
-
-    if drop_empty_datasets:
-        af = ds_core.get_acquisition_framework(CA_UUID)
-        vides = purge_core.jdd_vides(af.id_acquisition_framework)
-        if not vides:
-            click.echo("Aucun JDD vide dans le cadre d'acquisition GBIF.")
-            return
-        click.echo(f"\n{len(vides)} JDD vide(s) :")
-        for i, nom in vides[:10]:
-            click.echo(f"  {i} — {nom[:62]}")
-        if len(vides) > 10:
-            click.echo(f"  … et {len(vides) - 10} autre(s)")
-        if not yes:
-            click.secho("Relancez avec --yes pour les supprimer.", fg="yellow")
-            return
-        for i, _ in vides:
-            purge_core.supprimer_jdd(i)
-        db.session.commit()
-        click.secho(f"{len(vides)} JDD supprimé(s).", fg="green")
+    _purger(id_source=id_source, id_dataset=id_dataset, ca_uuid=CA_UUID,
+            libelle_source="GBIF", taxon=taxon, max_uncertainty=max_uncertainty,
+            cible=cible, tout=tout, drop_empty_datasets=drop_empty_datasets, yes=yes)
 
 
 @click.command("vn-import")
@@ -1865,18 +1906,22 @@ def vn_volumetrie(jours, recherche):
 
 @click.command("vn-purge")
 @click.option("--projet", default="",
-              help="Code projet VisioNature dont le JDD est visé. Sans cette option, "
-                   "la purge porte sur toutes les observations VisioNature.")
+              help="Code projet VisioNature dont le JDD est visé.")
 @click.option("--taxon", default="",
               help="Groupe taxonomique à retirer, par son nom TAXREF : règne, phylum, "
                    "classe, ordre, famille, ou début de nom scientifique. "
                    "Exemple : --taxon Reptilia")
+@click.option("--max-uncertainty", default=0, type=int,
+              help="Retirer les observations dont l'incertitude dépasse N mètres. "
+                   "Alimentée depuis place.loc_precision, quand l'instance la donne.")
+@click.option("--tout", is_flag=True,
+              help="Purger toute la source VisioNature, sans autre critère.")
 @click.option("--drop-empty-datasets", is_flag=True,
               help="Supprimer ensuite les JDD du cadre VisioNature devenus vides.")
 @click.option("--yes", is_flag=True,
               help="Exécuter réellement. Sans ce drapeau, la commande se contente "
                    "d'afficher ce qu'elle supprimerait.")
-def vn_purge(projet, taxon, drop_empty_datasets, yes):
+def vn_purge(projet, taxon, max_uncertainty, tout, drop_empty_datasets, yes):
     """Supprime des observations VisioNature déjà importées.
 
     Indispensable après une correction du connecteur : ce qui est en base a été écrit
@@ -1889,68 +1934,70 @@ def vn_purge(projet, taxon, drop_empty_datasets, yes):
     from sqlalchemy import select as sa_select
     from geonature.core.gn_meta.models import TDatasets
     from geonature.utils.config import config as gn_config
-    from .core import purge as purge_core, synthese as syn_core, datasets as ds_core
+    from .core import synthese as syn_core, datasets as ds_core
     from .migrations.e91b4c07a2d8_source_visionature import SOURCE_NAME, CA_UUID
 
     cfg = (gn_config.get("CONNECTORS") or {}).get("visionature", {})
     id_source = syn_core.get_source_id(SOURCE_NAME)
-
-    id_dataset = None
+    id_dataset, cible = None, ""
     if projet:
         instance = str(cfg.get("url") or "").rstrip("/")
         if not instance:
             raise click.ClickException(
                 "[visionature] url est nécessaire pour retrouver le JDD d'un projet.")
-        cible = str(ds_core.dataset_uuid("VisioNature", f"{instance}:{projet}", ""))
+        reference = str(ds_core.dataset_uuid("VisioNature", f"{instance}:{projet}", ""))
         jdd = db.session.scalar(
-            sa_select(TDatasets).where(TDatasets.unique_dataset_id == cible))
+            sa_select(TDatasets).where(TDatasets.unique_dataset_id == reference))
         if jdd is None:
             raise click.ClickException(
                 f"Aucun JDD ne correspond au projet « {projet} » sur {instance}.")
         id_dataset = jdd.id_dataset
+        cible = f"projet {projet}"
         click.echo(f"Jeu visé : {jdd.dataset_name[:60]} (id_dataset={id_dataset})")
 
-    n = purge_core.compter(id_source, id_dataset, taxon or None)
-    quoi = " et ".join(filter(None, [
-        f"projet {projet}" if projet else "",
-        f"taxon {taxon}" if taxon else "",
-    ])) or "toutes sources VisioNature confondues"
-    click.echo(f"{n} observation(s) concernée(s) — {quoi}.")
+    _purger(id_source=id_source, id_dataset=id_dataset, ca_uuid=CA_UUID,
+            libelle_source="VisioNature", taxon=taxon,
+            max_uncertainty=max_uncertainty, cible=cible, tout=tout,
+            drop_empty_datasets=drop_empty_datasets, yes=yes)
 
-    if not n:
-        total = purge_core.compter(id_source, id_dataset)
-        if taxon and total:
-            # « 0 concernée » alors que la Synthèse en montre : le nom de rang cherché
-            # n'existe pas dans TAXREF, ou pas sous cette forme. Montrer ce qu'il y a.
-            click.secho(f"  ⚠ aucun taxon ne correspond à « {taxon} », alors que la "
-                        f"source porte {total} observation(s). Rangs présents :",
-                        fg="yellow")
-            click.echo(f"    {'classe':<20}  {'ordre':<20}  {'famille':<24}  n")
-            for classe, ordre, famille, combien in purge_core.rangs_presents(
-                    id_source, id_dataset):
-                click.echo(f"    {str(classe or '—'):<20}  {str(ordre or '—'):<20}  "
-                           f"{str(famille or '—'):<24}  {combien}")
-            click.echo("  Reprenez --taxon avec l'un de ces noms, ou omettez-le pour "
-                       "purger toute la source.")
-        return
-    if not yes:
-        click.secho("Simulation. Relancez avec --yes pour supprimer.", fg="yellow")
-        return
 
-    supprimees = purge_core.supprimer(id_source, id_dataset, taxon or None)
-    db.session.commit()
-    click.secho(f"{supprimees} observation(s) supprimée(s).", fg="green")
+@click.command("dbchiro-purge")
+@click.option("--taxon", default="",
+              help="Groupe taxonomique à retirer, par son nom TAXREF. Sur une source "
+                   "entièrement chiroptérologique, c'est le genre ou la famille qui a "
+                   "un sens : --taxon Rhinolophus, --taxon Vespertilionidae.")
+@click.option("--tout", is_flag=True,
+              help="Purger toute la source dbChiro, sans autre critère.")
+@click.option("--drop-empty-datasets", is_flag=True,
+              help="Supprimer ensuite les JDD du cadre dbChiro devenus vides.")
+@click.option("--yes", is_flag=True,
+              help="Exécuter réellement. Sans ce drapeau, la commande se contente "
+                   "d'afficher ce qu'elle supprimerait.")
+def dbchiro_purge(taxon, tout, drop_empty_datasets, yes):
+    """Supprime des observations dbChiro déjà importées.
 
-    if drop_empty_datasets:
-        af = ds_core.get_acquisition_framework(CA_UUID)
-        vides = purge_core.jdd_vides(af.id_acquisition_framework) if af else []
-        partis = sum(1 for id_jdd, _nom in vides if purge_core.supprimer_jdd(id_jdd))
-        db.session.commit()
-        click.echo(f"{partis} JDD vide(s) supprimé(s).")
+    Le connecteur relisant tout le corpus à chaque passage, une purge suivie d'un
+    moissonnage est le moyen le plus simple de répercuter un changement de mapping :
+    l'empreinte de contenu ne détecte que les modifications faites à la source, pas
+    celles de notre propre code.
+
+    Pas d'option de jeu de données : dbChiro n'en produit qu'un par instance, faute
+    d'exposer `study` dans son API. Pas de `--max-uncertainty` non plus — la colonne
+    `precision` reste NULL, l'API ne publiant aucune incertitude de localisation. Le
+    filtre ne retiendrait jamais rien, et l'offrir laisserait croire le contraire.
+    """
+    from .core import synthese as syn_core
+    from .migrations.a3f6c81b0e52_source_dbchiro import SOURCE_NAME, CA_UUID
+
+    id_source = syn_core.get_source_id(SOURCE_NAME)
+    _purger(id_source=id_source, id_dataset=None, ca_uuid=CA_UUID,
+            libelle_source="dbChiro", taxon=taxon, tout=tout,
+            drop_empty_datasets=drop_empty_datasets, yes=yes)
 
 
 connectors_cli = [status, gbif_sync_datasets, gbif_import, gbif_purge, vn_import,
                   vn_reanonymiser, vn_territoires,
                   vn_groupes, vn_vider_cache, vn_diagnostic, vn_purge,
                   vn_volumetrie,
-                  dbchiro_import, dbchiro_zonages]
+                  dbchiro_import, dbchiro_zonages,
+                  dbchiro_purge]
