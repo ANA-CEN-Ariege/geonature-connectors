@@ -1404,7 +1404,9 @@ def vn_diagnostic(groupe, debug, jours):
 
 @click.command("vn-volumetrie")
 @click.option("--jours", default=1, help="Fenêtre de mesure, en jours (défaut : 1).")
-def vn_volumetrie(jours):
+@click.option("--recherche/--sans-recherche", default=True,
+              help="Sonder aussi `search` groupe par groupe (défaut : oui).")
+def vn_volumetrie(jours, recherche):
     """Mesure le nombre de modifications quotidiennes, groupe par groupe.
 
     Question à laquelle elle répond : quels groupes peut-on réellement moissonner ?
@@ -1428,13 +1430,38 @@ def vn_volumetrie(jours):
         raise click.ClickException("Connecteur VisioNature désactivé.")
 
     depuis = (datetime.now(timezone.utc) - timedelta(days=jours)).strftime("%Y-%m-%d")
+    fin_rech = datetime.now(timezone.utc)
+    debut_rech = fin_rech - timedelta(days=jours)
     groupes = vn_api.groupes_taxonomiques(cfg)
     obs = vn_api._controleur(bio.ObservationsAPI, cfg)
     couverts = set(vn_repro.REGLES)
 
+    # `search` est sondé groupe par groupe parce qu'on ne sait pas ce qui le fait
+    # refuser. Un jour d'oiseaux en Ariège a été refusé quand soixante jours de reptiles
+    # sur le même territoire passaient : ce n'est ni le volume seul, ni le droit — la
+    # carte complète est le seul moyen d'y voir clair.
+    territoires = []
+    if recherche:
+        voulus = {str(d).strip().zfill(2) for d in (cfg.get("departements") or [])}
+        try:
+            unites = vn_api.unites_territoriales(cfg)
+        except bio.BiolovisionApiException:
+            unites = []
+        territoires = [t for t in (vn_api.identifiant_territoire(u) for u in unites
+                                   if not voulus
+                                   or str(u.get("short_name") or "") in voulus) if t][:1]
+        if not territoires:
+            click.secho("  ⚠ aucun territoire exploitable : `search` ne sera pas sondé.",
+                        fg="yellow")
+            recherche = False
+
     click.echo(f"Modifications sur {jours} jour(s), depuis {depuis}.")
-    click.echo("Une requête api_get sera nécessaire par entrée.\n")
-    click.echo(f"  {'id':>4}  {'code':<26}  {'modifiées':>10}  {'/jour':>8}  repro")
+    click.echo("Une requête api_get sera nécessaire par entrée du différentiel.")
+    if recherche:
+        click.echo(f"`search` sondé sur {jours} jour(s), territoire {territoires[0]}.")
+    click.echo("")
+    entete = f"  {'id':>4}  {'code':<26}  {'modifiées':>10}  {'/jour':>8}  repro"
+    click.echo(entete + ("   search" if recherche else ""))
 
     total = 0
     mesures = []
@@ -1449,9 +1476,23 @@ def vn_volumetrie(jours):
             continue
         total += n
         mesures.append((n, identifiant, code))
+
+        etat = ""
+        if recherche:
+            try:
+                trouves = vn_api._extraire(obs.api_search(
+                    vn_api.parametres_recherche(identifiant, debut_rech, fin_rech,
+                                                territoires),
+                    short_version=vn_api.SHORT_VERSION))
+                etat = f"   OK {len(trouves)}"
+            except bio.HTTPError as erreur:
+                etat = f"   HTTP {erreur.args[0] if erreur.args else '?'}"
+            except bio.BiolovisionApiException:
+                etat = "   échec"
+
         couleur = "red" if n > 5000 else ("yellow" if n > 500 else None)
         click.secho(f"  {identifiant:>4}  {code:<26}  {n:>10}  {n / jours:>8.0f}  "
-                    f"{'oui' if code in couverts else '—'}", fg=couleur)
+                    f"{'oui' if code in couverts else '—':<5}{etat}", fg=couleur)
 
     click.echo(f"\n  Total : {total} modification(s), soit {total / jours:.0f} par jour")
     click.echo("  Donc autant de requêtes api_get par moissonnage incrémental quotidien.")
