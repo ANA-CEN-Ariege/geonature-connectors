@@ -213,6 +213,14 @@ class VisioNatureSchemaConf(Schema):
     # qu'affiche l'interface, qui n'a été choisi par personne et qui est probablement
     # faux pour des données associatives issues de bénévoles.
     financement = fields.String(load_default="")
+    # Financement par code projet VisioNature, qui prime sur la valeur ci-dessus. La
+    # plupart des projets sont privés, une minorité relève d'un financement public :
+    # c'est le projet qui en décide, pas le département.
+    #
+    #   [visionature.financement_par_projet]
+    #   "ATLAS-OCC" = "Pu"
+    financement_par_projet = fields.Dict(keys=fields.String(),
+                                         values=fields.String(), load_default=dict)
     # Créateur du jeu de données : identifiant de connexion ou id_role. En ligne de
     # commande il n'y a pas d'utilisateur courant, d'où le « Créateur : Non renseigné ».
     createur = fields.String(load_default="")

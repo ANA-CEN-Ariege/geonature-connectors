@@ -59,7 +59,11 @@ def upsert_dataset(
 
     # `dataset_shortname` est NOT NULL et affiché dans les listes déroulantes : un titre
     # GBIF complet y est illisible, on le tronque proprement.
-    shortname = (shortname or nom)[:60]
+    # ⚠ 30 caractères, pas 60 : c'est ce que valide le formulaire de GeoNature
+    # (« Le nom court du JDD doit être inférieur ou égal à 30 caractères »). Tronquer à
+    # 60 produisait des jeux que l'interface refusait d'enregistrer — invisibles tant
+    # qu'on ne les ouvre pas.
+    shortname = (shortname or nom)[:30]
 
     if cree:
         jdd = TDatasets(

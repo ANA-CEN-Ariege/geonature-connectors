@@ -850,6 +850,7 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
     # Métadonnées que le jeu prendrait sinon par défaut : « Financement : Publique » et
     # « Créateur : Non renseigné », ni l'un ni l'autre choisi.
     metadonnees = {"financement": cfg.get("financement", ""),
+                   "financement_par_projet": dict(cfg.get("financement_par_projet") or {}),
                    "createur": cfg.get("createur", "")}
     if not producteurs and not fournisseur:
         click.secho("  ⚠ aucun organisme déclaré : les jeux de données seront créés sans "
@@ -1209,17 +1210,23 @@ def _jdd_visionature(instance: str, af, projet: str | None = None,
     morceaux = [m for m in (projet, f"dép. {departement}" if departement else None) if m]
     nom = (f"{' — '.join(morceaux)} — {site}" if morceaux
            else f"Observations VisioNature — {site}")
+    # Construit plutôt que tronqué : amputer le nom long donnait « dép. 09 — www.faune-oc »,
+    # illisible dans les listes déroulantes où le nom court sert précisément à choisir.
+    court = " ".join(x for x in ("VN", projet, departement) if x)[:30]
     jdd, cree = ds_core.upsert_dataset(
         source="VisioNature",
         cle=f"{instance}:{departement or ''}:{projet or ''}", licence="",
-        nom=nom,
+        nom=nom, shortname=court,
         description=(f"Observations moissonnées depuis {instance} via l'API Biolovision.\n\n"
                      f"Les codes atlas de nidification sont conservés dans additional_data : "
                      f"le SINP ne connaît pas leur gradation possible/probable/certaine."),
         id_acquisition_framework=af.id_acquisition_framework,
     )
     ds_core.qualifier_dataset(
-        jdd, financement=metadonnees.get("financement", ""),
+        # Le financement dépend du PROJET, non du département : la plupart des projets
+        # VisioNature sont privés, une minorité relève d'un financement public.
+        jdd, financement=(metadonnees.get("financement_par_projet", {}).get(projet or "")
+                          or metadonnees.get("financement", "")),
         createur=metadonnees.get("createur", ""),
         journal=lambda m: click.secho(f"    ⚠ {m}", fg="yellow"))
     db.session.flush()

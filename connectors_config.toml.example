@@ -261,6 +261,13 @@ taxo_groups = []
 #   WHERE b.mnemonique = 'DS_PUBLIQUE';
 # financement = "Pr"
 #
+# Le financement dépend du PROJET, non du département : la plupart des projets
+# VisioNature sont privés, une minorité relève d'un financement public. Ce bloc prime
+# sur la valeur ci-dessus, et se place LUI AUSSI à la fin de la section.
+#
+# [visionature.financement_par_projet]
+# "ATLAS-OCC" = "Pu"
+#
 # Identifiant de connexion ou id_role de l'utilisateur à porter comme créateur.
 # createur = "admin"
 #
