@@ -126,12 +126,18 @@ INSERT_SQL = text(
     -- `vn_empreinte`) : un COALESCE permet de partager ce statement entre sources sans
     -- renommer la clé des lignes GBIF déjà en base — ce qui provoquerait la réécriture
     -- inutile de tout le corpus au prochain passage.
+    -- Une clé nouvelle s'ajoute toujours **en queue** du COALESCE : celui-ci rend la
+    -- première valeur non nulle, donc une ligne déjà en base, qui porte forcément la clé
+    -- de sa propre source, n'est pas affectée. Renommer ou réordonner, en revanche,
+    -- provoquerait la réécriture inutile de tout le corpus au prochain passage.
     WHERE COALESCE(gn_synthese.synthese.additional_data->>'gbif_empreinte',
                    gn_synthese.synthese.additional_data->>'vn_empreinte',
-                   gn_synthese.synthese.additional_data->>'dbchiro_empreinte')
+                   gn_synthese.synthese.additional_data->>'dbchiro_empreinte',
+                   gn_synthese.synthese.additional_data->>'gn_empreinte')
           IS DISTINCT FROM COALESCE(EXCLUDED.additional_data->>'gbif_empreinte',
                                     EXCLUDED.additional_data->>'vn_empreinte',
-                                    EXCLUDED.additional_data->>'dbchiro_empreinte')
+                                    EXCLUDED.additional_data->>'dbchiro_empreinte',
+                                    EXCLUDED.additional_data->>'gn_empreinte')
        OR gn_synthese.synthese.additional_data->>'gbif_modified'
           IS DISTINCT FROM EXCLUDED.additional_data->>'gbif_modified'
     """
@@ -158,7 +164,8 @@ def version_taxref() -> str | None:
     ).scalar()
 
 
-def realigner_uuid(lignes: list[dict], id_source: int) -> int:
+def realigner_uuid(lignes: list[dict], id_source: int,
+                   cle: str = "vn_uuid_calcule") -> int:
     """Renomme les lignes déjà en base qui portent un UUID désormais supplanté.
 
     Raison d'être : le module a longtemps calculé lui-même l'`unique_id_sinp` (uuid5).
@@ -185,6 +192,11 @@ def realigner_uuid(lignes: list[dict], id_source: int) -> int:
 
     Retourne le nombre de lignes effectivement renommées, pour que le bilan d'import
     le dise plutôt que de le faire en silence.
+
+    `cle` désigne l'entrée d'`additional_data` où le connecteur consigne l'UUID qu'il
+    avait calculé avant de disposer de celui du producteur. Elle est propre à chaque
+    source (`vn_uuid_calcule`, `gn_uuid_calcule`…) : la mutualiser sous un nom unique
+    ferait qu'un connecteur renommerait sur la foi d'une clé écrite par un autre.
     """
     import json as _json
 
@@ -194,7 +206,7 @@ def realigner_uuid(lignes: list[dict], id_source: int) -> int:
             provenance = _json.loads(ligne.get("additional_data") or "{}")
         except ValueError:
             continue
-        ancien = provenance.get("vn_uuid_calcule")
+        ancien = provenance.get(cle)
         if ancien and ancien != ligne["unique_id_sinp"]:
             anciens.append(ancien)
             cibles.append(str(ligne["unique_id_sinp"]))
@@ -237,7 +249,12 @@ def get_module_id(module_code: str) -> int:
 
 
 # Clés d'empreinte connues, dans l'ordre de priorité du COALESCE de l'INSERT.
-CLES_EMPREINTE = ("gbif_empreinte", "vn_empreinte", "dbchiro_empreinte")
+#
+# ⚠ Cet ordre **doit** rester celui du SQL. Un désaccord ne casse aucune insertion : il
+# fausse seulement le bilan, qui annonce des mises à jour que la base n'a pas faites — le
+# genre de défaut qui vit longtemps sous un test vert. `test_insert_alignement` compare
+# les deux ordres pour cette raison.
+CLES_EMPREINTE = ("gbif_empreinte", "vn_empreinte", "dbchiro_empreinte", "gn_empreinte")
 
 
 def empreinte_de(additional_data: dict) -> str | None:
@@ -265,6 +282,68 @@ def compter_existants(lignes: list[dict]) -> int:
     ).scalar() or 0
 
 
+def conflits_autre_source(lignes: list[dict], id_source: int) -> dict[str, tuple[int, str]]:
+    """UUID du lot déjà présents en base sous une **autre** source.
+
+    Raison d'être : un connecteur qui reprend l'`unique_id_sinp` publié par le producteur
+    — plutôt que d'en dériver un — peut tomber sur une observation déjà importée par un
+    autre chemin. Le cas est réel : le GBIF republie les données GeoNature françaises en
+    plaçant leur UUID SINP dans `occurrenceID`, et `sources/gbif/transform.sinp_uuid` le
+    reprend tel quel quand c'en est un.
+
+    L'`ON CONFLICT` ne saurait pas arbitrer. Il ne réécrit ni `id_source`, ni `id_dataset`,
+    ni `entity_source_pk_value`, mais il écrase tout le reste, `additional_data` compris.
+    On obtiendrait une ligne chimère — provenance GBIF, contenu GeoNature — qui de surcroît
+    **oscille** : le COALESCE d'empreinte comparant alors une clé à une autre, la condition
+    de mise à jour est vraie à chaque passage et les deux connecteurs se réécrivent
+    indéfiniment.
+
+    Une seule requête par lot, sur le même tableau d'UUID que `compter_existants` : le coût
+    est négligeable. La **décision** de ce qu'on en fait appartient à la commande, pas à
+    cette fonction ni à `insert_batch` — dont le comportement doit rester exactement celui
+    que les trois connecteurs plus anciens connaissent.
+    """
+    if not lignes:
+        return {}
+    return {
+        str(u): (src, nom)
+        for u, src, nom in db.session.execute(
+            text("""SELECT s.unique_id_sinp::text, s.id_source,
+                           COALESCE(t.name_source, '?')
+                    FROM gn_synthese.synthese s
+                    LEFT JOIN gn_synthese.t_sources t ON t.id_source = s.id_source
+                    WHERE s.unique_id_sinp = ANY(CAST(:u AS uuid[]))
+                      AND s.id_source IS DISTINCT FROM :src"""),
+            {"u": [l["unique_id_sinp"] for l in lignes], "src": id_source},
+        ).all()
+    }
+
+
+def lignes_ecrasees(id_source: int, cle_empreinte: str) -> tuple[int, int]:
+    """(lignes écrasées par un autre connecteur, total de la source).
+
+    Une ligne portant notre `id_source` mais **dépourvue de notre clé d'empreinte** a
+    forcément vu son `additional_data` remplacé par celui d'un autre connecteur : nos
+    `to_row` l'écrivent systématiquement.
+
+    C'est la seule façon de voir un conflit devenu invisible. `INSERT_SQL` ne réécrit
+    jamais `id_source` — la colonne reste au premier connecteur qui a inséré la ligne —
+    mais il écrase tout le contenu, `additional_data` compris. Deux connecteurs qui
+    moissonnent la même observation se réécrivent donc l'un l'autre à chaque exécution,
+    et `conflits_autre_source` n'y voit plus rien puisque l'`id_source` ne les distingue
+    plus. Seule la clé d'empreinte trahit encore qui a écrit en dernier.
+
+    ⚠ Sur une ligne insérée avant l'introduction des empreintes, l'absence de clé ne
+    prouve rien. Le décompte est donc un signal à interpréter, pas un verdict — et c'est
+    pourquoi il est rapporté, jamais utilisé pour supprimer quoi que ce soit.
+    """
+    ligne = db.session.execute(
+        text("""SELECT count(*) FILTER (WHERE additional_data->>:cle IS NULL),
+                       count(*)
+                FROM gn_synthese.synthese WHERE id_source = :s"""),
+        {"s": id_source, "cle": cle_empreinte},
+    ).one()
+    return (ligne[0] or 0, ligne[1] or 0)
 def insert_batch(lignes: list[dict]) -> tuple[int, int]:
     """Écrit un lot. Retourne (insérées, mises à jour).
 
@@ -285,7 +364,8 @@ def insert_batch(lignes: list[dict]) -> tuple[int, int]:
             text("""SELECT unique_id_sinp::text,
                            COALESCE(additional_data->>'gbif_empreinte',
                                     additional_data->>'vn_empreinte',
-                                    additional_data->>'dbchiro_empreinte'),
+                                    additional_data->>'dbchiro_empreinte',
+                                    additional_data->>'gn_empreinte'),
                            additional_data->>'gbif_modified'
                     FROM gn_synthese.synthese
                     WHERE unique_id_sinp = ANY(CAST(:u AS uuid[]))"""),

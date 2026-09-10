@@ -140,3 +140,98 @@ def supprimer_par_identifiants_source(id_source: int, champ: str,
         """),
         {"s": id_source, "ids": [str(i) for i in identifiants]},
     ).rowcount
+
+
+def supprimer_par_uuid(uuids: list[str], sauf_id_source: int) -> int:
+    """Supprime les lignes portant ces UUID, sauf celles de `sauf_id_source`.
+
+    Sert au cas où une observation moissonnée arrive avec un `unique_id_sinp` déjà en base
+    sous une autre source — typiquement la même donnée reçue par le GBIF et directement de
+    son producteur. L'`ON CONFLICT` ne peut pas arbitrer : il ne réécrit jamais
+    `id_source`, et laisserait une ligne dont la provenance affichée contredirait le
+    contenu (cf. `core/synthese.conflits_autre_source`). Il faut donc supprimer, puis
+    réinsérer dans la même transaction.
+
+    ⚠ Opération destructrice, et la seule du module qui touche des lignes d'une source
+    autre que celle du connecteur appelant. Elle reste bornée aux UUID explicitement
+    fournis — ceux du lot en cours —, jamais à un critère large.
+    """
+    if not uuids:
+        return 0
+    return db.session.execute(
+        text("""DELETE FROM gn_synthese.synthese
+                WHERE unique_id_sinp = ANY(CAST(:u AS uuid[]))
+                  AND id_source IS DISTINCT FROM :src"""),
+        {"u": [str(u) for u in uuids], "src": sauf_id_source},
+    ).rowcount
+
+
+def compter_absents(id_source: int, id_datasets: list[int], uuids_vus: list[str],
+                    marqueurs: dict[str, str]) -> int:
+    """Combien de lignes de cette source ne figurent plus dans le corpus distant."""
+    requete, params = _absents(id_source, id_datasets, uuids_vus, marqueurs)
+    if requete is None:
+        return 0
+    return db.session.execute(
+        text(f"SELECT count(*) FROM gn_synthese.synthese WHERE {requete}"), params
+    ).scalar() or 0
+
+
+def supprimer_absents(id_source: int, id_datasets: list[int], uuids_vus: list[str],
+                      marqueurs: dict[str, str]) -> int:
+    """Supprime les lignes de cette source absentes du corpus distant.
+
+    C'est ainsi qu'une suppression faite à la source se répercute quand l'API ne publie
+    aucun journal de suppression : on relit tout, et ce qui n'est pas revenu a disparu.
+
+    ⚠ Le raisonnement n'est valide **que** si la relecture est complète. Un filtre de
+    date, un plafond de résultats ou une pagination interrompue rendraient absentes des
+    lignes bien vivantes : c'est à l'appelant de refuser d'exécuter dans ce cas, et
+    `geonature-reconcilier` le fait avant même d'appeler ici.
+
+    Triple bornage, dont aucun n'est superflu :
+
+    - `id_source`, la garantie de base du module ;
+    - `id_datasets`, ceux réellement rencontrés dans cette moisson : un jeu hors du
+      périmètre courant ne doit pas être vidé sous prétexte qu'on ne l'a pas relu ;
+    - `marqueurs`, des couples clé/valeur d'`additional_data` (instance et export) : deux
+      exports alimentant la même source ne peuvent pas se supprimer l'un l'autre.
+    """
+    requete, params = _absents(id_source, id_datasets, uuids_vus, marqueurs)
+    if requete is None:
+        return 0
+    return db.session.execute(
+        text(f"DELETE FROM gn_synthese.synthese WHERE {requete}"), params
+    ).rowcount
+
+
+def _absents(id_source: int, id_datasets: list[int], uuids_vus: list[str],
+             marqueurs: dict[str, str]) -> tuple[str | None, dict]:
+    """Clause WHERE désignant les lignes absentes du corpus relu, et ses paramètres.
+
+    Retourne `(None, {})` — donc « ne touche à rien » — quand le bornage serait vide :
+    sans jeu de données rencontré, ou sans aucun UUID relu, la clause ne désignerait plus
+    un écart mais la totalité de ce que la source a écrit.
+    """
+    if not id_datasets or not uuids_vus:
+        return (None, {})
+    conditions = [
+        "id_source = :src",
+        "id_dataset = ANY(:jdds)",
+        # `NOT (… = ANY(…))` rend NULL sur un `unique_id_sinp` NULL, donc la ligne n'est
+        # pas retenue. C'est le bon sens de l'erreur : on ne supprime pas ce qu'on ne
+        # sait pas rapprocher.
+        "NOT (unique_id_sinp = ANY(CAST(:u AS uuid[])))",
+    ]
+    params = {
+        "src": id_source,
+        "jdds": list(id_datasets),
+        "u": [str(u) for u in uuids_vus],
+    }
+    for rang, (cle, valeur) in enumerate(sorted(marqueurs.items())):
+        # La clé nomme une entrée de JSONB et ne peut donc pas être un paramètre lié ;
+        # elle vient du code du connecteur, jamais des données. La valeur, qui vient de
+        # la configuration, est liée.
+        conditions.append(f"additional_data->>'{cle}' = :m{rang}")
+        params[f"m{rang}"] = str(valeur)
+    return (" AND ".join(conditions), params)

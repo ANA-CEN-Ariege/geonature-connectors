@@ -35,6 +35,10 @@ REASONS = {
     "espece_non_resolue": "espèce sans correspondance TAXREF",
     "absence": "absence déclarée à la source (aucun taxon observé)",
     "codesp_inconnu": "code espèce absent de la table dbChiro",
+    "cd_nom_hors_taxref": "cd_nom absent du TAXREF de cette instance",
+    "deja_presente_autre_source": "déjà en Synthèse sous une autre source",
+    "jdd_inactif": "jeu de données local désactivé",
+    "colonne_manquante": "colonne absente de la vue d'export distante",
 }
 
 

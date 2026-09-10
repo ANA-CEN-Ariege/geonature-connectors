@@ -40,6 +40,50 @@ def get_acquisition_framework(ca_uuid: str) -> TAcquisitionFramework:
     return af
 
 
+def upsert_acquisition_framework(
+    *,
+    uid: str,
+    nom: str,
+    description: str,
+    date_debut=None,
+) -> tuple[TAcquisitionFramework, bool]:
+    """Crée ou récupère un cadre d'acquisition à UUID imposé. Retourne (cadre, cree).
+
+    Sert au moissonnage d'une autre instance GeoNature, où le cadre distant doit être
+    recréé **sous son propre UUID** : c'est ce que dit le SINP, un cadre garde son
+    identité d'une plateforme à l'autre. Les autres connecteurs n'en ont pas besoin —
+    leur cadre unique est créé par leur migration.
+
+    Trois colonnes seulement sont NOT NULL (`acquisition_framework_name`, `_desc`,
+    `_start_date`) ; tout le reste porte un DEFAULT. Les métadonnées que le formulaire de
+    GeoNature exige en plus — territoire, contact principal, objectifs — relèvent de
+    `qualifier_cadre`, qui ne peut être appelée qu'**après** un `db.session.flush()`.
+
+    ⚠ Un cadre existant n'est jamais modifié. Il peut avoir été créé par un dépôt SINP ou
+    saisi à la main, avec des métadonnées plus riches que celles que l'API nous livre :
+    les écraser à chaque import détruirait un travail que nous ne savons pas refaire.
+    """
+    import datetime as _dt
+
+    uid = str(uuid.UUID(str(uid)))
+    af = db.session.scalar(
+        select(TAcquisitionFramework).where(
+            TAcquisitionFramework.unique_acquisition_framework_id == uid
+        )
+    )
+    if af is not None:
+        return af, False
+
+    af = TAcquisitionFramework(
+        unique_acquisition_framework_id=uid,
+        acquisition_framework_name=(nom or "Cadre importé")[:255],
+        acquisition_framework_desc=description or nom or "",
+        acquisition_framework_start_date=date_debut or _dt.date.today(),
+    )
+    db.session.add(af)
+    return af, True
+
+
 def upsert_dataset(
     *,
     source: str,
@@ -51,9 +95,24 @@ def upsert_dataset(
     shortname: str = "",
     terrestre: bool = True,
     marin: bool = False,
+    uid: str | uuid.UUID | None = None,
+    rafraichir: bool = True,
 ) -> tuple[TDatasets, bool]:
-    """Crée ou met à jour un JDD. Retourne (jdd, cree)."""
-    uid = dataset_uuid(source, cle, licence)
+    """Crée ou met à jour un JDD. Retourne (jdd, cree).
+
+    `uid` impose l'`unique_dataset_id` au lieu de le dériver de `(source, cle, licence)`.
+    Réservé aux sources qui publient elles-mêmes un identifiant SINP de jeu de données —
+    une autre instance GeoNature — pour que le jeu garde son identité d'une plateforme à
+    l'autre. La conversion par `uuid.UUID` rejette tout de suite un identifiant distant
+    malformé : sans elle, l'erreur ne surgirait qu'au cast PostgreSQL, sous une forme qui
+    ne désigne plus la cause.
+
+    `rafraichir=False` écrit dans un jeu existant sans toucher à ses métadonnées
+    éditoriales. Utile quand l'UUID vient du producteur : le jeu local a pu être créé par
+    un autre canal et enrichi à la main, et le nom que l'API nous donne n'est pas
+    forcément meilleur que celui qui s'y trouve.
+    """
+    uid = uuid.UUID(str(uid)) if uid is not None else dataset_uuid(source, cle, licence)
     jdd = db.session.scalar(select(TDatasets).where(TDatasets.unique_dataset_id == uid))
     cree = jdd is None
 
@@ -77,7 +136,7 @@ def upsert_dataset(
             active=True,
         )
         db.session.add(jdd)
-    else:
+    elif rafraichir:
         # On rafraîchit les métadonnées éditoriales (le producteur peut corriger son
         # titre ou sa citation), mais jamais le rattachement ni l'UUID.
         jdd.dataset_name = nom[:255]
@@ -296,6 +355,11 @@ def resoudre_nomenclature(mnemonique: str, valeur: str) -> int | None:
 
     ⚠ Un libellé est propre à une langue et peut changer d'une version de référentiel à
     l'autre. Préférer le `cd_nomenclature` quand on le connaît.
+
+    ⚠ **Utilitaire de configuration** : une requête SQL par appel, ce qui convient à la
+    poignée de valeurs d'un fichier TOML. Pour résoudre des libellés dans la boucle de
+    transformation d'un import, employer `core/nomenclatures.Resolver.id_souple`, qui
+    charge un type entier en une requête et met le résultat en cache.
     """
     valeur = (valeur or "").strip()
     if not valeur:
