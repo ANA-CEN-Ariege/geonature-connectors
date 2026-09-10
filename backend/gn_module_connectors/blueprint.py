@@ -1,4 +1,11 @@
-from flask import Blueprint
+"""Blueprint du module : les commandes, et le renvoi vers la donnée source.
+
+Le module n'a pas de frontend (`d5f1a83c7e29_pas_de_frontend`). Ce blueprint ne sert
+donc qu'à deux choses : exposer les commandes au `FlaskGroup` de GeoNature, et offrir
+la redirection ci-dessous.
+"""
+
+from flask import Blueprint, abort, redirect
 
 from .commands import connectors_cli
 
@@ -8,3 +15,34 @@ blueprint = Blueprint("connectors", __name__)
 # `geonature connectors <commande>`.
 for cmd in connectors_cli:
     blueprint.cli.add_command(cmd)
+
+
+@blueprint.route("/visionature/<id_sighting>", methods=["GET"])
+def voir_dans_visionature(id_sighting):
+    """Renvoie vers la fiche d'une observation sur le portail VisioNature d'origine.
+
+    Raison d'être : GeoNature construit le lien « voir la donnée source » en insérant
+    systématiquement un séparateur — `url_source + '/' + entity_source_pk_value`. Une
+    URL de retour en chaîne de requête, comme celle de Biolovision
+    (`…/index.php?m_id=54&id=`), devient donc `…&id=/176983543`, illisible.
+
+    Plutôt que de détourner `entity_source_pk_value` pour y loger un fragment d'URL, on
+    donne à GeoNature ce qu'il sait produire : un chemin terminé par l'identifiant. La
+    colonne garde l'identifiant brut, `entity_source_pk_field` reste exact, et le cœur
+    n'a pas à être modifié.
+    """
+    from geonature.utils.config import config as gn_config
+
+    cfg = (gn_config.get("CONNECTORS") or {}).get("visionature", {})
+    instance = str(cfg.get("url") or "").rstrip("/")
+    if not instance:
+        abort(404, "Connecteur VisioNature non configuré.")
+
+    # L'identifiant vient de la Synthèse, mais il transite par une URL : on le restreint
+    # à ce qu'un identifiant Biolovision peut être, plutôt que de le concaténer tel quel
+    # dans une redirection.
+    cle = str(id_sighting).strip()
+    if not cle.isdigit():
+        abort(400, "Identifiant d'observation invalide.")
+
+    return redirect(f"{instance}/index.php?m_id=54&id={cle}", code=302)

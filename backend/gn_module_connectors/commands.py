@@ -661,13 +661,22 @@ def vn_import(groupes, since, batch_size, dry_run):
         click.secho("  ⚠ paramètre `taxref_version` absent de gn_commons.t_parameters : "
                     "meta_v_taxref restera NULL.", fg="yellow")
 
-    # L'URL de la source ne peut être connue qu'ici : elle dépend de l'instance.
-    # Le séparateur est laissé au constructeur de lien de GeoNature, qui ne l'ajoute que
-    # s'il manque (`shared/syntheseSharedModule/source-link.ts`).
-    db.session.execute(
-        db_text("UPDATE gn_synthese.t_sources SET url_source = :u "
-                "WHERE id_source = :s AND url_source IS DISTINCT FROM :u"),
-        {"u": f"{instance}/index.php?m_id=54&id=", "s": id_source})
+    # `url_source` pointe sur la redirection du module, et non directement sur le
+    # portail. GeoNature construit le lien en insérant toujours un séparateur —
+    # `url_source + '/' + entity_source_pk_value` — ce qu'une URL de retour en chaîne de
+    # requête ne supporte pas : `…/index.php?m_id=54&id=` donnerait `…&id=/176983543`.
+    # Un chemin terminé par l'identifiant est en revanche exactement ce que le cœur sait
+    # produire. `entity_source_pk_value` garde donc l'identifiant brut, et
+    # `blueprint.voir_dans_visionature` se charge de la redirection.
+    api = str(gn_config.get("API_ENDPOINT") or "").rstrip("/")
+    if api:
+        db.session.execute(
+            db_text("UPDATE gn_synthese.t_sources SET url_source = :u "
+                    "WHERE id_source = :s AND url_source IS DISTINCT FROM :u"),
+            {"u": f"{api}/connectors/visionature", "s": id_source})
+    else:
+        click.secho("  ⚠ API_ENDPOINT absent de la configuration GeoNature : le bouton "
+                    "« voir la donnée source » ne sera pas alimenté.", fg="yellow")
 
     # Cache des référentiels : outil de mise au point, désactivé par défaut. Voir
     # `core/cache.py` — le référentiel des observateurs contient des noms de personnes.

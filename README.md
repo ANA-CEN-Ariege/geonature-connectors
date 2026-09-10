@@ -458,13 +458,34 @@ que le premier est bien authentifié.
 
 ### Le lien « voir la donnée source »
 
-`url_source` vaut `<instance>/index.php?m_id=54&id=` et `entity_source_pk_value` porte
-l'`id_sighting`. Le bouton de la Synthèse ouvre donc la fiche sur le portail.
+Le bouton de la Synthèse ouvre la fiche de l'observation sur le portail VisioNature
+d'origine. Il passe par une **redirection du module** plutôt que d'y pointer directement.
 
-⚠️ Cela suppose un GeoNature qui n'insère pas de séparateur quand l'URL en porte déjà un.
-Le cœur concaténait `url_source + '/' + id_pk_source` sans condition, ce qui donnait
-`…&id=/176983543` — illisible pour Biolovision, et pour toute source dont l'URL de retour
-est une chaîne de requête. Corrigé par `shared/syntheseSharedModule/source-link.ts`.
+⚠️ GeoNature construit ce lien en insérant systématiquement un séparateur :
+
+```typescript
+link.href = url_source + '/' + id_pk_source;   // synthese-list.component.ts:181
+```
+
+Une URL de retour en chaîne de requête — celle de Biolovision est
+`…/index.php?m_id=54&id=` — devient donc `…&id=/176983543`, que le portail ne sait pas
+lire. Aucune valeur d'`url_source` ne peut produire `&id=176983543` à travers ce
+constructeur.
+
+Plutôt que de détourner `entity_source_pk_value` pour y loger un fragment d'URL, le
+module donne au cœur ce qu'il sait produire — **un chemin terminé par l'identifiant** :
+
+```
+url_source              <API_ENDPOINT>/connectors/visionature
+entity_source_pk_value  176983543
+lien produit            <API_ENDPOINT>/connectors/visionature/176983543
+                        → 302 vers …/index.php?m_id=54&id=176983543
+```
+
+La colonne garde l'identifiant brut, `entity_source_pk_field` reste exact, et le cœur
+n'est pas modifié. La route (`blueprint.voir_dans_visionature`) refuse tout identifiant
+qui ne soit pas numérique, plutôt que de concaténer dans une redirection ce qui vient
+d'une URL.
 
 ### Restreindre le périmètre
 
