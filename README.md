@@ -354,7 +354,9 @@ l'instance pour demander une extension.
 
 Le moissonnage rétrécit malgré tout sa tranche deux fois avant d'abandonner : si un refus
 tient au volume, il passera ; sinon on ne divise pas indéfiniment une plage qui ne sera
-jamais servie.
+jamais servie. Le rétrécissement n'est tenté que s'il change effectivement la fenêtre
+interrogée — sur une plage plus courte que la tranche, réduire celle-ci rejouerait la
+même requête.
 
 ⚠️ **Et une recherche sans périmètre territorial est refusée elle aussi.** Mesuré sur
 faune-occitanie.org : `POST /observations/search/` sans `territorial_unit_ids` renvoie

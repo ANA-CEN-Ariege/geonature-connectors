@@ -918,10 +918,11 @@ def vn_import(groupes, since, batch_size, dry_run):
         click.secho(f"\n  {len(groupes_refuses)} groupe(s) refusé(s) par l'API :", fg="yellow")
         for groupe, motif in groupes_refuses:
             click.echo(f"    groupe {groupe} — {motif}")
-        click.secho("  Un 403 signale que le compte n'a pas ce droit sur ce groupe. Si "
-                    "TOUS les groupes sont refusés en moissonnage complet alors que "
-                    "--since fonctionne, c'est l'accès à la liste complète qui manque, "
-                    "pas les groupes : demandez-le à l'administrateur de l'instance.",
+        click.secho("  Un 403 sur `search` signale que le périmètre de la clé d'API ne "
+                    "couvre pas ce groupe : la clé est valide — une clé inconnue "
+                    "renverrait 401 — mais pas habilitée sur ces observations. "
+                    "`vn-diagnostic --taxo-group <id>` détaille les points d'entrée "
+                    "ouverts et fermés, à porter à l'administrateur de l'instance.",
                     fg="yellow")
     if hors_perimetre:
         # Un rejet massif alors qu'un filtre serveur est configuré signale que l'API l'a

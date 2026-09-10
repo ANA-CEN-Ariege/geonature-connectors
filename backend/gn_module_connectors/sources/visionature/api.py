@@ -281,9 +281,17 @@ def moissonner_recherche(cfg, id_taxo_group: str, date_debut, date_fin,
                 # l'efficacité, il évite ce refus. On rétrécit donc et on réessaie, au
                 # lieu d'abandonner le groupe comme s'il était interdit.
                 code = erreur.args[0] if erreur.args else None
-                if code == 403 and tranche > TRANCHE_JOURS_MIN and essais < ESSAIS_403:
+                # Rétrécir ne sert que si la FENÊTRE en dépend. `debut` étant plafonné à
+                # `date_debut`, une tranche plus courte peut rejouer exactement la même
+                # requête — mesuré : trois requêtes identiques sur une plage de deux
+                # jours. On compare donc la fenêtre qui RÉSULTERAIT du rétrécissement,
+                # et non la tranche ni la position de `debut`.
+                reduite = max(TRANCHE_JOURS_MIN, tranche // 4)
+                nouveau_debut = max(date_debut, fin - timedelta(days=reduite))
+                if (code == 403 and nouveau_debut != debut
+                        and tranche > TRANCHE_JOURS_MIN and essais < ESSAIS_403):
                     essais += 1
-                    tranche = max(TRANCHE_JOURS_MIN, tranche // 4)
+                    tranche = reduite
                     if journal:
                         journal(territoire, debut, fin, -1)
                     continue

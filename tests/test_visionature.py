@@ -990,3 +990,26 @@ def test_sans_type_date_la_recherche_porte_sur_lobservation():
     from datetime import date
     p = A.parametres_recherche("6", date(2026, 9, 1), date(2026, 9, 10), ["109"])
     assert "entry_date" not in p
+
+
+def test_pas_de_retrecissement_quand_la_fenetre_nen_depend_pas(monkeypatch):
+    """Rétrécir une tranche plus large que la plage restante rejoue la même requête.
+
+    Mesuré : un `--since` sur deux jours a émis trois fois la requête identique avant
+    d'abandonner, la tranche de quinze jours étant plafonnée à la plage demandée.
+    """
+    from datetime import date
+    from gn_module_connectors.sources.visionature.biolovision import api as bio
+
+    appels = []
+
+    def faux_recherche(cfg, groupe, debut, fin, territoires, type_date=None):
+        appels.append((debut, fin))
+        raise bio.HTTPError(403)
+
+    monkeypatch.setattr(A, "observations_recherche", faux_recherche)
+    with pytest.raises(bio.HTTPError):
+        list(A.moissonner_recherche({}, "1", date(2026, 9, 8), date(2026, 9, 10),
+                                    ["109"], tranche_jours=15))
+
+    assert len(appels) == 1, f"une seule tentative attendue, {len(appels)} émises"
