@@ -344,13 +344,77 @@ def lignes_ecrasees(id_source: int, cle_empreinte: str) -> tuple[int, int]:
         {"s": id_source, "cle": cle_empreinte},
     ).one()
     return (ligne[0] or 0, ligne[1] or 0)
-def insert_batch(lignes: list[dict]) -> tuple[int, int]:
+
+
+PREVALIDATION_SQL = text("""
+    INSERT INTO gn_commons.t_validations
+        (uuid_attached_row, id_nomenclature_valid_status, validation_auto,
+         validation_comment, validation_date)
+    SELECT DISTINCT u, :statut, TRUE, :commentaire, NOW()
+    FROM unnest(CAST(:uuids AS uuid[])) AS u
+    WHERE EXISTS (SELECT 1 FROM gn_synthese.synthese s WHERE s.unique_id_sinp = u)
+      AND NOT EXISTS (SELECT 1 FROM gn_commons.t_validations v
+                      WHERE v.uuid_attached_row = u)
+""")
+
+
+def prevalider(lignes: list[dict], statut) -> int:
+    """Écrit l'historique de pré-validation des observations d'un lot. Retourne le nombre.
+
+    Une seule fois par observation, jamais réécrite. Trois raisons :
+
+    - un validateur qui a tranché a le dernier mot. Le module Validation retient la
+      validation la plus récente ; réécrire la nôtre à chaque moissonnage annulerait sa
+      décision sans trace ;
+    - le filtre « modifiée depuis sa validation » compare `meta_update_date` à
+      `validation_date`. Rafraîchir la date à chaque passage éteindrait ce signal, qui
+      est précisément ce qui doit ramener sous les yeux une observation que la source a
+      corrigée ;
+    - l'historique est un journal, pas un état. Y empiler une ligne par moissonnage le
+      rendrait illisible — quatorze millions d'observations moissonnées chaque nuit.
+
+    `DISTINCT` n'est pas décoratif : le `NOT EXISTS` s'évalue contre l'état d'AVANT le
+    statement, donc deux occurrences d'un même identifiant dans le lot le franchiraient
+    toutes les deux et laisseraient deux lignes d'historique pour une observation.
+
+    Le trigger `tri_insert_synthese_update_validation_status` du cœur se charge de
+    reporter statut, commentaire et `meta_validation_date` dans la Synthèse. Il ne touche
+    aucune colonne de la liste `UPDATE OF` des déclencheurs de zonage et de sensibilité :
+    les ~9 lignes de `cor_area_synthese` par observation ne sont pas recalculées.
+
+    ⚠ En revanche `tri_meta_dates_change_synthese` se déclenche, lui — `BEFORE UPDATE`,
+    sans `UPDATE OF` — et repose `meta_update_date = NOW()`. Cela devrait rendre chaque
+    observation « modifiée depuis sa validation » à l'instant même où elle est validée.
+    Ce n'est pas le cas **parce que `NOW()` rend l'heure de la transaction et non celle
+    du statement** : les deux colonnes, toutes deux `timestamp without time zone`,
+    reçoivent la même valeur, et la comparaison du module Validation est stricte.
+    L'écriture de l'historique doit donc rester dans la transaction de l'INSERT — la
+    séparer casserait le filtre sans rien signaler.
+    """
+    if not lignes or statut is None:
+        return 0
+    ecrites = db.session.execute(
+        PREVALIDATION_SQL,
+        {"statut": statut.id_statut,
+         "commentaire": statut.commentaire or None,
+         "uuids": [str(l["unique_id_sinp"]) for l in lignes]},
+    ).rowcount
+    statut.ecrites += ecrites
+    return ecrites
+
+
+def insert_batch(lignes: list[dict], prevalidation=None) -> tuple[int, int]:
     """Écrit un lot. Retourne (insérées, mises à jour).
 
     Le décompte se fait en interrogeant l'état AVANT écriture plutôt qu'en lisant
     `rowcount` : avec un `ON CONFLICT` et un executemany, `rowcount` n'est pas fiable
     selon le driver, et confondre « insérée », « mise à jour » et « inchangée »
     fausserait tout le bilan — c'est précisément ce qui rend un import opaque.
+
+    Écrit dans **deux** tables quand `prevalidation` est fourni : la Synthèse, puis
+    `gn_commons.t_validations` — voir `prevalider`. Les deux dans la même transaction,
+    pour qu'une observation ne puisse pas exister sans son historique de validation.
+    Le nombre de lignes d'historique écrites s'accumule dans `prevalidation.ecrites`.
     """
     if not lignes:
         return (0, 0)
@@ -385,4 +449,8 @@ def insert_batch(lignes: list[dict]) -> tuple[int, int]:
     inserees = len(lignes) - len(deja)
 
     db.session.execute(INSERT_SQL, lignes)
+    # Après l'INSERT : le trigger de `t_validations` apparie sur `unique_id_sinp`, donc
+    # la ligne de Synthèse doit exister. Dans la même transaction, pour qu'une donnée ne
+    # puisse jamais être écrite sans son historique de validation.
+    prevalider(lignes, prevalidation)
     return (inserees, maj)

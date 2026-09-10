@@ -80,13 +80,27 @@ class GbifSchemaConf(Schema):
 
 
 class ValidationSchemaConf(Schema):
-    """Pré-validation automatique des données importées."""
+    """Pré-validation automatique des données importées.
+
+    Deux écritures, et la seconde commande la première : `gn_commons.t_validations` porte
+    l'historique, et son trigger `tri_insert_synthese_update_validation_status` recopie
+    statut, commentaire et date dans la Synthèse. Écrire la colonne seule — ce que fait
+    `gn_vn2synthese` — laisse le module Validation aveugle : sans ligne d'historique, son
+    filtre « masquer les validations automatiques » ne peut pas écarter nos données.
+    """
 
     enabled = fields.Boolean(load_default=False)
+    # Code SINP (« 2 ») ou libellé de l'instance (« Probable ») : les deux sont acceptés,
+    # le code primant. Une valeur introuvable fait échouer l'import au lieu de retomber
+    # en silence sur « Non évalué ».
     status = fields.String(load_default="Probable")
     comment = fields.String(
         load_default="Validation automatique — données importées depuis une source externe"
     )
+    # Les jeux créés par les connecteurs sortent de la file du module Validation. La
+    # validation d'une donnée moissonnée appartient à son producteur ; la remonter ici
+    # noierait les données maison. `true` les y remet.
+    jdd_validable = fields.Boolean(load_default=False)
 
 
 class AtlasSchemaConf(Schema):

@@ -167,6 +167,7 @@ def gbif_synchroniser_jeux(gadm_gid, country, dataset_keys, licenses, limit,
             source="GBIF", cle=meta["key"], licence=lic,
             nom=meta["title"], description=desc,
             id_acquisition_framework=af.id_acquisition_framework,
+            validable=_jdd_validable(),
         )
         cree += est_nouveau
         maj += (not est_nouveau)
@@ -218,6 +219,7 @@ def creer_jdd(meta, licence, uid, af, orgs_cache):
         source="GBIF", cle=meta["key"], licence=licence,
         nom=meta["title"], description=_description_jdd(meta, orgs_cache[org]),
         id_acquisition_framework=af.id_acquisition_framework,
+        validable=_jdd_validable(),
     )
     db.session.flush()
     if cree:
@@ -306,11 +308,6 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
         int(t) for e in exclusions_taxons if not e.get("dataset")
         for t in (e.get("taxon_keys") or [])
     }
-    cfg_valid = (gn_config.get("CONNECTORS") or {}).get("validation", {})
-    statut_validation = cfg_valid.get("status") if cfg_valid.get("enabled") else None
-    if statut_validation:
-        click.echo(f"  pré-validation : « {statut_validation} »")
-
     id_source = syn_core.get_source_id(SOURCE_NAME)
     id_module = syn_core.get_module_id("CONNECTORS")
     srid = syn_core.local_srid()
@@ -336,6 +333,8 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
 
     rejets = report_core.Rejects()
     resolver = nomen_core.Resolver()
+    prevalidation = _prevalidation(resolver)
+    statut_validation = prevalidation.cd if prevalidation else None
     orgs_cache: dict = {}
     cache_gbif: dict = {} if taxref_fallback else None
     total_lus = total_ecrits = total_maj = 0
@@ -468,7 +467,7 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
                 jdd = jdd or creer_jdd(meta, lic, uid, af, orgs_cache)
                 for l in lot:
                     l["id_dataset"] = jdd.id_dataset
-                i, u = syn_core.insert_batch(lot)
+                i, u = syn_core.insert_batch(lot, prevalidation)
                 ecrits += i; maj += u
                 db.session.commit(); lot = []
                 click.echo(f"  ... {ecrits} écrites, {maj} mises à jour")
@@ -476,7 +475,7 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
             jdd = jdd or creer_jdd(meta, lic, uid, af, orgs_cache)
             for l in lot:
                 l["id_dataset"] = jdd.id_dataset
-            i, u = syn_core.insert_batch(lot)
+            i, u = syn_core.insert_batch(lot, prevalidation)
             ecrits += i; maj += u
             db.session.commit()
         elif dry_run:
@@ -497,8 +496,48 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
     click.secho(f"\n{'DRY-RUN — ' if dry_run else ''}{total_lus} occurrence(s) lue(s), "
                 f"{total_ecrits} écrite(s), {total_maj} mise(s) à jour, "
                 f"{len(rejets)} rejetée(s).", fg="green")
+    # Zéro au second passage : c'est le signe que l'historique ne se réécrit pas.
+    if prevalidation and not dry_run:
+        click.echo(f"  {prevalidation.ecrites} pré-validation(s) écrite(s) dans "
+                   f"gn_commons.t_validations (STATUT_VALID {prevalidation.cd}).")
     for l in rejets.summary_lines():
         click.echo(l)
+
+
+def _prevalidation(resolver):
+    """Statut de pré-validation configuré, résolu une fois pour tout un import.
+
+    Une fois, et non par observation : le libellé de configuration est confronté au
+    référentiel de l'instance à ce moment précis, et une valeur qu'il ne connaît pas se
+    solde par un refus. C'est tout l'objet du réglage — il retombait auparavant en
+    silence sur le défaut de la colonne, et n'a donc jamais rien fait.
+    """
+    from geonature.utils.config import config as gn_config
+    from .core import nomenclatures as nomen_core
+
+    cfg = (gn_config.get("CONNECTORS") or {}).get("validation", {})
+    try:
+        statut = nomen_core.prevalidation(cfg, resolver)
+    except ValueError as erreur:
+        raise click.ClickException(str(erreur))
+    if statut:
+        click.echo(f"  pré-validation : « {cfg.get('status')} » -> STATUT_VALID "
+                   f"{statut.cd}, tracée dans gn_commons.t_validations "
+                   f"(validation_auto)")
+    return statut
+
+
+def _jdd_validable() -> bool:
+    """Les jeux du connecteur entrent-ils dans la file du module Validation ?
+
+    Faux par défaut : la validation d'une donnée moissonnée appartient à son producteur.
+    Le module Validation ne liste que les jeux `validable = true` ; y laisser des
+    dizaines de milliers d'observations importées noierait les données maison.
+    """
+    from geonature.utils.config import config as gn_config
+
+    cfg = (gn_config.get("CONNECTORS") or {}).get("validation", {})
+    return bool(cfg.get("jdd_validable", False))
 
 
 def _purger(*, id_source, id_dataset, ca_uuid, libelle_source, taxon="",
@@ -678,14 +717,25 @@ def gbif_purge(reference, taxon, max_uncertainty, tout, drop_empty_datasets, yes
 @click.option("--depuis", "since", default="",
               help="Date ISO 8601 : ne moissonner que les créations, modifications et "
                    "suppressions depuis. VisioNature sait signaler les suppressions, "
-                   "ce que GBIF ne fait pas.")
+                   "ce que GBIF ne fait pas. Incrémental : dix semaines au plus, et "
+                   "recherche sur la date de SAISIE. Pour reprendre un historique, "
+                   "voir --debut.")
+@click.option("--debut", "debut", default="",
+              help="Date de début du moissonnage complet (AAAA-MM-JJ). Par défaut, "
+                   "[visionature] date_debut. Recherche sur la date d'OBSERVATION, sans "
+                   "limite d'ancienneté et sans traitement des suppressions : c'est "
+                   "l'option d'un rattrapage d'historique, pas d'une synchronisation.")
 @click.option("--fin", "fin", default="",
               help="Date de fin du moissonnage complet (AAAA-MM-JJ). Par défaut, "
-                   "aujourd'hui. Sert à découper un gros historique en partitions "
+                   "aujourd'hui. Avec --debut, découpe un gros historique en partitions "
                    "reprenables : une par département et par année.")
+@click.option("--departement", "departements_demandes", multiple=True,
+              help="Départements à moissonner (défaut : [visionature] departements). "
+                   "Permet de partitionner sans réécrire la configuration.")
 @click.option("--lot", "batch_size", default=None, type=int)
 @click.option("--dry-run", is_flag=True)
-def visionature_import(groupes, since, fin, batch_size, dry_run):
+def visionature_import(groupes, since, debut, fin, departements_demandes, batch_size,
+                       dry_run):
     """Importe des observations VisioNature dans la Synthèse."""
     from geonature.utils.config import config as gn_config
     from sqlalchemy import select as sa_select
@@ -710,16 +760,42 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
                 f"(client_key/client_secret) sont fournis par Biolovision, séparément "
                 f"du compte utilisateur.")
 
+    # `--depuis` synchronise, `--debut` rattrape : deux intentions, deux façons de
+    # chercher (date de saisie contre date d'observation) et un traitement des
+    # suppressions dans un cas seulement. Les combiner n'aurait pas de sens, et laisser
+    # l'une gagner en silence donnerait un moissonnage dont personne ne saurait dire
+    # ce qu'il a couvert.
+    if since and debut:
+        raise click.ClickException(
+            "--depuis et --debut s'excluent : le premier synchronise (date de saisie, "
+            "suppressions comprises, dix semaines au plus), le second rattrape un "
+            "historique (date d'observation, sans limite d'ancienneté). Pour découper "
+            "un historique en partitions, utilisez --debut et --fin.")
+
     # Le diff de Biolovision ne remonte que 10 semaines. Au-delà, l'incrémental
     # perdrait en silence les créations et suppressions de l'intervalle : mieux vaut
     # refuser que produire une base incomplète sans le dire.
     if since and not vn_api.diff_possible(since):
         raise click.ClickException(
-            f"--since {since} dépasse les {vn_api.DIFF_MAX_SEMAINES} semaines que l'API "
-            f"Biolovision couvre en différentiel. Lancez un moissonnage complet "
-            f"(sans --since), sinon les créations et suppressions de l'intervalle "
-            f"seraient perdues sans avertissement.")
+            f"--depuis {since} dépasse les {vn_api.DIFF_MAX_SEMAINES} semaines que "
+            f"l'API Biolovision couvre en différentiel : les créations et les "
+            f"suppressions de l'intervalle seraient perdues sans avertissement.\n"
+            f"Pour rattraper une période ancienne, employez --debut, qui moissonne "
+            f"sur la date d'observation :\n"
+            f"    visionature-import --debut {since} --fin AAAA-MM-JJ")
 
+    # Périmètre résolu avant tout appel réseau. Le référentiel d'espèces compte 63 616
+    # entrées et plusieurs minutes de téléchargement : les payer pour refuser ensuite
+    # faute de périmètre ferait passer une erreur de saisie pour une lenteur.
+    departements = vn_perim.normaliser(list(departements_demandes)
+                                       or cfg.get("departements"))
+    filtre_api = dict(cfg.get("filtre_api") or {})
+    if not departements:
+        raise click.ClickException(
+            "Aucun périmètre : renseignez --departement ou [visionature] departements. "
+            "L'API refuse une recherche sans borne territoriale — et sans elle, vous "
+            "moissonneriez toute l'étendue de l'instance. `visionature-perimetres` "
+            "liste les valeurs disponibles.")
     batch_size = batch_size or cfg.get("batch_size", 1000)
     instance = cfg["url"].rstrip("/")
     id_source = syn_core.get_source_id(SOURCE_NAME)
@@ -741,6 +817,12 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
     v_taxref = syn_core.version_taxref()
     click.secho(f"instance={instance} source={id_source} srid={srid} "
                 f"taxref={v_taxref or 'inconnu'}", fg="green")
+    click.echo(f"  périmètre : département(s) {', '.join(sorted(departements))}"
+               + (f", filtre serveur {filtre_api}" if filtre_api else ""))
+    if departements_demandes and filtre_api:
+        click.secho(f"  ⚠ --departement déplace le périmètre, pas [visionature] "
+                    f"filtre_api ({filtre_api}) : vérifiez qu'ils désignent bien la "
+                    f"même étendue.", fg="yellow")
     if not v_taxref:
         click.secho("  ⚠ paramètre `taxref_version` absent de gn_commons.t_parameters : "
                     "meta_v_taxref restera NULL.", fg="yellow")
@@ -780,6 +862,12 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
                         fg="yellow")
         return contenu
 
+    # Avant le référentiel d'espèces : un statut de validation mal orthographié doit se
+    # signaler tout de suite, pas après le téléchargement de 63 616 espèces.
+    resolver = nomen_core.Resolver()
+    prevalidation = _prevalidation(resolver)
+    statut_validation = prevalidation.cd if prevalidation else None
+
     click.echo("Chargement du référentiel d'espèces…")
     especes = referentiel("especes", lambda: vn_api.especes(cfg))
     index, non_resolues = vn_taxo.construire_index(especes, journal=click.echo)
@@ -812,9 +900,6 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
                    f"écarté(s) : {', '.join(sorted(fermes))}")
     click.echo(f"{len(groupes)} groupe(s) taxonomique(s) à traiter.")
 
-    resolver = nomen_core.Resolver()
-    cfg_valid = (gn_config.get("CONNECTORS") or {}).get("validation", {})
-    statut_validation = cfg_valid.get("status") if cfg_valid.get("enabled") else None
     surcharges = cfg.get("atlas") or {}
     cfg_repro = cfg.get("reproduction") or {}
     contexte_repro = vn_repro.Contexte(
@@ -844,14 +929,6 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
         click.echo("  anonymat forcé pour tous les observateurs")
     respecter = cfg.get("respecter_confidentialite", True)
     niveau_masquees = cfg.get("niveau_diffusion_masquees", "4")
-    departements = vn_perim.normaliser(cfg.get("departements"))
-    filtre_api = dict(cfg.get("filtre_api") or {})
-    if departements:
-        click.echo(f"  périmètre : département(s) {', '.join(sorted(departements))}"
-                   + (f", filtre serveur {filtre_api}" if filtre_api else ""))
-    else:
-        click.secho("  ⚠ aucun filtre de périmètre : toute l'étendue de l'instance "
-                    "sera moissonnée.", fg="yellow")
     par_projet = cfg.get("jdd_par_code_projet", True)
     # Producteurs déclarés par l'exploitant, jamais créés depuis les données : les tirer
     # d'une API peuplerait bib_organismes de variantes d'orthographe.
@@ -883,13 +960,14 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
     # aussi les observations anciennes encodées récemment.
     if True:
         from datetime import date as _date
-        brut = since or str(cfg.get("date_debut") or "").strip()
+        brut = since or debut or str(cfg.get("date_debut") or "").strip()
+        origine = "--depuis" if since else ("--debut" if debut
+                                            else "[visionature] date_debut")
         try:
             date_debut = _date.fromisoformat(brut) if brut else _date(1900, 1, 1)
         except ValueError:
             raise click.ClickException(
-                f"{'--since' if since else '[visionature] date_debut'} = {brut!r} "
-                f"n'est pas une date ISO (AAAA-MM-JJ).")
+                f"{origine} = {brut!r} n'est pas une date ISO (AAAA-MM-JJ).")
         # Borner la fin permet de découper un historique volumineux en partitions
         # reprenables. Sur 14 millions d'observations à ~32/s, une seule exécution
         # durerait cinq jours : une coupure au troisième tout perdrait, faute de
@@ -911,16 +989,13 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
         # L'API refuse une recherche non bornée territorialement : 403 sans périmètre,
         # 200 avec. L'identifiant attendu est `id_country` suivi du `short_name`, soit
         # « 109 » pour l'Ariège — c'est ce que compose transfer_vn.
-        voulus = {str(d).strip().zfill(2) for d in (cfg.get("departements") or [])}
-        if not voulus:
-            raise click.ClickException(
-                "Le moissonnage exige [visionature] departements : l'API refuse "
-                "une recherche sans périmètre territorial, et sans lui vous "
-                "moissonneriez toute l'étendue de l'instance. "
-                "`visionature-perimetres` liste les valeurs disponibles.")
+        voulus = departements
         unites = referentiel("territoires", lambda: vn_api.unites_territoriales(cfg))
+        # Le `short_name` est comparé après la même normalisation que les codes
+        # demandés : « 9 » et « 09 » désignent l'Ariège, « 2a » et « 2A » la Corse-du-Sud.
         territoires = [t for t in (vn_api.identifiant_territoire(u) for u in unites
-                                   if str(u.get("short_name") or "") in voulus) if t]
+                                   if vn_perim.normaliser([u.get("short_name")])
+                                   & voulus) if t]
         if not territoires:
             raise click.ClickException(
                 f"Aucune unité territoriale de l'instance ne correspond à "
@@ -1038,7 +1113,7 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
                     if len(lot) >= batch_size and not dry_run:
                         i, u = _ecrire_lot(lot, jdds, instance, af, id_source,
                                    producteurs, fournisseur, creer_organismes,
-                                   metadonnees, contact_principal)
+                                   metadonnees, contact_principal, prevalidation)
                         ecrits += i; maj += u
                         db.session.commit(); lot = []
                         click.echo(f"    … {ecrits} écrites, {maj} mises à jour")
@@ -1051,7 +1126,7 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
         if lot and not dry_run:
             i, u = _ecrire_lot(lot, jdds, instance, af, id_source,
                                    producteurs, fournisseur, creer_organismes,
-                                   metadonnees, contact_principal)
+                                   metadonnees, contact_principal, prevalidation)
             ecrits += i; maj += u
             db.session.commit()
         elif dry_run:
@@ -1096,6 +1171,10 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
     click.secho(f"\n{'DRY-RUN — ' if dry_run else ''}{total_lus} observation(s) lue(s), "
                 f"{total_ecrits} {verbes[0]}, {total_maj} {verbes[1]}{suffixe}, "
                 f"{rejets.nombre_observations()} rejetée(s).", fg="green")
+    # Zéro au second passage : c'est le signe que l'historique ne se réécrit pas.
+    if prevalidation and not dry_run:
+        click.echo(f"  {prevalidation.ecrites} pré-validation(s) écrite(s) dans "
+                   f"gn_commons.t_validations (STATUT_VALID {prevalidation.cd}).")
     for ligne in rejets.summary_lines_observations():
         click.echo(ligne)
     # Les espèces du référentiel absentes de TAXREF sont journalisées mais comptées à
@@ -1166,7 +1245,7 @@ class _IndexAnonymat:
 
 def _ecrire_lot(lot, jdds, instance, af, id_source=None,
                 producteurs=None, fournisseur=None, creer_organismes=False,
-                metadonnees=None, contact_principal=None):
+                metadonnees=None, contact_principal=None, prevalidation=None):
     """Écrit un lot en le répartissant par code projet.
 
     Les JDD sont créés à la demande : un projet dont toutes les observations sont
@@ -1199,7 +1278,7 @@ def _ecrire_lot(lot, jdds, instance, af, id_source=None,
                                          metadonnees, contact_principal)
         for ligne in lignes:
             ligne["id_dataset"] = jdds[cle].id_dataset
-        i, u = syn_core.insert_batch(lignes)
+        i, u = syn_core.insert_batch(lignes, prevalidation)
         inserees += i; maj += u
     return inserees, maj
 
@@ -1245,6 +1324,7 @@ def _jdd_visionature(instance: str, af, projet: str | None = None,
                      f"Les codes atlas de nidification sont conservés dans additional_data : "
                      f"le SINP ne connaît pas leur gradation possible/probable/certaine."),
         id_acquisition_framework=af.id_acquisition_framework,
+        validable=_jdd_validable(),
     )
     ds_core.qualifier_dataset(
         # Le financement dépend du PROJET, non du département : la plupart des projets
@@ -1534,8 +1614,8 @@ def dbchiro_import(area, departements, importer_absences, max_results, batch_siz
     click.echo(f"  {len(features)} observation(s) reçue(s).")
 
     resolver = nomen_core.Resolver()
-    cfg_valid = (gn_config.get("CONNECTORS") or {}).get("validation", {})
-    statut_validation = cfg_valid.get("status") if cfg_valid.get("enabled") else None
+    prevalidation = _prevalidation(resolver)
+    statut_validation = prevalidation.cd if prevalidation else None
     niveau_diffusion = cfg.get("niveau_diffusion", "")
     if niveau_diffusion:
         click.echo(f"  niveau de diffusion appliqué : NIV_PRECIS « {niveau_diffusion} »")
@@ -1556,7 +1636,7 @@ def dbchiro_import(area, departements, importer_absences, max_results, batch_siz
             jdd = _jdd_dbchiro(instance, af)
         for ligne in lignes:
             ligne["id_dataset"] = jdd.id_dataset
-        return syn_core.insert_batch(lignes)
+        return syn_core.insert_batch(lignes, prevalidation)
 
     for feature in features:
         lus += 1
@@ -1619,6 +1699,10 @@ def dbchiro_import(area, departements, importer_absences, max_results, batch_siz
     click.secho(f"\n{'DRY-RUN — ' if dry_run else ''}{lus} observation(s) lue(s), "
                 f"{ecrits} {verbes[0]}, {maj} {verbes[1]}, {len(rejets)} rejetée(s).",
                 fg="green")
+    # Zéro au second passage : c'est le signe que l'historique ne se réécrit pas.
+    if prevalidation and not dry_run:
+        click.echo(f"  {prevalidation.ecrites} pré-validation(s) écrite(s) dans "
+                   f"gn_commons.t_validations (STATUT_VALID {prevalidation.cd}).")
     for ligne in rejets.summary_lines():
         click.echo(ligne)
     chemin = rejets.write_csv(Path("dbchiro_rejets.csv"))
@@ -1649,6 +1733,7 @@ def _jdd_dbchiro(instance: str, af):
             f"dit ce qui a réellement été identifié.\n\n"
             f"Les dates sont sans heure : l'API n'expose pas l'heure de début de session."),
         id_acquisition_framework=af.id_acquisition_framework,
+        validable=_jdd_validable(),
     )
     db.session.flush()
     if cree:
@@ -2598,6 +2683,7 @@ def _jdd_geonature(item, cfg, contexte, caches):
             item, instance=contexte["instance"], id_export=cfg["id_export"],
             licence=licence.get("name", ""), licence_url=licence.get("href", "")),
         id_acquisition_framework=af.id_acquisition_framework,
+        validable=_jdd_validable(),
     )
     # ⚠ Le flush précède toute écriture en table de liaison : sans identifiant, PostgreSQL
     # rejette sur une contrainte NOT NULL dont la trace ne dit pas la cause.
@@ -2723,8 +2809,8 @@ def geonature_import(id_export, jeux, depuis, complet, perimetre, max_results,
     # ── Référentiels ─────────────────────────────────────────────────────────
     connus = gn_taxo.charger_index(gn_taxo.codes_a_verifier(items))
     resolver = nomen_core.Resolver()
-    cfg_valid = (gn_config.get("CONNECTORS") or {}).get("validation", {})
-    statut_validation = cfg_valid.get("status") if cfg_valid.get("enabled") else None
+    prevalidation = _prevalidation(resolver)
+    statut_validation = prevalidation.cd if prevalidation else None
     if not pseudonymiser:
         click.echo("  observateurs repris en clair — le producteur distant a déjà "
                    "arbitré ce qu'il diffuse.")
@@ -2763,7 +2849,7 @@ def geonature_import(id_export, jeux, depuis, complet, perimetre, max_results,
         # Renomme les lignes qui portaient un UUID dérivé, désormais supplanté par celui
         # du producteur : sans quoi elles deviendraient des doublons invisibles.
         syn_core.realigner_uuid(lignes, contexte["id_source"], cle="gn_uuid_calcule")
-        return syn_core.insert_batch(lignes)
+        return syn_core.insert_batch(lignes, prevalidation)
 
     for item in items:
         lus += 1
@@ -2867,6 +2953,10 @@ def geonature_import(id_export, jeux, depuis, complet, perimetre, max_results,
     click.secho(f"\n{'DRY-RUN — ' if dry_run else ''}{lus} enregistrement(s) lu(s), "
                 f"{ecrits} {verbes[0]}, {maj} {verbes[1]}, {len(rejets)} rejeté(s).",
                 fg="green")
+    # Zéro au second passage : c'est le signe que l'historique ne se réécrit pas.
+    if prevalidation and not dry_run:
+        click.echo(f"  {prevalidation.ecrites} pré-validation(s) écrite(s) dans "
+                   f"gn_commons.t_validations (STATUT_VALID {prevalidation.cd}).")
     for ligne in rejets.summary_lines():
         click.echo(ligne)
     chemin = rejets.write_csv(Path("geonature_rejets.csv"))

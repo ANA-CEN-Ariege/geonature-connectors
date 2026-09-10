@@ -315,7 +315,9 @@ pseudonymisation_secret = "…"   # obligatoire, voir plus bas
 ```bash
 geonature connectors visionature-import --dry-run
 geonature connectors visionature-import
-geonature connectors visionature-import --depuis 2026-01-01   # incrémental
+geonature connectors visionature-import --depuis 2026-08-01   # incrémental (10 semaines)
+geonature connectors visionature-import --debut 2005-01-01 --fin 2006-01-01  # historique
+geonature connectors visionature-import --departement 09      # périmètre ponctuel
 geonature connectors visionature-reanonymiser                # simulation
 geonature connectors visionature-reanonymiser --yes
 geonature connectors visionature-purge --taxon Reptilia       # simulation
@@ -325,9 +327,17 @@ geonature connectors visionature-purge --taxon Reptilia --yes
 ⚠️ **`--depuis` ne remonte pas au-delà de dix semaines.** C'est la fenêtre que l'API
 Biolovision couvre en différentiel (`api_diff`). Au-delà, les créations et les
 suppressions de l'intervalle seraient perdues sans le moindre message : la commande
-refuse plutôt que de produire une base incomplète en silence, et invite à un moissonnage
-complet. Le contrôle a lieu avant tout appel réseau, faute de quoi une erreur de
-connexion masquerait le vrai problème.
+refuse plutôt que de produire une base incomplète en silence, et renvoie vers `--debut`,
+qui moissonne sur la date d'observation sans limite d'ancienneté. Le contrôle a lieu
+avant tout appel réseau, faute de quoi une erreur de connexion masquerait le vrai
+problème.
+
+| | `--depuis` | `--debut` |
+|---|---|---|
+| intention | synchroniser | rattraper un historique |
+| date cherchée | saisie (`entry_date`) | observation |
+| ancienneté | dix semaines au plus | sans limite |
+| suppressions | répercutées | non traitées |
 
 L'incrémental traite les **suppressions avant les modifications** : une observation
 supprimée puis recréée sous le même identifiant serait sinon retirée après avoir été
@@ -447,10 +457,15 @@ la requête est celle que l'API attend.
 
 ```toml
 [visionature]
-departements = ["09"]        # OBLIGATOIRE en moissonnage complet
+departements = ["09"]        # OBLIGATOIRE — l'API refuse une recherche sans périmètre
 date_debut = "2015-01-01"    # vide = tout l'historique
 tranche_jours = 15
 ```
+
+`--departement` et `--debut` priment sur ces deux réglages, sans les remplacer : la
+configuration porte le cas courant, les options le partitionnement. L'absence de
+périmètre est refusée **avant tout appel réseau** — sinon on paierait le référentiel de
+63 616 espèces, plusieurs minutes, pour s'entendre refuser ensuite.
 
 Le moissonnage parcourt la période de la fin vers le début, territoire par territoire.
 La tranche est **ajustée au volume rendu** — réduite si elle déborde, élargie si elle est
@@ -588,16 +603,23 @@ rejouant en quelques heures :
 ```bash
 for dep in 09 11 12 30 31 32 34 46 48 65 66 81 82; do
   for an in $(seq 2005 2026); do
-    geonature connectors visionature-import \
-      --depuis "${an}-01-01" --fin "$((an+1))-01-01" 2>&1 | tee -a moisson.log
+    geonature connectors visionature-import --departement "$dep" \
+      --debut "${an}-01-01" --fin "$((an+1))-01-01" 2>&1 | tee -a moisson.log
   done
 done
 ```
 
-`departements` se règle dans la configuration ; l'exemple ci-dessus suppose qu'on la
-modifie entre deux départements, ou qu'on lance une instance de configuration par
-département. Le recouvrement est gratuit : l'`ON CONFLICT` ne réécrit que sur changement
-d'empreinte, et une partition rejouée ne coûte que son téléchargement.
+⚠️ **`--debut`, pas `--depuis`.** Les deux bornent une période, mais ne désignent pas le
+même geste : `--depuis` *synchronise* — recherche sur la date de **saisie**, suppressions
+comprises, dix semaines au plus — quand `--debut` *rattrape un historique* : date
+d'**observation**, sans limite d'ancienneté, sans suppressions. Employer `--depuis` pour
+partitionner vingt ans butait sur le plafond de dix semaines à chaque itération, et la
+boucle entière ne moissonnait rien. Les deux options se refusent désormais mutuellement.
+
+`--departement` prime sur `[visionature] departements` : une même configuration sert
+ainsi les treize partitions, sans réécriture entre deux départements. Le recouvrement est
+gratuit — l'`ON CONFLICT` ne réécrit que sur changement d'empreinte, et une partition
+rejouée ne coûte que son téléchargement.
 
 ⚠️ **Le coût réel n'est pas dans le téléchargement mais dans les zonages.** Chaque
 observation engendre environ **9 lignes de `cor_area_synthese`** — quatorze millions
@@ -656,8 +678,14 @@ que porte chaque observation, à côté de `insee` et `municipality`. C'est le f
 `hors_perimetre`, et un lieu dont le département est indéterminable est écarté aussi :
 le laisser passer ferait du filtre une passoire silencieuse.
 
-`filtre_api` est transmis tel quel à l'API comme paramètres d'URL. C'est le seul moyen
-d'éviter de **télécharger** ce qu'on va jeter. Découvrir les valeurs de l'instance :
+⚠️ **`filtre_api` est inerte sur ce connecteur.** La clé est déclarée, lue et affichée au
+démarrage, mais `sources/visionature/api.py` ne la transmet nulle part — vérifié, zéro
+occurrence. Elle date d'avant le passage au moissonnage par `observations/search`, qui
+borne le territoire par `territorial_unit_ids` déduit de `departements` : l'économie de
+téléchargement que `filtre_api` visait, `search` la fait déjà, et mieux. Les connecteurs
+dbChiro et GeoNature l'appliquent bien, chacun dans son `api.py`.
+
+Découvrir les valeurs de l'instance :
 
 ```bash
 geonature connectors visionature-perimetres
@@ -668,10 +696,13 @@ Le `short_name` qu'affiche cette commande est le code employé par `Client_API_V
 configuration le précise : « use the territory short_name, not the territory id ».
 
 ⚠️ **Un paramètre inconnu de l'API est ignoré sans erreur** : rien ne distingue un filtre
-appliqué d'un filtre inexistant. C'est pourquoi `filtre_api` ne fait jamais foi seul. Si
-les rejets `hors_perimetre` dépassent un dixième du volume lu alors qu'un filtre serveur
-est configuré, le moissonnage le signale — le filtre a été ignoré et toute l'instance a
-été téléchargée avant d'être écartée localement.
+appliqué d'un filtre inexistant. C'est pourquoi `filtre_api` ne fait jamais foi seul, là
+où il est appliqué. Si les rejets `hors_perimetre` dépassent un dixième du volume lu
+alors qu'un filtre serveur est configuré, le moissonnage le signale — le filtre a été
+ignoré et toute l'instance a été téléchargée avant d'être écartée localement.
+
+`--departement` déplace `departements`, jamais `filtre_api` : quand les deux sont posés,
+le moissonnage prévient qu'ils peuvent désigner deux étendues différentes.
 
 ### Résolution taxonomique
 
@@ -1487,6 +1518,91 @@ cron.
 
 ---
 
+## Pré-validation
+
+Une donnée moissonnée n'a pas été validée ici, et elle n'est pas non plus à valider ici :
+sa validation appartient à son producteur. Sans réglage, elle prend pourtant le défaut de
+la colonne — `STATUT_VALID` cd 0, « Non évalué » — et va grossir la file du module
+Validation, où elle noie les observations internes qui, elles, attendent un arbitrage.
+
+```toml
+[validation]
+enabled = true
+status = "2"        # ou "Probable" : le code prime, le libellé sert de repli
+comment = "Validation automatique — données importées depuis une source externe"
+jdd_validable = false
+```
+
+### Deux écritures, et la seconde commande la première
+
+| | rôle |
+|---|---|
+| `synthese.id_nomenclature_valid_status` | ce qu'affiche et filtre la Synthèse |
+| `gn_commons.t_validations` | l'historique, avec `validation_auto` |
+
+Le connecteur écrit **l'historique**, et le trigger `tri_insert_synthese_update_validation_status`
+du cœur recopie statut, commentaire et `meta_validation_date` dans la Synthèse, apparié
+sur `unique_id_sinp`. L'inverse ne marcherait pas : écrire la colonne seule laisse le
+module Validation aveugle, et son filtre « masquer les validations automatiques »
+s'appuie sur `last_validation.validation_auto`, qui n'existerait pas.
+
+Cet UPDATE ne touche aucune colonne de la liste `UPDATE OF` des déclencheurs de zonage et
+de sensibilité : les ~9 lignes de `cor_area_synthese` par observation ne sont pas
+recalculées.
+
+`tri_meta_dates_change_synthese` se déclenche en revanche — `BEFORE UPDATE`, sans
+`UPDATE OF` — et repose `meta_update_date = NOW()`. Chaque observation devrait donc
+paraître « modifiée depuis sa validation » à l'instant même où elle est validée. Elle ne
+l'est pas **parce que `NOW()` rend l'heure de la transaction et non celle du statement** :
+les deux colonnes, toutes deux `timestamp without time zone`, reçoivent la même valeur.
+D'où une contrainte à ne pas défaire : l'historique s'écrit dans la transaction de
+l'INSERT, et l'en sortir casserait ce filtre sans rien signaler.
+
+**L'historique n'est écrit qu'une fois par observation.** Trois raisons : un validateur
+qui tranche ensuite a le dernier mot — le module retient la validation la plus récente ;
+le filtre « modifiée depuis sa validation » compare `meta_update_date` à
+`validation_date`, et rafraîchir la date à chaque passage éteindrait ce signal ; enfin un
+journal où chaque moissonnage empile une ligne cesse d'en être un.
+
+### `jdd_validable`
+
+Le module Validation ne liste que les jeux `validable = true`, et c'est le défaut de
+GeoNature. `jdd_validable = false` en sort les jeux créés par les connecteurs, à la
+création comme aux passages suivants. Un jeu dont les métadonnées ne sont pas rafraîchies
+(`rafraichir=False`, cas d'un UUID venu du producteur) garde en revanche son réglage :
+il a pu être créé par un autre canal et arbitré à la main.
+
+### Ce que fait `gn_vn2synthese`, et en quoi nous divergeons
+
+La LPO ne pose pas un statut global : elle le **déduit** de la validation VisioNature
+elle-même, dans son upsert SQL.
+
+```sql
+CASE
+  WHEN un comité (chr/chn) a « ACCEPTED »        → STATUT_VALID '1'  Certain
+  WHEN admin_hidden OU aucun comité n'a accepté  → STATUT_VALID '3'  Douteux
+  ELSE                                            → STATUT_VALID '2'  Probable
+END
+```
+
+Quand `committees_validation` est absent, `'ACCEPTED' = ANY(NULL)` vaut NULL : ni la
+première branche ni la seconde ne se déclenchent, et le `ELSE` s'applique. **« Probable »
+est donc leur plancher**, appliqué à tout ce qui n'est jamais passé devant un comité
+d'homologation — l'immense majorité.
+
+Deux divergences assumées :
+
+- ils écrivent **uniquement** la colonne de la Synthèse. Aucune occurrence de
+  `t_validations`, `validation_auto` ni `validable` dans leur dépôt : le module
+  Validation ne peut pas distinguer leurs données importées des données saisies ;
+- la déduction par comité n'est pas transposée. `committees_validation` et `admin_hidden`
+  sont absents des 114 relevés des exports réels dont nous disposons ; l'implémenter
+  suppose d'abord de mesurer ce que l'API rend sur l'instance visée. La règle par défaut
+  du module — `is_doubtful` de dbChiro prime sur la pré-validation globale — est le seul
+  cas où une source contredit le statut global.
+
+---
+
 ## Purger
 
 Les quatre sources ont la même commande, avec les mêmes garanties :
@@ -1551,7 +1667,7 @@ instant donné dépasserait ce que ce module a le droit de faire.
 python3 -m pytest tests/ -q
 ```
 
-490 tests, sans dépendance à GeoNature ni à la base. Ils couvrent les cas qui ont
+508 tests, sans dépendance à GeoNature ni à la base. Ils couvrent les cas qui ont
 réellement mordu pendant le développement : le faux-ami `Nymph` / « Nymphe », les dates
 en intervalle ISO, l'asymétrie énumération/URL des licences, la distinction entre origine
 du taxon et état de l'individu, et le déterminisme de l'identifiant unique.

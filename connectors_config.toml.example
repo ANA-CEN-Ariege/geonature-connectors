@@ -150,16 +150,34 @@ crontab = "0 3 * * 1"
 [validation]
 # Pré-validation automatique des observations importées.
 #
-# Sans elle, chaque observation entre « En attente de validation » — le défaut de la
-# colonne. Sur un import de plusieurs centaines de milliers d'occurrences, cela noierait
-# le module Validation sous une file que personne ne traitera, et qui masquerait les
-# observations internes réellement à valider.
+# Sans elle, chaque observation prend le défaut de la colonne — « Non évalué », cd 0.
+# Sur un import de plusieurs centaines de milliers d'occurrences, cela noierait le module
+# Validation sous une file que personne ne traitera, et qui masquerait les observations
+# internes réellement à valider.
 #
-# `statut` accepte un cd_nomenclature du type STATUT_VALID ou son libellé :
-#   1 Certain · 2 Probable · 3 Douteux · 4 Invalide · 5 Non réalisable · 6 Non évalué
+# Deux écritures, et la seconde commande la première :
+#   - `gn_commons.t_validations` reçoit une ligne par observation, `validation_auto` à
+#     true. C'est ce que lit le module Validation, et ce sur quoi s'appuie son filtre
+#     « masquer les validations automatiques » ;
+#   - son trigger `tri_insert_synthese_update_validation_status` recopie statut,
+#     commentaire et date dans la Synthèse.
+# L'historique n'est écrit qu'une fois par observation : un validateur qui tranche
+# ensuite a le dernier mot, et le filtre « modifiée depuis sa validation » reste vivant.
+#
+# `status` accepte un cd_nomenclature du type STATUT_VALID (« 2 ») ou le libellé de
+# l'instance (« Probable »), le code primant. Une valeur introuvable fait échouer
+# l'import en énumérant les valeurs du référentiel local — elle ne retombe plus en
+# silence sur « Non évalué », ce qui rendait ce réglage inopérant.
 enabled = false
 status = "2"
 comment = "Validation automatique — données importées depuis une source externe"
+
+# Les jeux de données créés par les connecteurs entrent-ils dans la file du module
+# Validation ? Le module ne liste que les jeux `validable = true`, et c'est le défaut de
+# GeoNature. Faux ici : la validation d'une donnée moissonnée appartient à son
+# producteur, et la remonter dans la file locale y noierait les données maison.
+# Appliqué à chaque import, y compris aux jeux déjà créés.
+jdd_validable = false
 
 
 # ═════════════════════════════════════════════════════════════════════════════

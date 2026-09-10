@@ -97,6 +97,7 @@ def upsert_dataset(
     marin: bool = False,
     uid: str | uuid.UUID | None = None,
     rafraichir: bool = True,
+    validable: bool | None = None,
 ) -> tuple[TDatasets, bool]:
     """Crée ou met à jour un JDD. Retourne (jdd, cree).
 
@@ -111,6 +112,13 @@ def upsert_dataset(
     éditoriales. Utile quand l'UUID vient du producteur : le jeu local a pu être créé par
     un autre canal et enrichi à la main, et le nom que l'API nous donne n'est pas
     forcément meilleur que celui qui s'y trouve.
+
+    `validable` décide si le jeu entre dans la file du module Validation, qui ne liste
+    que les jeux `validable = true` — et c'est le défaut de la colonne. Une donnée
+    moissonnée chez un producteur n'est pas à valider chez nous : sa validation lui
+    appartient, et la faire remonter dans la file locale noie les données maison sous
+    des dizaines de milliers de lignes qu'aucun validateur d'ici n'a vocation à trancher.
+    `None` laisse le jeu tel quel, pour ne pas écraser un choix fait à la main.
     """
     uid = uuid.UUID(str(uid)) if uid is not None else dataset_uuid(source, cle, licence)
     jdd = db.session.scalar(select(TDatasets).where(TDatasets.unique_dataset_id == uid))
@@ -135,6 +143,8 @@ def upsert_dataset(
             terrestrial_domain=terrestre,
             active=True,
         )
+        if validable is not None:
+            jdd.validable = validable
         db.session.add(jdd)
     elif rafraichir:
         # On rafraîchit les métadonnées éditoriales (le producteur peut corriger son
@@ -142,6 +152,8 @@ def upsert_dataset(
         jdd.dataset_name = nom[:255]
         jdd.dataset_shortname = shortname
         jdd.dataset_desc = description
+        if validable is not None and jdd.validable is not validable:
+            jdd.validable = validable
     return jdd, cree
 
 

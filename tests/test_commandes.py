@@ -46,7 +46,7 @@ DRAPEAUX_ADMIS = UNIVERSELLES | {
     "--ecarter-jeux-maille/--garder-jeux-maille",
     "--repli-taxref/--sans-repli-taxref",
     # VisioNature
-    "--groupe-taxo", "--projet", "--jours", "--fin", "--trace",
+    "--groupe-taxo", "--projet", "--jours", "--debut", "--fin", "--trace",
     "--via-recherche/--sans-recherche",
     # dbChiro
     "--departement", "--importer-absences/--ecarter-absences", "--nom",
@@ -232,3 +232,83 @@ def test_le_cadre_dacquisition_nest_jamais_supprime():
                  "db.session.delete(af")
     presents = [motif for motif in interdits if motif in SOURCE]
     assert not presents, f"le cadre d'acquisition ne doit pas être supprimé : {presents}"
+
+
+def _fonction(nom):
+    return next(n for n in ARBRE.body
+                if isinstance(n, ast.FunctionDef) and n.name == nom)
+
+
+def test_rattraper_un_historique_ne_passe_pas_par_lincremental():
+    """`--depuis` et `--debut` sont deux gestes, pas deux orthographes du même.
+
+    `--depuis` synchronise : recherche sur la date de SAISIE, suppressions comprises,
+    et dix semaines au plus — c'est la fenêtre que couvre `api_diff`. `--debut` rattrape
+    un historique : date d'OBSERVATION, sans limite d'ancienneté, sans suppressions.
+
+    Le README a recommandé pendant un temps `--depuis "${an}-01-01" --fin …` pour
+    partitionner vingt ans par année. Chaque itération se heurtait au plafond de dix
+    semaines : la boucle entière ne moissonnait rien. D'où ce test — la limite doit
+    porter sur le mode qui en dépend, et sur lui seul.
+    """
+    fonction = _fonction("visionature_import")
+    params = {a.arg for a in fonction.args.args}
+    assert {"since", "debut", "fin"} <= params
+
+    gardes = [n for n in ast.walk(fonction)
+              if isinstance(n, ast.If)
+              and any(getattr(getattr(a, "func", None), "attr", "") == "diff_possible"
+                      for a in ast.walk(n.test))]
+    assert len(gardes) == 1, "un seul contrôle des dix semaines attendu"
+    noms = {n.id for n in ast.walk(gardes[0].test) if isinstance(n, ast.Name)}
+    assert "since" in noms and "debut" not in noms, (
+        f"le plafond de dix semaines ne concerne que l'incrémental, or il lit {noms}")
+
+
+def test_les_deux_modes_de_moissonnage_sexcluent():
+    """Les combiner donnerait un moissonnage dont personne ne saurait dire ce qu'il a
+    couvert : la date de saisie et la date d'observation ne délimitent pas le même
+    ensemble."""
+    fonction = _fonction("visionature_import")
+    exclusions = [n for n in ast.walk(fonction)
+                  if isinstance(n, ast.If) and isinstance(n.test, ast.BoolOp)
+                  and isinstance(n.test.op, ast.And)
+                  and {getattr(v, "id", "") for v in n.test.values} == {"since", "debut"}
+                  and any(isinstance(c, ast.Raise) for c in n.body)]
+    assert exclusions, "--depuis et --debut doivent se refuser mutuellement"
+
+
+def test_toute_ecriture_en_synthese_porte_sa_prevalidation():
+    """Cinq appels à `insert_batch`, un par chemin d'écriture.
+
+    Le statut de validation est résolu une fois par commande, puis relayé jusqu'à
+    l'écriture. Un appel qui l'oublierait n'échouerait pas : il écrirait simplement des
+    observations sans historique de validation, invisibles dans le module Validation et
+    impossibles à distinguer des données saisies sur place. C'est le genre d'oubli qu'un
+    ajout de source réintroduit facilement.
+    """
+    appels = [n for n in ast.walk(ARBRE)
+              if isinstance(n, ast.Call)
+              and getattr(n.func, "attr", "") == "insert_batch"]
+    assert len(appels) >= 5, f"{len(appels)} appel(s) à insert_batch"
+    sans = [a.lineno for a in appels if len(a.args) + len(a.keywords) < 2]
+    assert not sans, (
+        f"insert_batch sans pré-validation aux lignes {sans} : le second argument "
+        f"est le statut résolu par `_prevalidation`.")
+
+
+def test_les_jeux_du_connecteur_sortent_de_la_file_de_validation():
+    """`upsert_dataset` reçoit `validable` partout, ou nulle part le réglage ne compte.
+
+    Le module Validation ne liste que les jeux `validable = true`, défaut de GeoNature.
+    Un connecteur qui omettrait le paramètre remonterait ses observations dans la file
+    des validateurs, et le réglage `[validation] jdd_validable` ne serait vrai qu'à
+    moitié — l'incohérence la plus difficile à voir depuis l'interface.
+    """
+    appels = [n for n in ast.walk(ARBRE)
+              if isinstance(n, ast.Call)
+              and getattr(n.func, "attr", "") == "upsert_dataset"]
+    assert len(appels) >= 5, f"{len(appels)} appel(s) à upsert_dataset"
+    sans = [a.lineno for a in appels
+            if not any(k.arg == "validable" for k in a.keywords)]
+    assert not sans, f"upsert_dataset sans `validable` aux lignes {sans}"
