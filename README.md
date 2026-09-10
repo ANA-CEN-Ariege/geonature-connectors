@@ -255,15 +255,20 @@ supprimée puis recréée sous le même identifiant serait sinon retirée après
 réécrite.
 
 **`observations/diff` ne livre pas les observations**, seulement la liste de ce qui a
-changé : `id_sighting`, `id_universal`, `modification_type`. Les relevés sont ensuite
-récupérés **par lots de cent**, via `api_list(id_sightings_list="1,2,3,…")` — la voie
-qu'emploie `_store_update` de `transfer_vn`.
+changé : `id_sighting`, `id_universal`, `modification_type`. Il sert donc à **répercuter
+les suppressions**, et à cela seulement.
 
-Le détail est décisif. Une version antérieure de ce module appelait `api_get` par
-identifiant, ce qui paraissait « acceptable pour un delta ». Le différentiel des oiseaux
-d'Occitanie rend quelque 26 000 identifiants par jour : 26 000 requêtes contre 260 par
-lots. Et un `api_list` borné à des identifiants précis n'est pas le dump intégral d'un
-groupe taxonomique, que l'API refuse.
+⚠️ Les deux voies qui permettraient d'en résoudre les identifiants — `api_get`, une
+observation à la fois, et `api_list(id_sightings_list=…)`, cent à la fois comme le fait
+`_store_update` de `transfer_vn` — peuvent être **refusées par l'API alors même que
+`diff` répond**. Mesuré sur faune-occitanie.org : 403 sur les deux, y compris pour un
+groupe dont `search` accepte les requêtes.
+
+Les créations et modifications passent donc par `search` avec **`entry_date`**, qui fait
+porter la recherche sur la date de **saisie** et non sur celle de l'observation. C'est
+plus juste de toute façon : chercher par date d'observation manquerait les relevés
+anciens encodés récemment, qui sont précisément ce qu'un moissonnage antérieur n'a pas pu
+voir.
 
 Un relevé peut être listé par le différentiel sans être lisible individuellement — l'API
 répond alors 403. Le client vendorisé traitant tout 4xx comme irrécupérable, une seule

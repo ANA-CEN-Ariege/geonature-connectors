@@ -182,7 +182,8 @@ def identifiant_territoire(unite: dict) -> str | None:
 
 
 def observations_recherche(cfg, id_taxo_group: str, date_debut, date_fin,
-                           territoires: list[str] | None = None) -> list[dict]:
+                           territoires: list[str] | None = None,
+                           type_date: str | None = None) -> list[dict]:
     """Observations sur une plage de dates, via `observations/search`.
 
     C'est la voie du moissonnage initial : `api_list` ne sait pas borner par date, et le
@@ -190,7 +191,8 @@ def observations_recherche(cfg, id_taxo_group: str, date_debut, date_fin,
     l'appelant, comme pour le connecteur GBIF.
     """
     return _extraire(_controleur(bio.ObservationsAPI, cfg).api_search(
-        parametres_recherche(id_taxo_group, date_debut, date_fin, territoires),
+        parametres_recherche(id_taxo_group, date_debut, date_fin, territoires,
+                             type_date),
         short_version=SHORT_VERSION))
 
 
@@ -233,7 +235,7 @@ def _ajuster(tranche: int, obtenus: int) -> int:
 
 def moissonner_recherche(cfg, id_taxo_group: str, date_debut, date_fin,
                          territoires: list[str], tranche_jours: int = TRANCHE_JOURS_DEFAUT,
-                         journal=None):
+                         journal=None, type_date: str | None = None):
     """Parcourt une période par tranches décroissantes, et livre les relevés.
 
     Générateur de `(debut, fin, territoire, releves)`, pour que l'appelant écrive au fil
@@ -246,6 +248,11 @@ def moissonner_recherche(cfg, id_taxo_group: str, date_debut, date_fin,
 
     Le parcours va de la fin vers le début, comme `transfer_vn` : les données récentes,
     les plus utiles, arrivent en premier, et une interruption laisse un corpus utilisable.
+
+    `type_date="entry"` fait porter la recherche sur la date de **saisie** et non sur
+    celle de l'observation. C'est ce qui permet un moissonnage incrémental par `search` :
+    on récupère ce qui a été saisi depuis la dernière exécution, y compris des
+    observations anciennes encodées récemment — que la date d'observation ferait manquer.
     """
     if not territoires:
         raise ValueError(
@@ -262,7 +269,7 @@ def moissonner_recherche(cfg, id_taxo_group: str, date_debut, date_fin,
             debut = max(date_debut, fin - timedelta(days=tranche))
             try:
                 releves = observations_recherche(cfg, id_taxo_group, debut, fin,
-                                                 [territoire])
+                                                 [territoire], type_date)
             except bio.HTTPError as erreur:
                 # ⚠ Un 403 sur `search` n'est PAS un défaut de droit : c'est un refus de
                 # VOLUME. Mesuré sur faune-occitanie.org avec les mêmes identifiants et

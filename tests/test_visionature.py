@@ -898,7 +898,7 @@ def test_un_refus_de_volume_retrecit_la_tranche_au_lieu_dabandonner(monkeypatch)
 
     demandes = []
 
-    def faux_recherche(cfg, groupe, debut, fin, territoires):
+    def faux_recherche(cfg, groupe, debut, fin, territoires, type_date=None):
         jours = (fin - debut).days
         demandes.append(jours)
         if jours > 4:
@@ -969,3 +969,24 @@ def test_un_echec_isole_ninterrompt_pas(monkeypatch):
 
     assert len(releves) == 200
     assert len(inaccessibles) == 100
+
+
+def test_lincrémental_cherche_par_date_de_saisie():
+    """`entry_date` fait porter la recherche sur la date de SAISIE.
+
+    C'est ce qui rend un incrémental possible par `search` — la seule voie qui porte de
+    la donnée sur cette instance : `api_get` et `api_list(id_sightings_list=…)` sont
+    refusés, y compris pour un groupe dont `search` répond.
+
+    Chercher par date d'observation manquerait les relevés anciens encodés récemment,
+    qui sont précisément ce qu'un moissonnage antérieur n'a pas pu voir.
+    """
+    from datetime import date
+    p = A.parametres_recherche("6", date(2026, 9, 1), date(2026, 9, 10), ["109"], "entry")
+    assert p["entry_date"] == "1"
+
+
+def test_sans_type_date_la_recherche_porte_sur_lobservation():
+    from datetime import date
+    p = A.parametres_recherche("6", date(2026, 9, 1), date(2026, 9, 10), ["109"])
+    assert "entry_date" not in p

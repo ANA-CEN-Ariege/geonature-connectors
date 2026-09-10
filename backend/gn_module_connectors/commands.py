@@ -764,14 +764,19 @@ def vn_import(groupes, since, batch_size, dry_run):
     date_debut = date_fin = None
     territoires: list[str] = []
     tranche_jours = int(cfg.get("tranche_jours", vn_api.TRANCHE_JOURS_DEFAUT))
-    if not since:
+    # `search` est la seule voie qui porte de la donnée : `api_get` et
+    # `api_list(id_sightings_list=…)` sont refusés. L'incrémental passe donc lui aussi
+    # par `search`, avec `entry_date` — recherche par date de SAISIE, ce qui rattrape
+    # aussi les observations anciennes encodées récemment.
+    if True:
         from datetime import date as _date
-        brut = str(cfg.get("date_debut") or "").strip()
+        brut = since or str(cfg.get("date_debut") or "").strip()
         try:
             date_debut = _date.fromisoformat(brut) if brut else _date(1900, 1, 1)
         except ValueError:
             raise click.ClickException(
-                f"[visionature] date_debut = {brut!r} n'est pas une date ISO (AAAA-MM-JJ).")
+                f"{'--since' if since else '[visionature] date_debut'} = {brut!r} "
+                f"n'est pas une date ISO (AAAA-MM-JJ).")
         date_fin = _date.today()
 
         # L'API refuse une recherche non bornée territorialement : 403 sans périmètre,
@@ -780,7 +785,7 @@ def vn_import(groupes, since, batch_size, dry_run):
         voulus = {str(d).strip().zfill(2) for d in (cfg.get("departements") or [])}
         if not voulus:
             raise click.ClickException(
-                "Un moissonnage complet exige [visionature] departements : l'API refuse "
+                "Le moissonnage exige [visionature] departements : l'API refuse "
                 "une recherche sans périmètre territorial, et sans lui vous "
                 "moissonneriez toute l'étendue de l'instance. "
                 "`vn-territoires` liste les valeurs disponibles.")
@@ -791,7 +796,8 @@ def vn_import(groupes, since, batch_size, dry_run):
             raise click.ClickException(
                 f"Aucune unité territoriale de l'instance ne correspond à "
                 f"{sorted(voulus)}. Vérifiez avec `vn-territoires`.")
-        click.echo(f"  moissonnage complet : {date_debut} → {date_fin}, "
+        click.echo(f"  {'incrémental (date de saisie)' if since else 'moissonnage complet'} : "
+                   f"{date_debut} → {date_fin}, "
                    f"territoire(s) {', '.join(territoires)}, "
                    f"tranches de {tranche_jours} jour(s) ajustées au volume")
 
@@ -804,6 +810,15 @@ def vn_import(groupes, since, batch_size, dry_run):
         # Annoncer le groupe AVANT de l'interroger : ces requêtes durent parfois
         # plusieurs dizaines de secondes, et sans cette ligne le moissonnage paraît figé.
         click.echo(f"  [{rang}/{len(groupes)}] groupe {groupe}…")
+
+        def _tranche(territoire, debut, fin_t, n):
+            if n < 0:
+                click.secho(f"    {territoire} {debut:%Y-%m-%d} → {fin_t:%Y-%m-%d} : "
+                            f"refus, tranche rétrécie", fg="yellow")
+            else:
+                click.echo(f"    {territoire} {debut:%Y-%m-%d} → {fin_t:%Y-%m-%d} : "
+                           f"{n} relevé(s)")
+
         if since:
             # Les suppressions d'abord : une observation supprimée puis recréée sous le
             # même identifiant serait sinon retirée après avoir été réécrite.
@@ -819,36 +834,17 @@ def vn_import(groupes, since, batch_size, dry_run):
                     total_supprimes += n
                     click.echo(f"    {len(supprimes)} relevé(s) supprimé(s) à la "
                                f"source -> {n} observation(s) retirée(s)")
-            def _avancement(faits, total):
-                if total > vn_api.LOT_IDENTIFIANTS:
-                    click.echo(f"    récupération : {faits}/{total} relevé(s)")
-
-            try:
-                releves, inaccessibles = vn_api.observations_modifiees(
-                    cfg, str(groupe), since, journal=_avancement)
-            except vn_api.GroupeInaccessible as erreur:
-                groupes_refuses.append((str(groupe), str(erreur)))
-                click.secho(f"    {erreur}", fg="yellow")
-                continue
-            except vn_api.bio.BiolovisionApiException as erreur:
-                groupes_refuses.append((str(groupe), f"diff : {erreur!r}"))
-                click.secho(f"    refusé par l'API ({erreur!r})", fg="yellow")
-                continue
-            for cle, motif in inaccessibles:
-                rejets.add("inaccessible", cle, "", motif)
-            lots = [releves]
+            # Les créations et modifications passent par `search` sur la date de
+            # SAISIE, comme le moissonnage complet : `diff` ne livre que des
+            # identifiants, et les deux voies qui permettraient de les résoudre —
+            # `api_get` et `api_list(id_sightings_list=…)` — sont refusées par l'API.
+            lots = (r for _d, _f, _t, r in vn_api.moissonner_recherche(
+                cfg, str(groupe), date_debut, date_fin, territoires,
+                tranche_jours=tranche_jours, journal=_tranche, type_date="entry"))
         else:
             # Moissonnage complet : par `search`, découpé en tranches de dates et borné
             # par territoire. `api_list` est déprécié en amont et refusé par l'API, et
             # une recherche sans périmètre l'est aussi — mesuré sur faune-occitanie.org.
-            def _tranche(territoire, debut, fin_t, n):
-                if n < 0:
-                    click.secho(f"    {territoire} {debut:%Y-%m-%d} → {fin_t:%Y-%m-%d} : "
-                                f"refus de volume, tranche rétrécie", fg="yellow")
-                else:
-                    click.echo(f"    {territoire} {debut:%Y-%m-%d} → {fin_t:%Y-%m-%d} : "
-                               f"{n} relevé(s)")
-
             lots = (releves for _d, _f, _t, releves in vn_api.moissonner_recherche(
                 cfg, str(groupe), date_debut, date_fin, territoires,
                 tranche_jours=tranche_jours, journal=_tranche))
