@@ -1033,10 +1033,10 @@ les publie dans la réponse : département, commune INSEE, maille 10 km, ZNIEFF,
 
 ### Limites connues
 
-`url_source` reste NULL : le permalien d'une observation dbChiro est
-`/sighting/<id>/detail`, et GeoNature construit son bouton « voir la donnée source » par
-simple concaténation de `url_source` et `entity_source_pk_value`, sans suffixe possible.
-Un lien tronqué mènerait à une 404 en laissant croire que la source est injoignable.
+Le bouton « voir la donnée source » passe par la redirection
+`/connectors/dbchiro/<id>` du module : le permalien dbChiro portant l'identifiant au
+milieu du chemin (`/sighting/<id>/detail`), la concaténation du cœur ne pouvait rien
+produire de valide.
 
 La suppression n'est pas gérée, comme pour GBIF. Les `countdetails` (sexe, âge, état
 sexuel) ne sont pas exposés par `/api/v1/search` : seul `total_count` remonte.
@@ -1053,7 +1053,7 @@ finir en erreur de décodage JSON.
 python3 -m pytest tests/ -q
 ```
 
-304 tests, sans dépendance à GeoNature ni à la base. Ils couvrent les cas qui ont
+308 tests, sans dépendance à GeoNature ni à la base. Ils couvrent les cas qui ont
 réellement mordu pendant le développement : le faux-ami `Nymph` / « Nymphe », les dates
 en intervalle ISO, l'asymétrie énumération/URL des licences, la distinction entre origine
 du taxon et état de l'individu, et le déterminisme de l'identifiant unique.

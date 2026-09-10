@@ -46,3 +46,28 @@ def voir_dans_visionature(id_sighting):
         abort(400, "Identifiant d'observation invalide.")
 
     return redirect(f"{instance}/index.php?m_id=54&id={cle}", code=302)
+
+
+@blueprint.route("/dbchiro/<id_sighting>", methods=["GET"])
+def voir_dans_dbchiro(id_sighting):
+    """Renvoie vers la fiche d'une observation sur l'instance dbChiro d'origine.
+
+    Même mécanique que pour VisioNature, pour une raison voisine mais distincte : le
+    permalien dbChiro est `/sighting/<id>/detail`, c'est-à-dire que l'identifiant est
+    **au milieu** du chemin. La concaténation du cœur — `url_source + '/' +
+    entity_source_pk_value` — ne peut donc rien produire de valide, quel que soit
+    l'`url_source` choisi. La redirection est ici le seul moyen, pas seulement le plus
+    propre.
+    """
+    from geonature.utils.config import config as gn_config
+
+    cfg = (gn_config.get("CONNECTORS") or {}).get("dbchiro", {})
+    instance = str(cfg.get("url") or "").rstrip("/")
+    if not instance:
+        abort(404, "Connecteur dbChiro non configuré.")
+
+    cle = str(id_sighting).strip()
+    if not cle.isdigit():
+        abort(400, "Identifiant d'observation invalide.")
+
+    return redirect(f"{instance}/sighting/{cle}/detail", code=302)

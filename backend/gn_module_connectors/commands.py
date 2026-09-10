@@ -1289,11 +1289,20 @@ def dbchiro_import(area, departements, importer_absences, max_results, batch_siz
         click.secho("  ⚠ paramètre `taxref_version` absent de gn_commons.t_parameters : "
                     "meta_v_taxref restera NULL.", fg="yellow")
 
-    # `url_source` reste NULL, à dessein. Le permalien d'une observation dbChiro est
-    # `/sighting/<id>/detail` : GeoNature construit son bouton « voir la donnée source »
-    # en concaténant `url_source` et `entity_source_pk_value`, sans suffixe possible.
-    # Un lien tronqué serait pire qu'une absence de lien — il mènerait à une 404 en
-    # laissant croire que la source est injoignable.
+    # `url_source` pointe sur la redirection du module. Le permalien dbChiro est
+    # `/sighting/<id>/detail` : l'identifiant est au milieu du chemin, donc la
+    # concaténation du cœur — `url_source + '/' + entity_source_pk_value` — ne peut rien
+    # produire de valide. `blueprint.voir_dans_dbchiro` reconstruit l'URL complète, et
+    # `entity_source_pk_value` garde l'identifiant brut.
+    api = str(gn_config.get("API_ENDPOINT") or "").rstrip("/")
+    if api:
+        db.session.execute(
+            db_text("UPDATE gn_synthese.t_sources SET url_source = :u "
+                    "WHERE id_source = :s AND url_source IS DISTINCT FROM :u"),
+            {"u": f"{api}/connectors/dbchiro", "s": id_source})
+    else:
+        click.secho("  ⚠ API_ENDPOINT absent de la configuration GeoNature : le bouton "
+                    "« voir la donnée source » ne sera pas alimenté.", fg="yellow")
 
     # La table taxonomique est vérifiée contre TAXREF avant toute écriture : un cd_nom
     # déprécié par une montée de version satisfait la clé étrangère sans qu'aucun
