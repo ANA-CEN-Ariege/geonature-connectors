@@ -1211,7 +1211,10 @@ def vn_vider_cache():
               help="Journalise la requête réelle, pour comparer avec transfer_vn.")
 @click.option("--jours", default=60,
               help="Fenêtre des sondes de recherche, en jours (défaut : 60).")
-def vn_diagnostic(groupe, debug, jours):
+@click.option("--territoire", default="",
+              help="Unité territoriale à sonder (id_country + short_name, ex. 109). "
+                   "Par défaut, celles déduites de [visionature] departements.")
+def vn_diagnostic(groupe, debug, jours, territoire):
     """Sonde les points d'entrée de l'API et rapporte ce que le compte peut faire.
 
     Les droits Biolovision ne sont pas uniformes : `observations/diff` peut fonctionner
@@ -1369,14 +1372,20 @@ def vn_diagnostic(groupe, debug, jours):
     # boucle `for t_u in t_us:` pose systématiquement `location_choice` et
     # `territorial_unit_ids`. Une recherche non bornée n'est donc pas ce qu'ils envoient,
     # et l'API peut légitimement la refuser — c'est un balayage de toute l'instance.
-    voulus = {str(d).strip().zfill(2) for d in (cfg.get("departements") or [])}
-    try:
-        unites = vn_api.unites_territoriales(cfg)
-    except bio.BiolovisionApiException:
-        unites = []
-    territoires = [t for t in (vn_api.identifiant_territoire(u) for u in unites
-                               if not voulus or str(u.get("short_name") or "") in voulus)
-                   if t]
+    if territoire:
+        # Sonder un territoire imposé permet d'isoler la variable territoriale. Le
+        # journal de transfer_vn de la LPO montre un téléchargement d'oiseaux sur
+        # l'unité 11 (Aude) là où nos sondes portaient sur 09 (Ariège).
+        territoires = [territoire]
+    else:
+        voulus = {str(d).strip().zfill(2) for d in (cfg.get("departements") or [])}
+        try:
+            unites = vn_api.unites_territoriales(cfg)
+        except bio.BiolovisionApiException:
+            unites = []
+        territoires = [t for t in (vn_api.identifiant_territoire(u) for u in unites
+                                   if not voulus
+                                   or str(u.get("short_name") or "") in voulus) if t]
     if territoires:
         apercu = ", ".join(territoires[:3]) + ("…" if len(territoires) > 3 else "")
         # Les deux formes, côte à côte. La forme courte ampute `observers[]` de
