@@ -33,7 +33,13 @@ def normaliser(codes) -> set[str]:
 
 
 def departement(sighting: dict) -> str | None:
-    """Code de département d'un relevé, d'après son lieu."""
+    """Code de département d'un relevé, d'après son lieu.
+
+    ⚠ Les champs disponibles dépendent du format de réponse. Un export du portail porte
+    `county`, `insee` et `municipality` ; la réponse d'API au format court peut n'en
+    porter aucun. D'où le repli, puis `None` — que l'appelant interprète selon qu'il a
+    déjà borné le territoire côté serveur ou non.
+    """
     lieu = sighting.get("place") or {}
     code = _code(lieu.get("county"))
     if code:
@@ -44,14 +50,25 @@ def departement(sighting: dict) -> str | None:
     return insee[:2] if len(insee) >= 2 else None
 
 
-def dans_perimetre(sighting: dict, codes: set[str]) -> bool:
+def dans_perimetre(sighting: dict, codes: set[str], borne_serveur: bool = False) -> bool:
     """Le relevé est-il dans le périmètre ? Sans filtre configuré, tout passe.
 
-    Un relevé dont le département est indéterminable est **écarté** quand un filtre est
-    actif. Le laisser entrer ferait du filtre une passoire silencieuse : mieux vaut le
-    voir dans le journal des rejets et décider en connaissance de cause.
+    `borne_serveur` dit si la source a **déjà** restreint le territoire. C'est le cas du
+    moissonnage complet, qui passe par `observations/search` avec `territorial_unit_ids` :
+    l'API ne renvoie alors que le territoire demandé, et sa garantie vaut la nôtre.
+
+    Ce paramètre n'est pas une commodité, il corrige une erreur. La réponse au format
+    court ne porte pas toujours le rattachement administratif dans `place` ; un relevé
+    dont le département est indéterminable était donc écarté, et un moissonnage
+    territorialement borné rejetait **la totalité** de ce qu'il venait de télécharger —
+    mesuré : 472 relevés lus, 472 écartés.
+
+    Hors de ce cas, l'indétermination reste un rejet : sans borne serveur, laisser passer
+    ce qu'on ne sait pas situer ferait du filtre une passoire silencieuse.
     """
     if not codes:
         return True
     dep = departement(sighting)
-    return dep is not None and dep in codes
+    if dep is None:
+        return borne_serveur
+    return dep in codes

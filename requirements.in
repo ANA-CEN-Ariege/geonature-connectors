@@ -1,3 +1,8 @@
-requests
+# Versions alignées sur celles qu'exige Client_API_VN, dont la couche API est
+# vendorisée dans sources/visionature/biolovision/. Une signature OAuth1 dépend de
+# l'implémentation qui la produit : faire tourner un client donné avec une autre
+# version de requests_oauthlib que celle contre laquelle il est développé peut
+# produire une signature que l'API refuse — un 403 indiscernable d'un droit manquant.
+requests>=2.32
 # Signature OAuth1, exigée par l'API Biolovision (VisioNature).
-requests_oauthlib
+requests_oauthlib>=2.0

@@ -189,7 +189,32 @@ class VisioNatureSchemaConf(Schema):
     # erreur, d'où la vérification systématique sur `departements` ci-dessus.
     # `geonature connectors vn-territoires` liste les valeurs de l'instance.
     filtre_api = fields.Dict(load_default=dict)
-    max_retry = fields.Integer(load_default=3)
+    # ── Moissonnage complet ──────────────────────────────────────────────────
+    # Le moissonnage complet passe par `observations/search` : `api_list` est déprécié
+    # en amont et refusé par l'API. Une recherche sans périmètre territorial est refusée
+    # elle aussi, d'où le caractère obligatoire de `departements` dans ce mode.
+    # Début de l'historique. Vide = 1900-01-01.
+    date_debut = fields.String(load_default="")
+    # Taille de tranche initiale, ajustée automatiquement selon le volume rendu.
+    tranche_jours = fields.Integer(load_default=15)
+
+    # ── Cache des référentiels ───────────────────────────────────────────────
+    # Durée de validité en heures. 0 = désactivé, et c'est le défaut.
+    # Un moissonnage commence par trois téléchargements — espèces, groupes, observateurs —
+    # soit plusieurs minutes avant la première observation traitée. Le cache les évite
+    # pendant la mise au point.
+    # ⚠ Le référentiel des observateurs contient des NOMS DE PERSONNES. L'activer les
+    # écrit sur disque (fichiers en 0600), ce que le reste du module évite soigneusement.
+    # ⚠ Un référentiel périmé produit des correspondances taxonomiques fausses et des
+    # consentements obsolètes, sans que rien ne le signale. Outil de mise au point, pas
+    # de production. `geonature connectors vn-vider-cache` efface.
+    cache_heures = fields.Float(load_default=0)
+    # Répertoire de cache. Vide = ~/.cache/gn_module_connectors (ou XDG_CACHE_HOME).
+    cache_dir = fields.String(load_default="")
+    # Tentatives sur erreur transitoire (5xx). L'instance Faune-Occitanie rend des 502
+    # et 504 sous charge ; cinq essais coûtent quelques secondes et évitent de perdre un
+    # moissonnage entier sur un incident passager.
+    max_retry = fields.Integer(load_default=5)
     max_chunks = fields.Integer(load_default=100)
     # ⚠ Secondes. Doit être fourni : dans le client Biolovision vendorisé, `timeout` est
     # le seul paramètre du constructeur sans valeur par défaut. Laissé à None, `requests`

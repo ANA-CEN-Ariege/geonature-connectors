@@ -242,6 +242,8 @@ geonature connectors vn-import
 geonature connectors vn-import --since 2026-01-01   # incrémental
 geonature connectors vn-reanonymiser                # simulation
 geonature connectors vn-reanonymiser --yes
+geonature connectors vn-purge                       # simulation
+geonature connectors vn-purge --taxon Reptilia --yes
 ```
 
 ⚠️ **`--since` ne remonte pas au-delà de dix semaines.** C'est la fenêtre que l'API
@@ -255,11 +257,21 @@ L'incrémental traite les **suppressions avant les modifications** : une observa
 supprimée puis recréée sous le même identifiant serait sinon retirée après avoir été
 réécrite.
 
-⚠️ **`observations/diff` ne livre pas les observations**, seulement la liste de ce qui a
-changé — un identifiant et un type de modification par entrée. Chaque relevé signalé est
-donc récupéré ensuite par `api_get`, soit **une requête par relevé modifié**. C'est
-acceptable pour un delta, mais c'est aussi pourquoi `--since` ne remplace pas un
-moissonnage complet : sur un intervalle large, le nombre de requêtes explose.
+**`observations/diff` ne livre pas les observations**, seulement la liste de ce qui a
+changé : `id_sighting`, `id_universal`, `modification_type`. Il sert donc à **répercuter
+les suppressions**, et à cela seulement.
+
+⚠️ Les deux voies qui permettraient d'en résoudre les identifiants — `api_get`, une
+observation à la fois, et `api_list(id_sightings_list=…)`, cent à la fois comme le fait
+`_store_update` de `transfer_vn` — peuvent être **refusées par l'API alors même que
+`diff` répond**. Mesuré sur faune-occitanie.org : 403 sur les deux, y compris pour un
+groupe dont `search` accepte les requêtes.
+
+Les créations et modifications passent donc par `search` avec **`entry_date`**, qui fait
+porter la recherche sur la date de **saisie** et non sur celle de l'observation. C'est
+plus juste de toute façon : chercher par date d'observation manquerait les relevés
+anciens encodés récemment, qui sont précisément ce qu'un moissonnage antérieur n'a pas pu
+voir.
 
 Un relevé peut être listé par le différentiel sans être lisible individuellement — l'API
 répond alors 403. Le client vendorisé traitant tout 4xx comme irrécupérable, une seule
@@ -284,6 +296,166 @@ laissées en l'état et signalées : leur pseudonyme est la seule information do
 dispose. Seules les lignes dont la valeur change sont réécrites.
 
 À passer périodiquement — le rattrapage n'a pas de déclencheur naturel.
+
+### Accélérer la mise au point : le cache des référentiels
+
+Un moissonnage commence par trois téléchargements — espèces (63 616 sur
+Faune-Occitanie), groupes taxonomiques, observateurs (246 699) — soit plusieurs minutes
+avant que la première observation ne soit traitée. Pénible quand on règle un import.
+
+```toml
+[visionature]
+cache_heures = 24        # 0 = désactivé, et c'est le défaut
+# cache_dir = "…"        # défaut : ~/.cache/gn_module_connectors
+```
+
+```bash
+geonature connectors vn-vider-cache
+```
+
+⚠️ **Désactivé par défaut, et à laisser désactivé en production**, pour deux raisons
+distinctes :
+
+- le référentiel des observateurs contient des **noms de personnes**. L'activer les écrit
+  sur disque — en 0600, mais en clair — alors que tout le dispositif d'anonymisation vise
+  précisément à ne pas les conserver. Le module l'avertit explicitement à l'écriture ;
+- un référentiel périmé produit des correspondances taxonomiques fausses et des
+  consentements obsolètes, **sans que rien ne le signale**.
+
+La clé de cache inclut l'URL de l'instance : passer de Faune-France à Faune-Occitanie ne
+sert jamais le référentiel de l'autre. Un fichier illisible, corrompu ou sans horodatage
+vaut absence de cache — une optimisation n'a pas le droit de faire échouer ce qu'elle
+accélère.
+
+### Le moissonnage complet passe par `search`, borné par territoire
+
+⚠️ **`api_list` sur les observations est déprécié en amont et refusé par l'API.**
+`Client_API_VN` le journalise sans ambiguïté : *« Download using list method is
+deprecated. Please use search method only »*. Un 403 sur ce point d'entrée est donc
+attendu, et ne signale aucun droit manquant.
+
+⚠️ **Deux 403 distincts coexistent sur `search`, et ils ne veulent pas dire la même
+chose.** Relevé sur faune-occitanie.org, en sondant les quarante-neuf groupes avec les
+mêmes identifiants, le même territoire et la même fenêtre :
+
+| corps de la réponse | groupes concernés | lecture |
+|---|---|---|
+| `"you are not authorized to access this taxonomic group"` | exactement ceux dont `access_mode` vaut `none` | refus de droit, explicite |
+| **vide** | des groupes en `access_mode = full`, y compris minuscules | périmètre de la clé d'API |
+
+Le volume ne l'explique pas : les chiroptères comptent 74 modifications quotidiennes sur
+**toute** l'Occitanie, donc une poignée en Ariège, et sont refusés comme les oiseaux. Le
+seul groupe servi était les reptiles.
+
+Autrement dit, le périmètre d'export d'une clé Biolovision se décide **par groupe
+taxonomique**, indépendamment de l'`access_mode` du portail, et un refus de périmètre ne
+se distingue d'un refus de droit que par la présence ou l'absence d'un message. Le
+diagnostic les affiche tous deux ; c'est ce qu'il faut porter à l'administrateur de
+l'instance pour demander une extension.
+
+Le moissonnage rétrécit malgré tout sa tranche deux fois avant d'abandonner : si un refus
+tient au volume, il passera ; sinon on ne divise pas indéfiniment une plage qui ne sera
+jamais servie. Le rétrécissement n'est tenté que s'il change effectivement la fenêtre
+interrogée — sur une plage plus courte que la tranche, réduire celle-ci rejouerait la
+même requête.
+
+⚠️ **Et une recherche sans périmètre territorial est refusée elle aussi.** Mesuré sur
+faune-occitanie.org : `POST /observations/search/` sans `territorial_unit_ids` renvoie
+403, avec renvoie 200. `transfer_vn` n'en émet d'ailleurs jamais sans périmètre — sa
+boucle pose systématiquement `location_choice` et `territorial_unit_ids`. Un balayage de
+toute une instance régionale n'est pas une requête que l'API sert.
+
+Ces deux constats ont coûté plusieurs heures parce qu'un 403 ressemble à un droit
+manquant. Il n'en était rien : les mêmes identifiants fonctionnent parfaitement dès que
+la requête est celle que l'API attend.
+
+```toml
+[visionature]
+departements = ["09"]        # OBLIGATOIRE en moissonnage complet
+date_debut = "2015-01-01"    # vide = tout l'historique
+tranche_jours = 15
+```
+
+Le moissonnage parcourt la période de la fin vers le début, territoire par territoire.
+La tranche est **ajustée au volume rendu** — réduite si elle déborde, élargie si elle est
+creuse — pour viser le même ordre de grandeur que `transfer_vn`, qui régule par un PID
+autour de 10 000 observations. Une interruption laisse donc un corpus utilisable, les
+données récentes étant traitées en premier.
+
+⚠️ **La forme du JSON n'est pas un détail de volumétrie.** `short_version=1` demande la
+forme réduite, et sur faune-occitanie.org `observers[]` n'y porte que `@id`, `@uid`,
+`altitude`, `comment`, `coord_lat`, `coord_lon`, `count`, `estimation_code`,
+`flight_number`, `gps_lat`, `gps_lon`, `hidden`, `id_sighting`, `id_universal`.
+
+Manquent donc `atlas_code`, `details`, `behaviours`, `timing`, `uuid`, `medias`,
+`extended_info`, `project_code`, `second_hand` — et `name`, le nom de l'observateur. Soit :
+ni statut de reproduction, ni heure, ni identifiant SINP natif, ni mortalité, ni preuve
+d'existence, ni jeu de données par code projet, ni observateur nommé. Le module emploie
+donc la **forme longue**. `transfer_vn` recommande la courte pour sa volumétrie ; ce
+n'est pas notre besoin.
+
+Le `place` de la forme courte est amputé de la même façon : il porte `loc_precision` mais
+ni `county` ni `insee`, d'où l'impossibilité d'en déduire le département.
+
+`search` renvoie des **relevés complets** (`date`, `observers`, `place`, `species`),
+contrairement au différentiel qui ne livre que des identifiants. C'est ce qui rend le
+moissonnage complet praticable là où le différentiel imposerait une requête par
+observation.
+
+### Diagnostiquer un 403 sur `observations`
+
+Un 403 de l'API Biolovision ressemble à un défaut de code. Ce n'en est pas
+nécessairement un, et l'établir demande d'éliminer les variables une à une. Voici le
+tableau d'une investigation menée sur faune-occitanie.org, à conserver pour la prochaine.
+
+**Ce qui a été éliminé, avec la mesure correspondante :**
+
+| variable | vérification | verdict |
+|---|---|---|
+| code du client | `diff` de `biolovision/api.py` contre l'amont | identique |
+| paramètres de `search` | comparés au tag `v2.12.0` de Client_API_VN | identiques |
+| versions | `requests` 2.32.5, `requests_oauthlib` 2.0.0 | conformes |
+| URL | comparée à la configuration LPO | identique |
+| forme du JSON | `short_version` 0 et 1 sondés | 403 des deux côtés |
+| périmètre territorial | avec et sans, plusieurs unités | 403 dans tous les cas |
+| groupe taxonomique | les 49 sondés | seul un groupe répondait |
+| volume | 74 modifications/jour sur toute la région | 403 quand même |
+| ancienneté des données | 2019 et 2026 | 403 des deux côtés |
+
+**Ce qui reste, une fois tout cela éliminé :** le périmètre attaché aux identifiants.
+
+Le point de comparaison décisif est un journal `transfer_vn` d'un tiers, sur la **même
+instance**, montrant un téléchargement abouti pour le même groupe, le même territoire et
+la même période — donc une requête réputée servie. Si la nôtre est identique et refusée,
+la différence est dans les identifiants, quoi qu'on en pense par ailleurs.
+
+**Les commandes de diagnostic** existent pour mener cette élimination sans tâtonner :
+
+```bash
+geonature connectors vn-diagnostic --taxo-group 6      # points d'entrée, champs reçus
+geonature connectors vn-diagnostic --territoire 111 --fin 2019-01-20 --jours 10
+geonature connectors vn-volumetrie                     # les 49 groupes d'un coup
+geonature connectors vn-territoires                    # identifiants à employer
+geonature connectors vn-groupes                        # codes et access_mode
+```
+
+⚠️ **401 et 403 ne disent pas la même chose**, et les confondre coûte cher :
+
+- **401** `Can't verify request, missing oauth_consumer_key or oauth_token (3Leg)` : la
+  signature OAuth n'est pas vérifiable. `client_key` ou `client_secret` est absent ou
+  erroné, et l'API ne reconnaît pas le demandeur. Rien à voir avec les droits.
+- **403** : le demandeur est reconnu, mais n'est pas autorisé sur cette ressource. **La
+  clé est donc valide** ; c'est son périmètre qui est en cause.
+
+Obtenir un 401 avec un second jeu d'identifiants est ainsi une façon simple de confirmer
+que le premier est bien authentifié.
+
+⚠️ Deux formes de 403 coexistent, et seule la première se nomme :
+
+- `"you are not authorized to access this taxonomic group"` et `"you are not allowed to
+  access this resource"` : refus explicites, obtenus sur les groupes en `access_mode:
+  none` et sur le contrôleur `observers` ;
+- **corps vide** : tout le reste. C'est celui qui coûte des heures.
 
 ### Restreindre le périmètre
 
@@ -352,6 +524,20 @@ par un tiers, donc réidentifiables.
 Elle est exigée même si aucun observateur ne demande l'anonymat : le module écrit
 systématiquement un identifiant pseudonymisé dans `additional_data.observateur`, quel que
 soit le sort du nom. Sans elle, `vn-import` refuse de démarrer.
+
+Le consentement est lu **dans le relevé lui-même** : la forme longue de l'API porte
+`anonymous` et `anonymous_in_export` sur chaque observation. C'est la source la plus
+sûre — elle vaut au moment de l'observation, et non au moment où l'on consulte un
+référentiel.
+
+Le référentiel des observateurs n'est donc plus qu'un repli, pour les réponses qui ne
+portent pas ces champs. Il n'est **chargé qu'au premier relevé qui en a besoin**, et le
+plus souvent jamais : sur Faune-Occitanie il pèse 246 699 inscrits, soit plusieurs
+minutes de téléchargement et autant de noms de personnes en mémoire, qu'il serait absurde
+de payer d'avance pour un cas devenu rare.
+
+⚠️ `vn-reanonymiser`, lui, le charge toujours : c'est sa raison d'être, puisqu'il sert
+précisément à rattraper les changements d'avis exprimés après l'import.
 
 #### Générer la clé de pseudonymisation
 
@@ -831,7 +1017,7 @@ finir en erreur de décodage JSON.
 python3 -m pytest tests/ -q
 ```
 
-248 tests, sans dépendance à GeoNature ni à la base. Ils couvrent les cas qui ont
+285 tests, sans dépendance à GeoNature ni à la base. Ils couvrent les cas qui ont
 réellement mordu pendant le développement : le faux-ami `Nymph` / « Nymphe », les dates
 en intervalle ISO, l'asymétrie énumération/URL des licences, la distinction entre origine
 du taxon et état de l'individu, et le déterminisme de l'identifiant unique.
@@ -841,6 +1027,12 @@ d'absence qui deviendraient des présences, le couple `Nyctalus / Tadarida` qui 
 une frontière de famille, le contresens « Estivage » → estivation, et la primauté d'une
 détermination douteuse sur la pré-validation globale. Les données de référence viennent
 d'un sondage réel de l'instance, pas d'exemples inventés.
+
+`tests/test_noms_definis.py` passe le module à l'analyse statique. Les imports sont
+locaux aux commandes — pour ne pas charger l'API Biolovision quand on lance une commande
+GBIF —, si bien qu'un import oublié ne se voit ni à l'import du module ni à la
+compilation : il attend l'exécution, après le chargement des référentiels d'espèces et
+d'observateurs, soit plusieurs minutes avant le `NameError`. C'est arrivé deux fois.
 
 `tests/test_insert_alignement.py` mérite une mention à part : il confronte les `to_row`
 des trois sources au texte de `INSERT_SQL`, dans les deux sens. Un paramètre lié manquant

@@ -257,11 +257,25 @@ GROUPES_PAR_DEFAUT = {
 
 
 def index_groupes(groupes: list[dict]) -> dict[str, str]:
-    """Index identifiant -> code, depuis la réponse du contrôleur `taxo_groups`."""
+    """Index identifiant -> code, depuis la réponse du contrôleur `taxo_groups`.
+
+    ⚠ Le code est dans `name_constant`, PAS dans `name`. Le contrôleur renvoie
+    `{"id": "6", "name": "Reptiles", "name_constant": "TAXO_GROUP_REPTILIAN",
+      "latin_name": "Reptilia", "access_mode": …}` — `name` est le **libellé traduit**,
+    donc variable d'une instance et d'une langue à l'autre.
+
+    Ce module a longtemps lu `name`. L'index associait alors « Reptiles » à l'identifiant
+    6, tandis que les règles sont indexées par `TAXO_GROUP_REPTILIAN` : aucune ne pouvait
+    s'apparier, et **tout le dispositif de reproduction des non-oiseaux était inerte**.
+    Rien ne le signalait — un groupe sans règle est un cas normal, indiscernable d'un
+    groupe dont le code n'a pas été reconnu.
+    """
     index = {}
     for g in groupes or []:
         identifiant = str(g.get("id") or g.get("@id") or "").strip()
-        code = str(g.get("name") or "").strip()
+        # `name` en repli : mieux vaut un libellé qui n'appariera rien qu'un index vide,
+        # lequel ferait retomber tout le module sur les identifiants de Faune-France.
+        code = str(g.get("name_constant") or g.get("name") or "").strip()
         if identifiant and code:
             index[identifiant] = code
     return index

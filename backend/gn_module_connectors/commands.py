@@ -620,10 +620,10 @@ def vn_import(groupes, since, batch_size, dry_run):
     from geonature.core.gn_meta.models import TDatasets
     from .core import (report as report_core, synthese as syn_core,
                        datasets as ds_core, nomenclatures as nomen_core,
-                       purge as purge_core)
+                       purge as purge_core, cache as cache_core)
     from .sources.visionature import (api as vn_api, taxonomy as vn_taxo,
                                      transform as vn_tr, confidentialite as vn_conf,
-                                     reproduction as vn_repro)
+                                     reproduction as vn_repro, perimetre as vn_perim)
     from .migrations.e91b4c07a2d8_source_visionature import SOURCE_NAME, CA_UUID
 
     cfg = (gn_config.get("CONNECTORS") or {}).get("visionature", {})
@@ -667,8 +667,26 @@ def vn_import(groupes, since, batch_size, dry_run):
                 "WHERE id_source = :s AND url_source IS DISTINCT FROM :u"),
         {"u": f"{instance}/index.php?m_id=54&id=", "s": id_source})
 
+    # Cache des référentiels : outil de mise au point, désactivé par défaut. Voir
+    # `core/cache.py` — le référentiel des observateurs contient des noms de personnes.
+    heures = float(cfg.get("cache_heures", 0) or 0)
+    dossier_cache = cfg.get("cache_dir") or None
+
+    def referentiel(nom, chargeur, personnel=False):
+        contenu = cache_core.charger(nom, instance, heures, dossier_cache)
+        if contenu is not None:
+            click.echo(f"  {nom} : depuis le cache ({heures:g} h)")
+            return contenu
+        contenu = chargeur()
+        fichier = cache_core.enregistrer(nom, instance, contenu, heures, dossier_cache)
+        if fichier and personnel:
+            click.secho(f"  ⚠ {nom} mis en cache dans {fichier} — il contient des noms "
+                        f"de personnes. Fichier en 0600 ; `vn-vider-cache` l'efface.",
+                        fg="yellow")
+        return contenu
+
     click.echo("Chargement du référentiel d'espèces…")
-    especes = vn_api.especes(cfg)
+    especes = referentiel("especes", lambda: vn_api.especes(cfg))
     index, non_resolues = vn_taxo.construire_index(especes, journal=click.echo)
     if not index:
         raise click.ClickException(
@@ -685,8 +703,18 @@ def vn_import(groupes, since, batch_size, dry_run):
     # et le désigner par son code (`TAXO_GROUP_BAT`) plutôt que par son identifiant
     # numérique est ce qui rend la table de correspondance transposable d'une instance à
     # l'autre. Sans cet index, le module retombe sur les identifiants de Faune-France.
-    index_groupes = vn_repro.index_groupes(vn_api.groupes_taxonomiques(cfg))
-    groupes = list(groupes) or cfg.get("taxo_groups") or list(index_groupes)
+    groupes_bruts = referentiel("groupes", lambda: vn_api.groupes_taxonomiques(cfg))
+    index_groupes = vn_repro.index_groupes(groupes_bruts)
+    # `access_mode` vaut « full », « limited » ou « none ». `transfer_vn` saute les
+    # groupes fermés au compte ; les interroger ne peut produire qu'un refus, et sur
+    # une instance qui en compte quarante-neuf ce sont autant d'appels perdus.
+    fermes = {str(g.get("id") or g.get("@id") or "").strip()
+              for g in groupes_bruts if str(g.get("access_mode") or "") == "none"}
+    groupes = list(groupes) or cfg.get("taxo_groups") or [
+        identifiant for identifiant in index_groupes if identifiant not in fermes]
+    if fermes and not cfg.get("taxo_groups"):
+        click.echo(f"  {len(fermes)} groupe(s) fermé(s) au compte (access_mode = none), "
+                   f"écarté(s) : {', '.join(sorted(fermes))}")
     click.echo(f"{len(groupes)} groupe(s) taxonomique(s) à traiter.")
 
     resolver = nomen_core.Resolver()
@@ -708,17 +736,16 @@ def vn_import(groupes, since, batch_size, dry_run):
 
     # Le consentement est individuel : chaque observateur déclare dans VisioNature si son
     # nom peut être diffusé. Un interrupteur global écraserait ce choix.
-    index_anonymat = {}
-    if not forcer_anonymat:
-        obs_ref = vn_api.observateurs(cfg)
-        index_anonymat = vn_conf.index_anonymat(obs_ref)
-        anonymes = sum(1 for v in index_anonymat.values() if v)
-        click.echo(f"  référentiel des observateurs : {len(index_anonymat)} inscrit(s), "
-                   f"{anonymes} ayant demandé l'anonymat")
-        if not index_anonymat:
-            click.secho("  ⚠ référentiel vide : tous les observateurs seront "
-                        "pseudonymisés, l'ignorance ne valant pas consentement.", fg="yellow")
-    else:
+    # Le référentiel des observateurs pèse 246 699 inscrits sur Faune-Occitanie, soit
+    # plusieurs minutes de téléchargement. Depuis que le consentement est lu dans le
+    # relevé lui-même — `anonymous` et `anonymous_in_export`, présents en forme longue —
+    # il n'est plus qu'un repli pour la forme courte. On ne le charge donc qu'à la
+    # première observation qui en a réellement besoin, et le plus souvent jamais.
+    index_anonymat = _IndexAnonymat(
+        lambda: vn_conf.index_anonymat(
+            referentiel("observateurs", lambda: vn_api.observateurs(cfg),
+                        personnel=True)))
+    if forcer_anonymat:
         click.echo("  anonymat forcé pour tous les observateurs")
     respecter = cfg.get("respecter_confidentialite", True)
     niveau_masquees = cfg.get("niveau_diffusion_masquees", "4")
@@ -732,76 +759,163 @@ def vn_import(groupes, since, batch_size, dry_run):
                     "sera moissonnée.", fg="yellow")
     par_projet = cfg.get("jdd_par_code_projet", True)
 
+    # ── Périmètre temporel et territorial du moissonnage complet ────────────
+    # Inutile de les établir en incrémental : le différentiel s'en passe.
+    date_debut = date_fin = None
+    territoires: list[str] = []
+    tranche_jours = int(cfg.get("tranche_jours", vn_api.TRANCHE_JOURS_DEFAUT))
+    # `search` est la seule voie qui porte de la donnée : `api_get` et
+    # `api_list(id_sightings_list=…)` sont refusés. L'incrémental passe donc lui aussi
+    # par `search`, avec `entry_date` — recherche par date de SAISIE, ce qui rattrape
+    # aussi les observations anciennes encodées récemment.
+    if True:
+        from datetime import date as _date
+        brut = since or str(cfg.get("date_debut") or "").strip()
+        try:
+            date_debut = _date.fromisoformat(brut) if brut else _date(1900, 1, 1)
+        except ValueError:
+            raise click.ClickException(
+                f"{'--since' if since else '[visionature] date_debut'} = {brut!r} "
+                f"n'est pas une date ISO (AAAA-MM-JJ).")
+        date_fin = _date.today()
+
+        # L'API refuse une recherche non bornée territorialement : 403 sans périmètre,
+        # 200 avec. L'identifiant attendu est `id_country` suivi du `short_name`, soit
+        # « 109 » pour l'Ariège — c'est ce que compose transfer_vn.
+        voulus = {str(d).strip().zfill(2) for d in (cfg.get("departements") or [])}
+        if not voulus:
+            raise click.ClickException(
+                "Le moissonnage exige [visionature] departements : l'API refuse "
+                "une recherche sans périmètre territorial, et sans lui vous "
+                "moissonneriez toute l'étendue de l'instance. "
+                "`vn-territoires` liste les valeurs disponibles.")
+        unites = referentiel("territoires", lambda: vn_api.unites_territoriales(cfg))
+        territoires = [t for t in (vn_api.identifiant_territoire(u) for u in unites
+                                   if str(u.get("short_name") or "") in voulus) if t]
+        if not territoires:
+            raise click.ClickException(
+                f"Aucune unité territoriale de l'instance ne correspond à "
+                f"{sorted(voulus)}. Vérifiez avec `vn-territoires`.")
+        click.echo(f"  {'incrémental (date de saisie)' if since else 'moissonnage complet'} : "
+                   f"{date_debut} → {date_fin}, "
+                   f"territoire(s) {', '.join(territoires)}, "
+                   f"tranches de {tranche_jours} jour(s) ajustées au volume")
+
     total_lus = total_ecrits = total_maj = total_supprimes = hors_perimetre = 0
+    groupes_refuses: list[tuple[str, str]] = []
+    suppressions_manquees: list[tuple[str, str]] = []
     jdds: dict = {}
 
     for rang, groupe in enumerate(groupes, 1):
         contexte_repro.groupe_courant = groupe
         # Annoncer le groupe AVANT de l'interroger : ces requêtes durent parfois
         # plusieurs dizaines de secondes, et sans cette ligne le moissonnage paraît figé.
-        click.echo(f"  [{rang}/{len(groupes)}] groupe {groupe}…", nl=False)
+        click.echo(f"  [{rang}/{len(groupes)}] groupe {groupe}…")
+
+        def _tranche(territoire, debut, fin_t, n):
+            if n < 0:
+                click.secho(f"    {territoire} {debut:%Y-%m-%d} → {fin_t:%Y-%m-%d} : "
+                            f"refus, tranche rétrécie", fg="yellow")
+            else:
+                click.echo(f"    {territoire} {debut:%Y-%m-%d} → {fin_t:%Y-%m-%d} : "
+                           f"{n} relevé(s)")
+
         if since:
             # Les suppressions d'abord : une observation supprimée puis recréée sous le
             # même identifiant serait sinon retirée après avoir été réécrite.
-            supprimes = vn_api.observations_supprimees(cfg, str(groupe), since)
+            # Une erreur sur les suppressions ne doit pas empêcher le moissonnage des
+            # créations : leur instance rend des 502 et des 504 sous charge, et perdre
+            # un import entier pour un incident passager serait disproportionné. Le
+            # défaut est signalé — ne pas avoir répercuté des suppressions se rattrape
+            # au passage suivant, l'ignorer en silence non.
+            try:
+                supprimes = vn_api.observations_supprimees(cfg, str(groupe), since)
+            except vn_api.bio.BiolovisionApiException as erreur:
+                supprimes = []
+                suppressions_manquees.append((str(groupe), repr(erreur)))
+                click.secho(f"    suppressions non récupérées ({erreur!r}) — "
+                            f"le moissonnage continue", fg="yellow")
             if supprimes:
                 if dry_run:
-                    click.echo(f"\n    {len(supprimes)} relevé(s) supprimé(s) à la "
-                               f"source (simulation)", nl=False)
+                    click.echo(f"    {len(supprimes)} relevé(s) supprimé(s) à la "
+                               f"source (simulation)")
                 else:
                     n = purge_core.supprimer_par_identifiants_source(
                         id_source, "sighting_id", supprimes)
                     db.session.commit()
                     total_supprimes += n
-                    click.echo(f"\n    {len(supprimes)} relevé(s) supprimé(s) à la "
-                               f"source -> {n} observation(s) retirée(s)", nl=False)
-            releves, inaccessibles = vn_api.observations_modifiees(cfg, str(groupe), since)
-            for cle, motif in inaccessibles:
-                rejets.add("inaccessible", cle, "", motif)
+                    click.echo(f"    {len(supprimes)} relevé(s) supprimé(s) à la "
+                               f"source -> {n} observation(s) retirée(s)")
+            # Les créations et modifications passent par `search` sur la date de
+            # SAISIE, comme le moissonnage complet : `diff` ne livre que des
+            # identifiants, et les deux voies qui permettraient de les résoudre —
+            # `api_get` et `api_list(id_sightings_list=…)` — sont refusées par l'API.
+            lots = (r for _d, _f, _t, r in vn_api.moissonner_recherche(
+                cfg, str(groupe), date_debut, date_fin, territoires,
+                tranche_jours=tranche_jours, journal=_tranche, type_date="entry"))
         else:
-            releves = vn_api.observations(cfg, str(groupe), **filtre_api)
-        couples = vn_tr.deplier(releves)
-        total_lus += len(couples)
-        click.echo(f" {len(releves)} relevé(s), {len(couples)} observation(s)")
+            # Moissonnage complet : par `search`, découpé en tranches de dates et borné
+            # par territoire. `api_list` est déprécié en amont et refusé par l'API, et
+            # une recherche sans périmètre l'est aussi — mesuré sur faune-occitanie.org.
+            lots = (releves for _d, _f, _t, releves in vn_api.moissonner_recherche(
+                cfg, str(groupe), date_debut, date_fin, territoires,
+                tranche_jours=tranche_jours, journal=_tranche))
 
         lot, ecrits, maj = [], 0, 0
-        for sighting, observation in couples:
-            if not vn_perim.dans_perimetre(sighting, departements):
-                hors_perimetre += 1
-                continue
-            if respecter:
-                motif = vn_conf.est_confidentielle(observation, sighting)
-                if motif:
-                    rejets.add("confidentielle", sighting.get("@id"),
-                               (sighting.get("species") or {}).get("name"), motif)
-                    continue
-            cd_nom = vn_taxo.resolve(sighting, index)
-            if not cd_nom:
-                espece = (sighting.get("species") or {})
-                rejets.add("no_cd_nom", sighting.get("@id"), espece.get("name"),
-                           f"species_id={espece.get('@id')}")
-                continue
-            ligne = vn_tr.to_row(sighting, observation, cd_nom=cd_nom, id_dataset=None,
-                                 id_source=id_source, id_module=id_module, srid=srid,
-                                 resolver=resolver, instance=instance,
-                                 surcharges_atlas=surcharges,
-                                 statut_validation=statut_validation,
-                                 index_anonymat=index_anonymat, secret_pseudo=secret,
-                                 forcer_anonymat=forcer_anonymat,
-                                 code_diffusion_masquee=niveau_masquees,
-                                 version_taxref=v_taxref,
-                                 repro=contexte_repro)
-            if ligne is None:
-                rejets.add("no_coordinates", sighting.get("@id"),
-                           (sighting.get("species") or {}).get("name"), "")
-                continue
-            ligne["_projet"] = vn_tr.code_projet(observation) if par_projet else None
-            lot.append(ligne)
-            if len(lot) >= batch_size and not dry_run:
-                i, u = _ecrire_lot(lot, jdds, instance, af, id_source)
-                ecrits += i; maj += u
-                db.session.commit(); lot = []
-                click.echo(f"    … {ecrits} écrites, {maj} mises à jour")
+        try:
+            for releves in lots:
+                couples = vn_tr.deplier(releves)
+                total_lus += len(couples)
+                for sighting, observation in couples:
+                    # Le moissonnage complet est déjà borné par l'API
+                    # (`territorial_unit_ids`) : sa garantie vaut la nôtre, et le
+                    # format court ne porte pas toujours le rattachement administratif.
+                    if not vn_perim.dans_perimetre(sighting, departements,
+                                                   borne_serveur=not since):
+                        hors_perimetre += 1
+                        continue
+                    if respecter:
+                        motif = vn_conf.est_confidentielle(observation, sighting)
+                        if motif:
+                            rejets.add("confidentielle", sighting.get("@id"),
+                                       (sighting.get("species") or {}).get("name"), motif)
+                            continue
+                    cd_nom = vn_taxo.resolve(sighting, index)
+                    if not cd_nom:
+                        espece = (sighting.get("species") or {})
+                        rejets.add("no_cd_nom", sighting.get("@id"), espece.get("name"),
+                                   f"species_id={espece.get('@id')}")
+                        continue
+                    ligne = vn_tr.to_row(sighting, observation, cd_nom=cd_nom,
+                                         id_dataset=None,
+                                         id_source=id_source, id_module=id_module,
+                                         srid=srid,
+                                         resolver=resolver, instance=instance,
+                                         surcharges_atlas=surcharges,
+                                         statut_validation=statut_validation,
+                                         index_anonymat=index_anonymat,
+                                         secret_pseudo=secret,
+                                         forcer_anonymat=forcer_anonymat,
+                                         code_diffusion_masquee=niveau_masquees,
+                                         version_taxref=v_taxref,
+                                         repro=contexte_repro)
+                    if ligne is None:
+                        rejets.add("no_coordinates", sighting.get("@id"),
+                                   (sighting.get("species") or {}).get("name"), "")
+                        continue
+                    ligne["_projet"] = vn_tr.code_projet(observation) if par_projet else None
+                    lot.append(ligne)
+                    if len(lot) >= batch_size and not dry_run:
+                        i, u = _ecrire_lot(lot, jdds, instance, af, id_source)
+                        ecrits += i; maj += u
+                        db.session.commit(); lot = []
+                        click.echo(f"    … {ecrits} écrites, {maj} mises à jour")
+        except vn_api.bio.BiolovisionApiException as erreur:
+            # L'exception surgit pendant l'itération, le moissonnage étant paresseux.
+            # Ce qui a déjà été lu reste acquis et sera écrit ci-dessous.
+            groupes_refuses.append((str(groupe), f"recherche : {erreur!r}"))
+            click.secho(f"    interrompu par l'API ({erreur!r})", fg="yellow")
+
         if lot and not dry_run:
             i, u = _ecrire_lot(lot, jdds, instance, af, id_source)
             ecrits += i; maj += u
@@ -812,6 +926,23 @@ def vn_import(groupes, since, batch_size, dry_run):
 
     if not dry_run:
         db.session.commit()
+    if suppressions_manquees:
+        click.secho(f"\n  ⚠ suppressions non récupérées sur "
+                    f"{len(suppressions_manquees)} groupe(s) : "
+                    f"{', '.join(g for g, _ in suppressions_manquees)}. "
+                    f"Les observations retirées à la source sont donc encore en "
+                    f"Synthèse ; relancez le même --since pour les rattraper.",
+                    fg="yellow")
+    if groupes_refuses:
+        click.secho(f"\n  {len(groupes_refuses)} groupe(s) refusé(s) par l'API :", fg="yellow")
+        for groupe, motif in groupes_refuses:
+            click.echo(f"    groupe {groupe} — {motif}")
+        click.secho("  Un 403 sur `search` signale que le périmètre de la clé d'API ne "
+                    "couvre pas ce groupe : la clé est valide — une clé inconnue "
+                    "renverrait 401 — mais pas habilitée sur ces observations. "
+                    "`vn-diagnostic --taxo-group <id>` détaille les points d'entrée "
+                    "ouverts et fermés, à porter à l'administrateur de l'instance.",
+                    fg="yellow")
     if hors_perimetre:
         # Un rejet massif alors qu'un filtre serveur est configuré signale que l'API l'a
         # ignoré : le paramètre n'existe pas, ou ne porte pas ce nom sur cette instance.
@@ -824,9 +955,17 @@ def vn_import(groupes, since, batch_size, dry_run):
     suffixe = f", {total_supprimes} supprimée(s)" if total_supprimes else ""
     click.secho(f"\n{'DRY-RUN — ' if dry_run else ''}{total_lus} observation(s) lue(s), "
                 f"{total_ecrits} écrite(s), {total_maj} mise(s) à jour{suffixe}, "
-                f"{len(rejets)} rejetée(s).", fg="green")
-    for ligne in rejets.summary_lines():
+                f"{rejets.nombre_observations()} rejetée(s).", fg="green")
+    for ligne in rejets.summary_lines_observations():
         click.echo(ligne)
+    # Les espèces du référentiel absentes de TAXREF sont journalisées mais comptées à
+    # part : les mêler aux rejets d'observations laisse croire à un échec massif. Un
+    # import de 472 observations a affiché « 30191 rejetée(s) », alors qu'il s'agissait
+    # d'espèces dont l'immense majorité ne sera jamais observée sur le territoire.
+    if rejets.nombre_referentiel():
+        click.echo(f"  ({rejets.nombre_referentiel()} espèce(s) du référentiel "
+                   f"VisioNature sans correspondance TAXREF — sans rapport avec les "
+                   f"observations ci-dessus, voir le journal)")
     # Un code d'âge, de sexe ou de comportement absent de la table n'est pas une erreur —
     # l'énumération VisioNature est localement extensible — mais c'est le seul signal
     # qu'une règle manque, et donc que des indices de reproduction passent à la trappe.
@@ -841,6 +980,48 @@ def vn_import(groupes, since, batch_size, dry_run):
     chemin = rejets.write_csv(Path("vn_rejets.csv"))
     if chemin:
         click.echo(f"  Journal détaillé : {chemin}")
+
+
+class _IndexAnonymat:
+    """Index des consentements, chargé au premier besoin — souvent jamais.
+
+    `observateur()` n'interroge cet index que lorsque le relevé ne porte pas lui-même
+    `anonymous` ni `anonymous_in_export`. En forme longue il les porte toujours, si bien
+    que le référentiel — plusieurs minutes de téléchargement pour un quart de million
+    d'inscrits, et des noms de personnes en mémoire — n'a plus lieu d'être payé d'avance.
+
+    Se comporte comme le dictionnaire qu'il remplace : `in` et `[]` suffisent à
+    `observateur()`, et déclenchent le chargement.
+    """
+
+    def __init__(self, chargeur):
+        self._chargeur = chargeur
+        self._index = None
+
+    def _charger(self) -> dict:
+        if self._index is None:
+            click.echo("\n  (chargement du référentiel des observateurs : un relevé "
+                       "n'exprime pas de consentement)")
+            self._index = self._chargeur() or {}
+            anonymes = sum(1 for v in self._index.values() if v)
+            click.echo(f"  référentiel : {len(self._index)} inscrit(s), "
+                       f"{anonymes} ayant demandé l'anonymat")
+            if not self._index:
+                click.secho("  ⚠ référentiel vide : les observateurs concernés seront "
+                            "pseudonymisés, l'ignorance ne valant pas consentement.",
+                            fg="yellow")
+        return self._index
+
+    def __contains__(self, cle) -> bool:
+        return cle in self._charger()
+
+    def __getitem__(self, cle):
+        return self._charger()[cle]
+
+    def __bool__(self) -> bool:
+        # Ne PAS déclencher le chargement : `observateur()` fait `index or {}`, et le
+        # provoquer ici annulerait tout le bénéfice.
+        return True
 
 
 def _ecrire_lot(lot, jdds, instance, af, id_source=None):
@@ -976,14 +1157,19 @@ def vn_territoires():
         return
 
     click.echo(f"{len(unites)} unité(s) territoriale(s) :\n")
-    click.echo(f"  {'id':>8}  {'short_name':<12}  nom")
+    # L'identifiant à employer dans `search` n'est ni l'`id` ni le `short_name` : c'est
+    # leur concaténation, `id_country` suivi du `short_name`. L'afficher évite d'avoir à
+    # la deviner — l'Ariège est « 109 », l'Aude « 111 ».
+    click.echo(f"  {'id':>4}  {'short_name':<12}  {'à employer':<12}  nom")
     for u in unites:
-        click.echo(f"  {str(u.get('id') or u.get('@id') or ''):>8}  "
-                   f"{str(u.get('short_name') or ''):<12}  {u.get('name') or ''}")
+        click.echo(f"  {str(u.get('id') or u.get('@id') or ''):>4}  "
+                   f"{str(u.get('short_name') or ''):<12}  "
+                   f"{str(vn_api.identifiant_territoire(u) or '—'):<12}  "
+                   f"{u.get('name') or ''}")
     click.echo("\nRestreindre le moissonnage, dans connectors_config.toml :\n"
                "  [visionature]\n"
                "  departements = [\"09\"]              # vérifié sur place.county\n"
-               "  filtre_api = { id_territorial_unit = \"<id ci-dessus>\" }\n"
+               "  # colonne « à employer » ci-dessus pour --territoire\n"
                "\nLe second réduit le volume téléchargé, le premier garantit le "
                "périmètre : un paramètre inconnu de l'API est ignoré sans erreur.")
 
@@ -1011,12 +1197,14 @@ def vn_groupes():
 
     couverts = set(vn_repro.REGLES)
     click.echo(f"{len(groupes)} groupe(s) taxonomique(s) :\n")
-    click.echo(f"  {'id':>4}  {'code':<26}  {'repro':<6}  nom")
+    click.echo(f"  {'id':>4}  {'code':<26}  {'repro':<6}  {'accès':<8}  nom")
     for g in groupes:
         identifiant = str(g.get("id") or g.get("@id") or "")
-        code = str(g.get("name") or "")
+        # `name_constant` et non `name` : ce dernier est le libellé traduit.
+        code = str(g.get("name_constant") or "")
         repro = "oui" if code in couverts else "—"
-        click.echo(f"  {identifiant:>4}  {code:<26}  {repro:<6}  {g.get('latin_name') or ''}")
+        click.echo(f"  {identifiant:>4}  {code:<26}  {repro:<6}  "
+                   f"{str(g.get('access_mode') or ''):<8}  {g.get('name') or ''}")
     click.echo("\nColonne « repro » : le groupe dispose-t-il de règles de déduction du "
                "statut de reproduction ?\nLes oiseaux passent par les codes atlas, pas "
                "par ces règles — ils affichent donc « — » sans que ce soit un manque.")
@@ -1243,9 +1431,459 @@ def dbchiro_zonages(recherche):
         click.echo(f"  {str(zone.get('id') or ''):>8}  {zone.get('text') or ''}")
     click.echo("\nReportez l'identifiant voulu dans [dbchiro] area. Il est propre à "
                "cette instance : ne le recopiez pas d'une autre.")
+@click.command("vn-vider-cache")
+def vn_vider_cache():
+    """Efface le cache disque des référentiels.
+
+    À faire dès que la mise au point est terminée : le cache des observateurs contient
+    des noms de personnes, et un référentiel périmé produit des correspondances fausses
+    sans rien signaler.
+    """
+    from geonature.utils.config import config as gn_config
+    from .core import cache as cache_core
+
+    cfg = (gn_config.get("CONNECTORS") or {}).get("visionature", {})
+    n = cache_core.vider(cfg.get("cache_dir") or None)
+    click.secho(f"{n} fichier(s) de cache supprimé(s).", fg="green" if n else None)
+
+
+@click.command("vn-diagnostic")
+@click.option("--taxo-group", "groupe", default="1", help="Groupe à sonder (défaut : 1).")
+@click.option("--debug", is_flag=True,
+              help="Journalise la requête réelle, pour comparer avec transfer_vn.")
+@click.option("--jours", default=60,
+              help="Fenêtre des sondes de recherche, en jours (défaut : 60).")
+@click.option("--fin", default="",
+              help="Date de fin des sondes de recherche (AAAA-MM-JJ). Par défaut, "
+                   "aujourd'hui. Sert à sonder une période ancienne.")
+@click.option("--territoire", default="",
+              help="Unité territoriale à sonder (id_country + short_name, ex. 109). "
+                   "Par défaut, celles déduites de [visionature] departements.")
+def vn_diagnostic(groupe, debug, jours, fin, territoire):
+    """Sonde les points d'entrée de l'API et rapporte ce que le compte peut faire.
+
+    Les droits Biolovision ne sont pas uniformes : `observations/diff` peut fonctionner
+    quand `observations` en liste est refusé — c'est l'appel le plus lourd de la
+    plateforme, fréquemment restreint. Le code HTTP est ce qui distingue un droit
+    manquant (403) d'un appel mal formé (400), et cette distinction commande la suite :
+    demander une ouverture de droit, ou corriger la requête.
+    """
+    from datetime import datetime, timedelta, timezone
+    from geonature.utils.config import config as gn_config
+    from .sources.visionature import api as vn_api
+    from .sources.visionature.biolovision import api as bio
+
+    cfg = (gn_config.get("CONNECTORS") or {}).get("visionature", {})
+    if not cfg.get("enabled"):
+        raise click.ClickException("Connecteur VisioNature désactivé.")
+
+    # Les versions comptent : une signature OAuth1 dépend de l'implémentation qui la
+    # produit. Client_API_VN exige requests>=2.32 et requests-oauthlib>=2.0 ; tourner
+    # avec une version antérieure peut produire une signature que l'API refuse, ce qui
+    # donne un 403 indiscernable d'un droit manquant. Comparer avec le venv qui fait
+    # tourner transfer_vn est le premier réflexe quand les habilitations sont identiques.
+    import requests as _requests
+    import requests_oauthlib as _oauthlib
+    click.echo(f"requests {_requests.__version__}, "
+               f"requests_oauthlib {getattr(_oauthlib, '__version__', 'inconnue')} "
+               f"(Client_API_VN exige >= 2.32 et >= 2.0)\n")
+
+    if debug:
+        # `_clean_params` masque le compte et le mot de passe : la sortie est
+        # communicable telle quelle.
+        import logging as _logging
+        _logging.basicConfig(level=_logging.DEBUG)
+        _logging.getLogger("gn_module_connectors.sources.visionature.biolovision.api"
+                           ).setLevel(_logging.DEBUG)
+        for nom in list(_logging.root.manager.loggerDict):
+            if "biolovision" in nom:
+                _logging.getLogger(nom).setLevel(_logging.DEBUG)
+
+    recent = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    obs = vn_api._controleur(bio.ObservationsAPI, cfg)
+
+    def sonder(intitule, appel, observations=False):
+        try:
+            reponse = appel()
+        except bio.HTTPError as erreur:
+            code = erreur.args[0] if erreur.args else "?"
+            # 401 et 403 ne disent pas la même chose, et la confusion coûte cher.
+            # 401 « Can't verify request, missing oauth_consumer_key » : la signature
+            # OAuth n'est pas vérifiable — client_key ou client_secret absent ou faux,
+            # l'API ne reconnaît pas le demandeur.
+            # 403 : demandeur reconnu, mais pas autorisé sur cette ressource. La clé est
+            # donc valide ; c'est son périmètre qui est en cause.
+            sens = {401: "clé non reconnue — vérifier client_key et client_secret",
+                    403: "clé valide, mais périmètre insuffisant",
+                    404: "point d'entrée absent",
+                    400: "requête refusée (l'accès, lui, existe)"}.get(code, "")
+            click.secho(f"  {intitule:<34} HTTP {code}  {sens}", fg="yellow")
+            return None
+        except bio.BiolovisionApiException as erreur:
+            click.secho(f"  {intitule:<34} échec  {erreur!r}", fg="yellow")
+            return None
+        entrees = vn_api._extraire(reponse)
+        click.secho(f"  {intitule:<34} OK     {len(entrees)} entrée(s)", fg="green")
+        if entrees:
+            # La forme de l'entrée commande toute la conception : une entrée réduite à un
+            # identifiant impose une requête par relevé, ce qui ne passe pas à l'échelle.
+            premiere = entrees[0]
+            if isinstance(premiere, dict):
+                complet = vn_api.est_releve_complet(premiere)
+                click.echo(f"  {'':<34}        relevé complet : "
+                           f"{'oui' if complet else 'NON — un api_get par entrée'}")
+                # ⚠ Compter sur TOUTES les entrées, jamais sur la première. `details`,
+                # `behaviours`, `medias`, `extended_info` et `atlas_code` sont
+                # optionnels : ils n'apparaissent que renseignés. Conclure de n=1 que
+                # l'API ne les renvoie pas serait une erreur — un lézard isolé sans
+                # comportement noté n'en porte aucun.
+                from collections import Counter as _Counter
+                freq_sighting, freq_obs, freq_place = _Counter(), _Counter(), _Counter()
+                for e in entrees:
+                    if not isinstance(e, dict):
+                        continue
+                    # `.keys()` et non le dict : `Counter.update(mapping)` ajoute les
+                    # VALEURS comme effectifs, ce qui explose sur des valeurs textuelles.
+                    freq_sighting.update(e.keys())
+                    liste = e.get("observers")
+                    if isinstance(liste, list) and liste and isinstance(liste[0], dict):
+                        freq_obs.update(liste[0].keys())
+                    lieu = e.get("place")
+                    if isinstance(lieu, dict):
+                        freq_place.update(lieu.keys())
+
+                total = len(entrees)
+
+                def _lister(intitule, freq):
+                    if not freq:
+                        return
+                    click.echo(f"  {'':<34}        {intitule} sur {total} relevé(s) :")
+                    for champ, n in sorted(freq.items(), key=lambda kv: (-kv[1], kv[0])):
+                        part = "" if n == total else f"  ({n})"
+                        click.echo(f"  {'':<34}          {champ}{part}")
+
+                _lister("champs du relevé", freq_sighting)
+                _lister("champs de observers[0]", freq_obs)
+                _lister("champs de place", freq_place)
+
+                # ⚠ Tous ces champs ne sont pas attendus partout. `atlas_code` est un
+                # code de nidification EOAC : il ne concerne QUE les oiseaux, et son
+                # absence sur un groupe de reptiles ne signale rien. Le signaler comme
+                # un manque enverrait chercher un défaut là où il n'y en a pas.
+                attendus = {} if not observations else {
+                    "timing": ("heure d'observation", "tous"),
+                    "uuid": ("identifiant SINP du producteur", "tous"),
+                    "name": ("nom de l'observateur", "forme longue"),
+                    "anonymous": ("consentement d'anonymat", "forme longue"),
+                    "atlas_code": ("reproduction des oiseaux", "oiseaux seulement"),
+                    "details": ("âge et sexe", "quand l'observateur les ventile"),
+                    "behaviours": ("comportement", "quand il est noté"),
+                    "medias": ("preuve d'existence", "quand une photo est jointe"),
+                    "extended_info": ("mortalité", "quand l'animal est trouvé mort"),
+                    "project_code": ("jeu de données par projet", "quand un projet existe"),
+                }
+                manquants = [(c, u, p) for c, (u, p) in attendus.items()
+                             if c not in freq_obs]
+                systematiques = [f"{c} ({u})" for c, u, p in manquants if p == "tous"]
+                conditionnels = [f"{c} ({u} — {p})" for c, u, p in manquants
+                                 if p != "tous"]
+                if systematiques:
+                    click.secho(f"  {'':<34}        ⚠ absent(s) alors qu'attendu(s) "
+                                f"partout : {'; '.join(systematiques)}", fg="yellow")
+                if conditionnels:
+                    click.echo(f"  {'':<34}        non rencontré(s), ce qui peut être "
+                               f"normal : {'; '.join(conditionnels)}")
+        return reponse
+
+    click.echo(f"Instance {cfg['url']}, groupe taxonomique {groupe} :\n")
+    sonder("taxo_groups (liste)", lambda: bio.TaxoGroupsAPI(
+        user_email=cfg["user_email"], user_pw=cfg["user_password"],
+        base_url=cfg["url"].rstrip("/") + "/", client_key=cfg["client_key"],
+        client_secret=cfg["client_secret"], timeout=60).api_list())
+    # Deux variantes : `transfer_vn` passe TOUJOURS short_version. Son absence est la
+    # première suspecte d'un 403 sur la forme longue d'un groupe entier.
+    sonder("observations (liste, forme longue)", lambda: obs.api_list(groupe))
+    sonder("observations (liste, short_version)",
+           lambda: obs.api_list(groupe, short_version="1"))
+    modifiees = sonder("observations/diff (modifiées)",
+                       lambda: obs.api_diff(groupe, recent, "only_modified"))
+    sonder("observations/diff (supprimées)",
+           lambda: obs.api_diff(groupe, recent, "only_deleted"))
+
+    # Récupération par identifiant : les deux voies qui portent de la donnée à partir
+    # d'un différentiel. `api_get` en demande une, `api_list(id_sightings_list=…)` en
+    # demande cent — c'est cette dernière qu'emploie `_store_update` de transfer_vn.
+    identifiants = [vn_api.identifiant(e) for e in vn_api._extraire(modifiees or [])]
+    identifiants = [c for c in identifiants if c][:5]
+    if identifiants:
+        click.echo(f"\n  Récupération par identifiant, sur {identifiants[0]} :")
+        sonder("observations/<id> (api_get)",
+               lambda: obs.api_get(identifiants[0]), observations=True)
+        sonder(f"observations?id_sightings_list ({len(identifiants)})",
+               lambda: obs.api_list(groupe,
+                                    id_sightings_list=",".join(identifiants),
+                                    short_version=vn_api.SHORT_VERSION),
+               observations=True)
+    else:
+        click.secho("  (aucun identifiant à sonder : le différentiel est vide)",
+                    fg="yellow")
+    # Paramètres relevés sur `transfer_vn`, et non devinés : `period_choice` est
+    # obligatoire et les dates sont au format JJ.MM.AAAA. La sonde précédente envoyait
+    # de l'ISO sans `period_choice` — son 403 ne prouvait donc rien.
+    # Une fenêtre d'un seul jour peut ne rien contenir — les reptiles ariégeois n'ont
+    # pas d'observation quotidienne — et une sonde vide n'apprend rien sur la forme des
+    # données. Soixante jours donnent un échantillon dans presque tous les cas.
+    # Le journal de la LPO montre des oiseaux téléchargés sur l'Ariège en janvier 2019,
+    # avec exactement la même requête. Si 2019 passe et 2026 non, l'API restreint les
+    # données récentes — ce que ni le code ni les identifiants ne peuvent expliquer.
+    if fin:
+        try:
+            fin = datetime.fromisoformat(fin).replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise click.ClickException(f"--fin {fin!r} n'est pas une date ISO.")
+    else:
+        fin = datetime.now(timezone.utc)
+    debut = fin - timedelta(days=jours)
+    click.echo(f"Sondes de recherche : {debut:%Y-%m-%d} → {fin:%Y-%m-%d}\n")
+    sonder(f"observations/search ({jours} j, sans périmètre)", lambda: obs.api_search(
+        vn_api.parametres_recherche(groupe, debut, fin), short_version="1"),
+           observations=True)
+
+    # `_store_search` de transfer_vn n'émet JAMAIS de recherche sans périmètre : sa
+    # boucle `for t_u in t_us:` pose systématiquement `location_choice` et
+    # `territorial_unit_ids`. Une recherche non bornée n'est donc pas ce qu'ils envoient,
+    # et l'API peut légitimement la refuser — c'est un balayage de toute l'instance.
+    if territoire:
+        # Sonder un territoire imposé permet d'isoler la variable territoriale. Le
+        # journal de transfer_vn de la LPO montre un téléchargement d'oiseaux sur
+        # l'unité 11 (Aude) là où nos sondes portaient sur 09 (Ariège).
+        territoires = [territoire]
+    else:
+        voulus = {str(d).strip().zfill(2) for d in (cfg.get("departements") or [])}
+        try:
+            unites = vn_api.unites_territoriales(cfg)
+        except bio.BiolovisionApiException:
+            unites = []
+        territoires = [t for t in (vn_api.identifiant_territoire(u) for u in unites
+                                   if not voulus
+                                   or str(u.get("short_name") or "") in voulus) if t]
+    if territoires:
+        apercu = ", ".join(territoires[:3]) + ("…" if len(territoires) > 3 else "")
+        # Les deux formes, côte à côte. La forme courte ampute `observers[]` de
+        # `atlas_code`, `details`, `behaviours`, `timing`, `uuid`, `medias`,
+        # `extended_info`, `project_code`, `second_hand` et `name` — soit l'essentiel de
+        # ce que le module exploite. Le constat doit être visible, pas déduit.
+        for version, etiquette in (("1", "forme courte"), ("0", "forme longue")):
+            sonder(f"observations/search ({jours} j, {apercu}, {etiquette})",
+                   lambda v=version: obs.api_search(
+                       vn_api.parametres_recherche(groupe, debut, fin, territoires[:1]),
+                       short_version=v), observations=True)
+    else:
+        click.secho("  observations/search (avec périmètre)  ignoré — aucune unité "
+                    "territoriale exploitable", fg="yellow")
+
+    click.echo("\nLa ligne « relevé complet » est décisive : si le différentiel ne livre\n"
+               "que des identifiants, chaque entrée impose une requête supplémentaire.\n"
+               "À 37 000 modifications par jour et par groupe, ce n'est pas tenable.\n")
+    click.echo("\nLa méthode `list` est DÉPRÉCIÉE en amont — transfer_vn journalise\n"
+               "« Download using list method is deprecated, please use search method only ».\n"
+               "Son 403 est donc attendu ; c'est `search` avec périmètre qui compte.\n")
+    click.echo("\n401 partout -> la clé n'est pas reconnue : client_key ou client_secret\n"
+               "               absent ou erroné. Rien à voir avec les droits.\n"
+               "403 partout -> la clé est reconnue mais son périmètre ne couvre pas la\n"
+               "               ressource. C'est une question d'habilitation, pas de code.\n")
+    click.echo("\nLecture :\n"
+               "  search avec périmètre OK              -> c'était le périmètre manquant,\n"
+               "                                           pas le droit.\n"
+               "  forme longue 403 mais short_version OK -> c'était le volume, pas le droit.\n"
+               "  search OK                             -> moissonnage initial possible par\n"
+               "                                           tranches de dates.\n"
+               "  tout en 403                           -> alors seulement, demander\n"
+               "                                           l'ouverture du droit.\n"
+               "\n`access_mode` de vn-groupes indique par ailleurs les groupes fermés au\n"
+               "compte : `transfer_vn` saute ceux dont il vaut « none ».")
+
+
+@click.command("vn-volumetrie")
+@click.option("--jours", default=1, help="Fenêtre de mesure, en jours (défaut : 1).")
+@click.option("--recherche/--sans-recherche", default=True,
+              help="Sonder aussi `search` groupe par groupe (défaut : oui).")
+def vn_volumetrie(jours, recherche):
+    """Mesure le nombre de modifications quotidiennes, groupe par groupe.
+
+    Question à laquelle elle répond : quels groupes peut-on réellement moissonner ?
+
+    Le différentiel ne renvoie que des identifiants — `id_sighting`, `id_universal`,
+    `modification_type` — donc chaque entrée impose ensuite un `api_get`. Le coût d'un
+    moissonnage incrémental est ainsi d'une requête HTTP par observation modifiée.
+    Mesuré sur Faune-Occitanie : 37 246 modifications en vingt-quatre heures pour les
+    seuls oiseaux, ce qui est hors de portée. D'autres groupes seront très en deçà.
+
+    Le total par groupe est donc le chiffre qui décide de ce qui est faisable, et il
+    n'est connaissable que sur l'instance visée.
+    """
+    from datetime import datetime, timedelta, timezone
+    from geonature.utils.config import config as gn_config
+    from .sources.visionature import api as vn_api, reproduction as vn_repro
+    from .sources.visionature.biolovision import api as bio
+
+    cfg = (gn_config.get("CONNECTORS") or {}).get("visionature", {})
+    if not cfg.get("enabled"):
+        raise click.ClickException("Connecteur VisioNature désactivé.")
+
+    depuis = (datetime.now(timezone.utc) - timedelta(days=jours)).strftime("%Y-%m-%d")
+    fin_rech = datetime.now(timezone.utc)
+    debut_rech = fin_rech - timedelta(days=jours)
+    groupes = vn_api.groupes_taxonomiques(cfg)
+    obs = vn_api._controleur(bio.ObservationsAPI, cfg)
+    couverts = set(vn_repro.REGLES)
+
+    # `search` est sondé groupe par groupe parce qu'on ne sait pas ce qui le fait
+    # refuser. Un jour d'oiseaux en Ariège a été refusé quand soixante jours de reptiles
+    # sur le même territoire passaient : ce n'est ni le volume seul, ni le droit — la
+    # carte complète est le seul moyen d'y voir clair.
+    territoires = []
+    if recherche:
+        voulus = {str(d).strip().zfill(2) for d in (cfg.get("departements") or [])}
+        try:
+            unites = vn_api.unites_territoriales(cfg)
+        except bio.BiolovisionApiException:
+            unites = []
+        territoires = [t for t in (vn_api.identifiant_territoire(u) for u in unites
+                                   if not voulus
+                                   or str(u.get("short_name") or "") in voulus) if t][:1]
+        if not territoires:
+            click.secho("  ⚠ aucun territoire exploitable : `search` ne sera pas sondé.",
+                        fg="yellow")
+            recherche = False
+
+    click.echo(f"Modifications sur {jours} jour(s), depuis {depuis}.")
+    click.echo("Une requête api_get sera nécessaire par entrée du différentiel.")
+    if recherche:
+        click.echo(f"`search` sondé sur {jours} jour(s), territoire {territoires[0]}.")
+    click.echo("")
+    entete = f"  {'id':>4}  {'code':<26}  {'modifiées':>10}  {'/jour':>8}  repro"
+    click.echo(entete + ("   search" if recherche else ""))
+
+    total = 0
+    mesures = []
+    for g in groupes:
+        identifiant = str(g.get("id") or g.get("@id") or "")
+        code = str(g.get("name_constant") or g.get("name") or "")
+        try:
+            n = len(vn_api._extraire(obs.api_diff(identifiant, depuis, "only_modified")))
+        except bio.BiolovisionApiException as erreur:
+            click.secho(f"  {identifiant:>4}  {code:<26}  {'refusé':>10}  {erreur!r}",
+                        fg="yellow")
+            continue
+        total += n
+        mesures.append((n, identifiant, code))
+
+        etat = ""
+        if recherche:
+            try:
+                trouves = vn_api._extraire(obs.api_search(
+                    vn_api.parametres_recherche(identifiant, debut_rech, fin_rech,
+                                                territoires),
+                    short_version=vn_api.SHORT_VERSION))
+                etat = f"   OK {len(trouves)}"
+            except bio.HTTPError as erreur:
+                etat = f"   HTTP {erreur.args[0] if erreur.args else '?'}"
+            except bio.BiolovisionApiException:
+                etat = "   échec"
+
+        couleur = "red" if n > 5000 else ("yellow" if n > 500 else None)
+        click.secho(f"  {identifiant:>4}  {code:<26}  {n:>10}  {n / jours:>8.0f}  "
+                    f"{'oui' if code in couverts else '—':<5}{etat}", fg=couleur)
+
+    click.echo(f"\n  Total : {total} modification(s), soit {total / jours:.0f} par jour")
+    click.echo("  Donc autant de requêtes api_get par moissonnage incrémental quotidien.")
+    if mesures:
+        mesures.sort(reverse=True)
+        gros = [c for n, _, c in mesures[:3]]
+        part = sum(n for n, _, _ in mesures[:3]) / total * 100 if total else 0
+        click.echo(f"  Les trois premiers groupes ({', '.join(gros)}) pèsent "
+                   f"{part:.0f} % du total.")
+    click.echo("\nRestreindre le moissonnage aux groupes utiles, "
+               "dans connectors_config.toml :\n"
+               "  [visionature]\n"
+               "  taxo_groups = [\"2\", \"6\", \"7\"]   # identifiants ci-dessus")
+
+
+@click.command("vn-purge")
+@click.option("--projet", default="",
+              help="Code projet VisioNature dont le JDD est visé. Sans cette option, "
+                   "la purge porte sur toutes les observations VisioNature.")
+@click.option("--taxon", default="",
+              help="Groupe taxonomique à retirer, par son nom TAXREF : règne, phylum, "
+                   "classe, ordre, famille, ou début de nom scientifique. "
+                   "Exemple : --taxon Reptilia")
+@click.option("--drop-empty-datasets", is_flag=True,
+              help="Supprimer ensuite les JDD du cadre VisioNature devenus vides.")
+@click.option("--yes", is_flag=True,
+              help="Exécuter réellement. Sans ce drapeau, la commande se contente "
+                   "d'afficher ce qu'elle supprimerait.")
+def vn_purge(projet, taxon, drop_empty_datasets, yes):
+    """Supprime des observations VisioNature déjà importées.
+
+    Indispensable après une correction du connecteur : ce qui est en base a été écrit
+    par le code de l'époque, et aucune réécriture ne rattrape un champ qui n'était pas
+    lu — un observateur pseudonymisé faute d'avoir su lire son consentement le reste.
+
+    La suppression est toujours bornée à la source VisioNature. Les données saisies
+    localement, celles d'Occtax et celles des autres connecteurs ne sont jamais touchées.
+    """
+    from sqlalchemy import select as sa_select
+    from geonature.core.gn_meta.models import TDatasets
+    from geonature.utils.config import config as gn_config
+    from .core import purge as purge_core, synthese as syn_core, datasets as ds_core
+    from .migrations.e91b4c07a2d8_source_visionature import SOURCE_NAME, CA_UUID
+
+    cfg = (gn_config.get("CONNECTORS") or {}).get("visionature", {})
+    id_source = syn_core.get_source_id(SOURCE_NAME)
+
+    id_dataset = None
+    if projet:
+        instance = str(cfg.get("url") or "").rstrip("/")
+        if not instance:
+            raise click.ClickException(
+                "[visionature] url est nécessaire pour retrouver le JDD d'un projet.")
+        cible = str(ds_core.dataset_uuid("VisioNature", f"{instance}:{projet}", ""))
+        jdd = db.session.scalar(
+            sa_select(TDatasets).where(TDatasets.unique_dataset_id == cible))
+        if jdd is None:
+            raise click.ClickException(
+                f"Aucun JDD ne correspond au projet « {projet} » sur {instance}.")
+        id_dataset = jdd.id_dataset
+        click.echo(f"Jeu visé : {jdd.dataset_name[:60]} (id_dataset={id_dataset})")
+
+    n = purge_core.compter(id_source, id_dataset, taxon or None)
+    quoi = " et ".join(filter(None, [
+        f"projet {projet}" if projet else "",
+        f"taxon {taxon}" if taxon else "",
+    ])) or "toutes sources VisioNature confondues"
+    click.echo(f"{n} observation(s) concernée(s) — {quoi}.")
+
+    if not n:
+        return
+    if not yes:
+        click.secho("Simulation. Relancez avec --yes pour supprimer.", fg="yellow")
+        return
+
+    supprimees = purge_core.supprimer(id_source, id_dataset, taxon or None)
+    db.session.commit()
+    click.secho(f"{supprimees} observation(s) supprimée(s).", fg="green")
+
+    if drop_empty_datasets:
+        af = ds_core.get_acquisition_framework(CA_UUID)
+        vides = purge_core.jdd_vides(af.id_acquisition_framework) if af else []
+        partis = sum(1 for id_jdd, _nom in vides if purge_core.supprimer_jdd(id_jdd))
+        db.session.commit()
+        click.echo(f"{partis} JDD vide(s) supprimé(s).")
 
 
 connectors_cli = [status, gbif_sync_datasets, gbif_import, gbif_purge, vn_import,
                   vn_reanonymiser, vn_territoires,
-                  vn_groupes,
+                  vn_groupes, vn_vider_cache, vn_diagnostic, vn_purge,
+                  vn_volumetrie,
                   dbchiro_import, dbchiro_zonages]

@@ -655,32 +655,54 @@ def test_identifiant_de_diff(entree, attendu):
     assert A.identifiant(entree) == attendu
 
 
-def test_un_releve_inaccessible_ninterrompt_pas_le_moissonnage(monkeypatch):
-    """Un 403 sur une observation ne doit pas faire tomber tout l'import.
+def test_les_releves_sont_recuperes_par_lots_de_cent(monkeypatch):
+    """`api_list(id_sightings_list=…)` rend cent relevés par requête.
 
-    Le différentiel liste des relevés que le compte n'a pas forcément le droit de lire
-    individuellement. Le client vendorisé traite tout 4xx comme irrécupérable et lève :
-    sans rattrapage, une seule observation protégée fait échouer un moissonnage de
-    milliers de relevés. Mesuré sur faune-occitanie.org, où l'import est tombé au premier
-    groupe sur l'observation 88724785.
+    C'est la voie qu'emploie `_store_update` de `transfer_vn`. Une version antérieure
+    appelait `api_get` par identifiant : le différentiel des oiseaux d'Occitanie rendant
+    quelque 26 000 identifiants par jour, cela faisait 26 000 requêtes contre 260 ici.
     """
-    from gn_module_connectors.sources.visionature.biolovision import api as bio
+    appels = []
 
     class ControleurFactice:
-        def api_diff(self, *_args):
-            return [{"id_sighting": "1"}, {"id_sighting": "403"}, {"id_sighting": "3"}]
+        def api_diff(self, *_a):
+            return [{"id_sighting": str(i)} for i in range(250)]
 
-        def api_get(self, cle):
-            if cle == "403":
-                raise bio.HTTPError(403)
-            return {"data": {"sightings": [{"@id": cle, "observers": [{"@id": "9"}]}]}}
+        def api_list(self, groupe, id_sightings_list=None, **_k):
+            cles = id_sightings_list.split(",")
+            appels.append(len(cles))
+            return {"data": {"sightings": [{"@id": c, "observers": [{"@uid": "1"}]}
+                                           for c in cles]}}
 
     monkeypatch.setattr(A, "_controleur", lambda *_a, **_k: ControleurFactice())
     releves, inaccessibles = A.observations_modifiees({}, "1", "2026-09-09")
 
-    assert [r["@id"] for r in releves] == ["1", "3"]
-    assert [cle for cle, _ in inaccessibles] == ["403"]
-    assert "403" in inaccessibles[0][1]
+    assert appels == [100, 100, 50], "trois requêtes, pas deux cent cinquante"
+    assert len(releves) == 250
+    assert not inaccessibles
+
+
+def test_un_lot_refuse_ninterrompt_pas_les_suivants(monkeypatch):
+    """Perdre cent relevés est regrettable ; en perdre vingt-six mille le serait plus."""
+    from gn_module_connectors.sources.visionature.biolovision import api as bio
+
+    class ControleurFactice:
+        def api_diff(self, *_a):
+            return [{"id_sighting": str(i)} for i in range(150)]
+
+        def api_list(self, groupe, id_sightings_list=None, **_k):
+            if id_sightings_list.startswith("0,"):
+                raise bio.HTTPError(403)
+            cles = id_sightings_list.split(",")
+            return {"data": {"sightings": [{"@id": c, "observers": [{"@uid": "1"}]}
+                                           for c in cles]}}
+
+    monkeypatch.setattr(A, "_controleur", lambda *_a, **_k: ControleurFactice())
+    releves, inaccessibles = A.observations_modifiees({}, "1", "2026-09-09")
+
+    assert len(releves) == 50, "le second lot doit avoir abouti"
+    assert len(inaccessibles) == 100
+    assert all("403" in motif for _cle, motif in inaccessibles)
 
 
 def test_un_releve_deja_complet_nest_pas_recharge():
@@ -734,3 +756,260 @@ def test_un_lieu_indeterminable_est_ecarte_quand_un_filtre_est_actif():
     """
     assert not P.dans_perimetre({}, P.normaliser(["09"]))
     assert not P.dans_perimetre({"place": {"name": "quelque part"}}, P.normaliser(["09"]))
+
+
+# ── Paramètres de recherche, relevés sur transfer_vn ─────────────────────────
+
+def test_les_dates_de_recherche_ne_sont_pas_en_iso():
+    """Biolovision attend JJ.MM.AAAA, et `period_choice` est obligatoire.
+
+    Relevé sur `Client_API_VN`, `download_vn.py:_store_search`. Une sonde envoyant de
+    l'ISO sans `period_choice` a reçu un 403 dont on a conclu à tort qu'un droit
+    manquait — alors que la requête était simplement malformée.
+    """
+    from datetime import date
+    p = A.parametres_recherche("6", date(2026, 1, 1), date(2026, 3, 15))
+    assert p["date_from"] == "01.01.2026"
+    assert p["date_to"] == "15.03.2026"
+    assert p["period_choice"] == "range"
+    assert p["taxonomic_group"] == "6"
+    assert p["species_choice"] == "all"
+
+
+def test_le_territoire_est_le_pays_suivi_du_code_court():
+    """Ni l'`id` ni le `short_name` seuls : c'est leur concaténation."""
+    assert A.identifiant_territoire({"id_country": "1", "short_name": "09"}) == "109"
+    assert A.identifiant_territoire({"short_name": "09"}) is None
+    assert A.identifiant_territoire({}) is None
+
+
+def test_le_filtre_territorial_est_optionnel():
+    from datetime import date
+    sans = A.parametres_recherche("6", date(2026, 1, 1), date(2026, 1, 2))
+    assert "location_choice" not in sans
+    avec = A.parametres_recherche("6", date(2026, 1, 1), date(2026, 1, 2), ["109"])
+    assert avec["location_choice"] == "territorial_unit"
+    assert avec["territorial_unit_ids"] == ["109"]
+
+
+# ── Découpage temporel du moissonnage complet ────────────────────────────────
+
+def test_la_tranche_retrecit_quand_le_volume_deborde():
+    """Une tranche trop large risque de heurter le plafond de pagination et de tronquer.
+
+    `transfer_vn` régule par un PID visant 10 000 observations ; on se contente d'un
+    ajustement proportionnel, plus simple à lire.
+    """
+    assert A._ajuster(30, 30_000) == 15
+    assert A._ajuster(1, 99_999) == 1          # plancher
+
+
+def test_la_tranche_selargit_quand_le_volume_est_faible():
+    assert A._ajuster(15, 10) == 30
+    assert A._ajuster(365, 0) == 365           # plafond
+
+
+def test_la_tranche_ne_bouge_pas_pres_de_la_cible():
+    assert A._ajuster(15, 9_000) == 15
+
+
+def test_une_recherche_sans_perimetre_est_refusee_avant_lappel():
+    """L'API répond 403 à une recherche non bornée ; autant le dire tout de suite.
+
+    Mesuré sur faune-occitanie.org : 403 sans `territorial_unit_ids`, 200 avec.
+    `transfer_vn` n'en émet d'ailleurs jamais sans périmètre.
+    """
+    from datetime import date
+    with pytest.raises(ValueError, match="périmètre territorial"):
+        list(A.moissonner_recherche({}, "6", date(2026, 1, 1), date(2026, 2, 1), []))
+
+
+def test_un_perimetre_borne_par_le_serveur_accepte_un_lieu_indetermine():
+    """La réponse au format court ne porte pas toujours le rattachement administratif.
+
+    Le moissonnage complet borne le territoire côté API (`territorial_unit_ids`). Écarter
+    en plus ce qu'on ne sait pas situer conduisait à rejeter la totalité de ce qu'on
+    venait de télécharger : 472 relevés lus, 472 écartés, mesuré sur faune-occitanie.org.
+    """
+    codes = P.normaliser(["09"])
+    court = {"place": {"@id": "1", "name": "Étang de Lers", "coord_lat": "42.8"}}
+    assert P.dans_perimetre(court, codes, borne_serveur=True)
+    assert not P.dans_perimetre(court, codes)
+
+
+def test_la_borne_serveur_ne_couvre_pas_un_departement_explicite():
+    """On ne fait confiance au serveur que lorsqu'on ne sait pas trancher soi-même."""
+    codes = P.normaliser(["09"])
+    assert not P.dans_perimetre({"place": {"county": "31"}}, codes, borne_serveur=True)
+
+
+# ── Consentement porté par le relevé lui-même ────────────────────────────────
+
+def test_le_consentement_est_lu_dans_le_releve():
+    """La forme longue porte `anonymous` et `anonymous_in_export` sur l'observation.
+
+    C'est la source la plus sûre : elle vaut au moment de l'observation et ne dépend pas
+    du chargement d'un référentiel. Mesuré sur faune-occitanie.org, 184 identifiants
+    d'observateurs sur 467 étaient absents des 246 699 inscrits — ces observations
+    étaient pseudonymisées faute de savoir, alors que le relevé portait la réponse.
+    """
+    nom, motif = C.observateur({"@uid": "7", "name": "Untel", "anonymous": "0",
+                                "anonymous_in_export": "export"}, {}, "cle")
+    assert nom == "Untel" and "relevé" in motif
+
+
+@pytest.mark.parametrize("champs", [
+    {"anonymous": "1", "anonymous_in_export": "export"},
+    {"anonymous": "0", "anonymous_in_export": "anonymize"},
+])
+def test_lun_ou_lautre_drapeau_suffit_a_imposer_le_pseudonyme(champs):
+    """`anonymous` est le réglage global, `anonymous_in_export` vise la diffusion.
+
+    Verser en Synthèse est une diffusion : l'un ou l'autre suffit.
+    """
+    nom, motif = C.observateur({"@uid": "7", "name": "Untel", **champs}, {}, "cle")
+    assert nom.startswith("obs-")
+    assert "anonymat demandé" in motif
+
+
+def test_sans_drapeau_on_retombe_sur_le_referentiel():
+    """La forme courte ne porte pas ces champs : le référentiel reste le repli."""
+    assert C.souhait_exprime({"@uid": "7", "name": "Untel"}) is None
+    nom, motif = C.observateur({"@uid": "7", "name": "Untel"}, {"7": False}, "cle")
+    assert nom == "Untel" and motif == "nom publié"
+
+
+def test_le_releve_prime_sur_le_referentiel():
+    """Un référentiel peut dater ; le relevé porte l'état au moment de l'observation."""
+    nom, motif = C.observateur({"@uid": "7", "name": "Untel", "anonymous": "1"},
+                               {"7": False}, "cle")
+    assert nom.startswith("obs-") and "relevé" in motif
+
+
+def test_un_refus_de_volume_retrecit_la_tranche_au_lieu_dabandonner(monkeypatch):
+    """Un 403 sur `search` signale un volume excessif, pas un droit manquant.
+
+    Mesuré sur faune-occitanie.org, mêmes identifiants et même territoire : 223 reptiles
+    sur soixante jours passent, sept jours d'oiseaux sont refusés. Abandonner le groupe
+    reviendrait à déclarer les oiseaux inaccessibles alors qu'ils ne sont que nombreux.
+    """
+    from datetime import date
+    from gn_module_connectors.sources.visionature.biolovision import api as bio
+
+    demandes = []
+
+    def faux_recherche(cfg, groupe, debut, fin, territoires, type_date=None):
+        jours = (fin - debut).days
+        demandes.append(jours)
+        if jours > 4:
+            raise bio.HTTPError(403)
+        return [{"@id": str(len(demandes)), "observers": [{"@uid": "1"}]}]
+
+    monkeypatch.setattr(A, "observations_recherche", faux_recherche)
+    tranches = list(A.moissonner_recherche(
+        {}, "1", date(2026, 1, 1), date(2026, 1, 20), ["109"], tranche_jours=16))
+
+    assert any(j > 4 for j in demandes), "la première tentative doit être large"
+    assert tranches, "le moissonnage doit aboutir après rétrécissement"
+    assert all(len(r) for _d, _f, _t, r in tranches)
+
+
+def test_un_refus_qui_persiste_au_plancher_remonte(monkeypatch):
+    """Rétrécir indéfiniment masquerait un vrai refus derrière une boucle sans fin."""
+    from datetime import date
+    from gn_module_connectors.sources.visionature.biolovision import api as bio
+
+    monkeypatch.setattr(A, "observations_recherche",
+                        lambda *a, **k: (_ for _ in ()).throw(bio.HTTPError(403)))
+    with pytest.raises(bio.HTTPError):
+        list(A.moissonner_recherche({}, "1", date(2026, 1, 1), date(2026, 1, 5),
+                                    ["109"], tranche_jours=2))
+
+
+def test_trois_lots_refuses_daffilee_abandonnent_le_groupe(monkeypatch):
+    """Un groupe hors périmètre refuse TOUS ses lots : s'obstiner est inutile.
+
+    Mesuré sur faune-occitanie.org : un jour d'oiseaux rend 26 023 identifiants, soit
+    260 lots. Les émettre tous alors que le premier a été refusé fait passer pour lent
+    ce qui est simplement fermé.
+    """
+    from gn_module_connectors.sources.visionature.biolovision import api as bio
+
+    appels = []
+
+    class ControleurFactice:
+        def api_list(self, groupe, id_sightings_list=None, **_k):
+            appels.append(id_sightings_list)
+            raise bio.HTTPError(403)
+
+    monkeypatch.setattr(A, "_controleur", lambda *_a, **_k: ControleurFactice())
+    with pytest.raises(A.GroupeInaccessible, match="hors du périmètre"):
+        A.observations_par_identifiants({}, "1", [str(i) for i in range(2000)])
+
+    assert len(appels) == A.ECHECS_AVANT_ABANDON, "il ne faut pas émettre les vingt lots"
+
+
+def test_un_echec_isole_ninterrompt_pas(monkeypatch):
+    """Un refus ponctuel au milieu d'un moissonnage sain doit être absorbé."""
+    from gn_module_connectors.sources.visionature.biolovision import api as bio
+
+    etat = {"n": 0}
+
+    class ControleurFactice:
+        def api_list(self, groupe, id_sightings_list=None, **_k):
+            etat["n"] += 1
+            if etat["n"] == 2:
+                raise bio.HTTPError(500)
+            cles = id_sightings_list.split(",")
+            return {"data": {"sightings": [{"@id": c} for c in cles]}}
+
+    monkeypatch.setattr(A, "_controleur", lambda *_a, **_k: ControleurFactice())
+    releves, inaccessibles = A.observations_par_identifiants(
+        {}, "1", [str(i) for i in range(300)])
+
+    assert len(releves) == 200
+    assert len(inaccessibles) == 100
+
+
+def test_lincrémental_cherche_par_date_de_saisie():
+    """`entry_date` fait porter la recherche sur la date de SAISIE.
+
+    C'est ce qui rend un incrémental possible par `search` — la seule voie qui porte de
+    la donnée sur cette instance : `api_get` et `api_list(id_sightings_list=…)` sont
+    refusés, y compris pour un groupe dont `search` répond.
+
+    Chercher par date d'observation manquerait les relevés anciens encodés récemment,
+    qui sont précisément ce qu'un moissonnage antérieur n'a pas pu voir.
+    """
+    from datetime import date
+    p = A.parametres_recherche("6", date(2026, 9, 1), date(2026, 9, 10), ["109"], "entry")
+    assert p["entry_date"] == "1"
+
+
+def test_sans_type_date_la_recherche_porte_sur_lobservation():
+    from datetime import date
+    p = A.parametres_recherche("6", date(2026, 9, 1), date(2026, 9, 10), ["109"])
+    assert "entry_date" not in p
+
+
+def test_pas_de_retrecissement_quand_la_fenetre_nen_depend_pas(monkeypatch):
+    """Rétrécir une tranche plus large que la plage restante rejoue la même requête.
+
+    Mesuré : un `--since` sur deux jours a émis trois fois la requête identique avant
+    d'abandonner, la tranche de quinze jours étant plafonnée à la plage demandée.
+    """
+    from datetime import date
+    from gn_module_connectors.sources.visionature.biolovision import api as bio
+
+    appels = []
+
+    def faux_recherche(cfg, groupe, debut, fin, territoires, type_date=None):
+        appels.append((debut, fin))
+        raise bio.HTTPError(403)
+
+    monkeypatch.setattr(A, "observations_recherche", faux_recherche)
+    with pytest.raises(bio.HTTPError):
+        list(A.moissonner_recherche({}, "1", date(2026, 9, 8), date(2026, 9, 10),
+                                    ["109"], tranche_jours=15))
+
+    assert len(appels) == 1, f"une seule tentative attendue, {len(appels)} émises"
