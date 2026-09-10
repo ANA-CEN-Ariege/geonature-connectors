@@ -1368,10 +1368,28 @@ def vn_diagnostic(groupe, debug, jours, fin, territoire):
     sonder("observations (liste, forme longue)", lambda: obs.api_list(groupe))
     sonder("observations (liste, short_version)",
            lambda: obs.api_list(groupe, short_version="1"))
-    sonder("observations/diff (modifiées)",
-           lambda: obs.api_diff(groupe, recent, "only_modified"))
+    modifiees = sonder("observations/diff (modifiées)",
+                       lambda: obs.api_diff(groupe, recent, "only_modified"))
     sonder("observations/diff (supprimées)",
            lambda: obs.api_diff(groupe, recent, "only_deleted"))
+
+    # Récupération par identifiant : les deux voies qui portent de la donnée à partir
+    # d'un différentiel. `api_get` en demande une, `api_list(id_sightings_list=…)` en
+    # demande cent — c'est cette dernière qu'emploie `_store_update` de transfer_vn.
+    identifiants = [vn_api.identifiant(e) for e in vn_api._extraire(modifiees or [])]
+    identifiants = [c for c in identifiants if c][:5]
+    if identifiants:
+        click.echo(f"\n  Récupération par identifiant, sur {identifiants[0]} :")
+        sonder("observations/<id> (api_get)",
+               lambda: obs.api_get(identifiants[0]), observations=True)
+        sonder(f"observations?id_sightings_list ({len(identifiants)})",
+               lambda: obs.api_list(groupe,
+                                    id_sightings_list=",".join(identifiants),
+                                    short_version=vn_api.SHORT_VERSION),
+               observations=True)
+    else:
+        click.secho("  (aucun identifiant à sonder : le différentiel est vide)",
+                    fg="yellow")
     # Paramètres relevés sur `transfer_vn`, et non devinés : `period_choice` est
     # obligatoire et les dates sont au format JJ.MM.AAAA. La sonde précédente envoyait
     # de l'ISO sans `period_choice` — son 403 ne prouvait donc rien.
