@@ -159,8 +159,9 @@ def dernier_moissonnage(id_dataset: int, id_source: int):
 #   2 Financeur                  6 Producteur du jeu de données
 #   3 Maître d'ouvrage           7 Point de contact base de données de production
 #   4 Maître d'œuvre             8 Point de contact pour les métadonnées
-ROLE_PRODUCTEUR = "6"
+ROLE_CONTACT_PRINCIPAL = "1"
 ROLE_FOURNISSEUR = "5"
+ROLE_PRODUCTEUR = "6"
 
 
 def resoudre_organisme(nom: str) -> int | None:

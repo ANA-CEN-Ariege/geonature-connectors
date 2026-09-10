@@ -847,6 +847,7 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
                    for k, v in (cfg.get("producteurs_departementaux") or {}).items()}
     fournisseur = cfg.get("organisme_fournisseur") or None
     creer_organismes = cfg.get("creer_organismes_manquants", False)
+    contact_principal = cfg.get("organisme_contact_principal") or fournisseur
     # Métadonnées que le jeu prendrait sinon par défaut : « Financement : Publique » et
     # « Créateur : Non renseigné », ni l'un ni l'autre choisi.
     metadonnees = {"nom_instance": cfg.get("nom_instance", ""),
@@ -1025,7 +1026,7 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
                     if len(lot) >= batch_size and not dry_run:
                         i, u = _ecrire_lot(lot, jdds, instance, af, id_source,
                                    producteurs, fournisseur, creer_organismes,
-                                   metadonnees)
+                                   metadonnees, contact_principal)
                         ecrits += i; maj += u
                         db.session.commit(); lot = []
                         click.echo(f"    … {ecrits} écrites, {maj} mises à jour")
@@ -1038,7 +1039,7 @@ def visionature_import(groupes, since, fin, batch_size, dry_run):
         if lot and not dry_run:
             i, u = _ecrire_lot(lot, jdds, instance, af, id_source,
                                    producteurs, fournisseur, creer_organismes,
-                                   metadonnees)
+                                   metadonnees, contact_principal)
             ecrits += i; maj += u
             db.session.commit()
         elif dry_run:
@@ -1153,7 +1154,7 @@ class _IndexAnonymat:
 
 def _ecrire_lot(lot, jdds, instance, af, id_source=None,
                 producteurs=None, fournisseur=None, creer_organismes=False,
-                metadonnees=None):
+                metadonnees=None, contact_principal=None):
     """Écrit un lot en le répartissant par code projet.
 
     Les JDD sont créés à la demande : un projet dont toutes les observations sont
@@ -1183,7 +1184,7 @@ def _ecrire_lot(lot, jdds, instance, af, id_source=None,
         if cle not in jdds:
             jdds[cle] = _jdd_visionature(instance, af, projet, departement,
                                          producteurs, fournisseur, creer_organismes,
-                                         metadonnees)
+                                         metadonnees, contact_principal)
         for ligne in lignes:
             ligne["id_dataset"] = jdds[cle].id_dataset
         i, u = syn_core.insert_batch(lignes)
@@ -1194,7 +1195,8 @@ def _ecrire_lot(lot, jdds, instance, af, id_source=None,
 def _jdd_visionature(instance: str, af, projet: str | None = None,
                      departement: str | None = None, producteurs: dict | None = None,
                      fournisseur: str | None = None, creer_organismes: bool = False,
-                     metadonnees: dict | None = None):
+                     metadonnees: dict | None = None,
+                     contact_principal: str | None = None):
     """JDD d'un département, créé à la première écriture.
 
     ⚠ Le découpage suit le **département** et non la seule instance, parce que c'est là
@@ -1247,12 +1249,18 @@ def _jdd_visionature(instance: str, af, projet: str | None = None,
     # Les acteurs sont posés à chaque passage, pas seulement à la création : une
     # configuration corrigée après coup doit pouvoir rattraper un jeu déjà créé.
     from .core import datasets as ds_core
+    # Un même organisme peut porter plusieurs rôles — le Collectif est à la fois
+    # fournisseur et contact principal — et `attacher_acteur` étant idempotent sur le
+    # triplet (jeu, organisme, rôle), les deux lignes coexistent sans doublon.
     for nom_org, role in ((( producteurs or {}).get(departement or ""),
                            ds_core.ROLE_PRODUCTEUR),
-                          (fournisseur, ds_core.ROLE_FOURNISSEUR)):
+                          (fournisseur, ds_core.ROLE_FOURNISSEUR),
+                          (contact_principal, ds_core.ROLE_CONTACT_PRINCIPAL)):
         if not nom_org:
             continue
-        libelle = "producteur" if role == ds_core.ROLE_PRODUCTEUR else "fournisseur"
+        libelle = {ds_core.ROLE_PRODUCTEUR: "producteur",
+                   ds_core.ROLE_FOURNISSEUR: "fournisseur",
+                   ds_core.ROLE_CONTACT_PRINCIPAL: "contact principal"}[role]
         id_org = ds_core.resoudre_organisme(nom_org)
         if id_org is None and creer_organismes:
             id_org = ds_core.creer_organisme(nom_org)
@@ -1261,9 +1269,16 @@ def _jdd_visionature(instance: str, af, projet: str | None = None,
         if id_org is None:
             # Le producteur est obligatoire au SINP, le fournisseur ne l'est pas :
             # mettre les deux sur le même plan banaliserait l'avertissement qui compte.
-            gravite = ("Le jeu de données restera non conforme au SINP, qui exige un "
-                       "producteur." if role == ds_core.ROLE_PRODUCTEUR
-                       else "Le fournisseur est facultatif ; le jeu reste conforme.")
+            gravite = {
+                ds_core.ROLE_PRODUCTEUR:
+                    "Le jeu de données restera non conforme au SINP, qui exige un "
+                    "producteur.",
+                ds_core.ROLE_CONTACT_PRINCIPAL:
+                    "Le formulaire de GeoNature exige un contact principal : le jeu "
+                    "ne pourra pas y être enregistré.",
+                ds_core.ROLE_FOURNISSEUR:
+                    "Le fournisseur est facultatif ; le jeu reste conforme.",
+            }[role]
             click.secho(f"    ⚠ {libelle} « {nom_org} » introuvable dans "
                         f"utilisateurs.bib_organismes. {gravite} Vérifiez "
                         f"l'orthographe — la résolution se fait sur le nom exact, aux "

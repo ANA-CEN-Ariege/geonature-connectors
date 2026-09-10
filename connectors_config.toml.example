@@ -245,6 +245,10 @@ taxo_groups = []
 # La structure qui met la donnée à disposition, distincte de celle qui l'a produite.
 # organisme_fournisseur = "Collectif Faune-Occitanie"
 #
+# Contact principal, EXIGÉ par le formulaire de GeoNature. Non renseigné, le fournisseur
+# en tient lieu — c'est le cas courant. Un même organisme peut porter plusieurs rôles.
+# organisme_contact_principal = "Collectif Faune-Occitanie"
+#
 # Créer les organismes ci-dessus s'ils n'existent pas encore. Faux par défaut : mieux
 # vaut un avertissement qu'une création silencieuse sur une faute de frappe.
 # creer_organismes_manquants = true

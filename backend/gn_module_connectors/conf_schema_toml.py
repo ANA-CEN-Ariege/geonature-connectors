@@ -201,6 +201,11 @@ class VisioNatureSchemaConf(Schema):
     # Fournisseur commun à tous les jeux — la structure qui met la donnée à disposition,
     # distincte de celle qui l'a produite. Ex. « Collectif Faune-Occitanie ».
     organisme_fournisseur = fields.String(load_default="")
+    # Contact principal (`ROLE_ACTEUR 1`), exigé par le formulaire de GeoNature : sans
+    # lui, le jeu ne peut pas être enregistré. Non renseigné, le fournisseur en tient
+    # lieu — c'est le cas courant, la structure qui met à disposition étant aussi celle
+    # qu'on contacte. Un même organisme peut porter plusieurs rôles.
+    organisme_contact_principal = fields.String(load_default="")
     # Créer dans `utilisateurs.bib_organismes` les organismes déclarés ci-dessus qui
     # n'y figurent pas. Faux par défaut : mieux vaut un avertissement qu'une création
     # silencieuse sur une faute de frappe.
