@@ -921,7 +921,12 @@ def vn_import(groupes, since, batch_size, dry_run):
             ecrits += i; maj += u
             db.session.commit()
         elif dry_run:
-            ecrits = len(lot)
+            # Sans cette interrogation, la simulation annonce comme « à écrire » des
+            # observations déjà présentes : un moissonnage complet recoupe presque
+            # toujours un incrémental antérieur.
+            deja = syn_core.compter_existants(lot)
+            ecrits = len(lot) - deja
+            maj = deja
         total_ecrits += ecrits; total_maj += maj
 
     if not dry_run:
@@ -953,8 +958,9 @@ def vn_import(groupes, since, batch_size, dry_run):
                         "de l'instance a été téléchargée avant d'être écartée ici. "
                         "Vérifiez le nom du paramètre avec `vn-territoires`.", fg="yellow")
     suffixe = f", {total_supprimes} supprimée(s)" if total_supprimes else ""
+    verbes = ("à écrire", "déjà en base") if dry_run else ("écrite(s)", "mise(s) à jour")
     click.secho(f"\n{'DRY-RUN — ' if dry_run else ''}{total_lus} observation(s) lue(s), "
-                f"{total_ecrits} écrite(s), {total_maj} mise(s) à jour{suffixe}, "
+                f"{total_ecrits} {verbes[0]}, {total_maj} {verbes[1]}{suffixe}, "
                 f"{rejets.nombre_observations()} rejetée(s).", fg="green")
     for ligne in rejets.summary_lines_observations():
         click.echo(ligne)
@@ -1561,6 +1567,20 @@ def vn_diagnostic(groupe, debug, jours, fin, territoire):
                     for champ, n in sorted(freq.items(), key=lambda kv: (-kv[1], kv[0])):
                         part = "" if n == total else f"  ({n})"
                         click.echo(f"  {'':<34}          {champ}{part}")
+
+                # Les valeurs comptent autant que la présence : c'est en supposant le
+                # sens d'un code d'énumération qu'on pseudonymise tout le monde.
+                for champ in ("anonymous", "anonymous_in_export", "second_hand"):
+                    valeurs = _Counter()
+                    for e in entrees:
+                        liste = (e or {}).get("observers")
+                        if isinstance(liste, list) and liste and isinstance(liste[0], dict):
+                            if champ in liste[0]:
+                                valeurs[str(liste[0][champ])] += 1
+                    if valeurs:
+                        detail = ", ".join(f"{v!r} ({n})"
+                                           for v, n in valeurs.most_common())
+                        click.echo(f"  {'':<34}        {champ} : {detail}")
 
                 _lister("champs du relevé", freq_sighting)
                 _lister("champs de observers[0]", freq_obs)

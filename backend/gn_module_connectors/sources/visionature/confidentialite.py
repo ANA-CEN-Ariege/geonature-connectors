@@ -65,9 +65,18 @@ def index_anonymat(observateurs: list[dict]) -> dict[str, bool]:
     return index
 
 
-# `anonymous_in_export` vaut « anonymize » quand l'observateur refuse que son nom sorte
-# dans un export. `gn_vn2synthese` teste exactement cette valeur (`05_observers.sql`).
-ANONYMAT_EXPORT = {"anonymize", "anonymous"}
+# ⚠ UNE SEULE valeur déclenche l'anonymisation : « anonymize ». C'est ce que teste
+# `gn_vn2synthese` en production (`05_observers.sql:93` et `:100`) :
+#     TO_JSONB((_item ->> 'anonymous_in_export') = 'anonymize'::TEXT)
+#
+# Cet ensemble a un temps contenu « anonymous », ajouté d'après une liste de valeurs
+# possibles et non d'après une décision observée. Si « anonymous » est la valeur
+# ordinaire du champ — celle d'un contributeur qui n'a rien demandé — alors TOUS les
+# observateurs se trouvaient pseudonymisés, et le consentement lu dans le relevé
+# produisait l'inverse de ce qu'il devait produire.
+#
+# Ne rien ajouter ici sans une décision constatée, pas une valeur possible.
+ANONYMAT_EXPORT = {"anonymize"}
 
 
 def souhait_exprime(observation: dict) -> bool | None:

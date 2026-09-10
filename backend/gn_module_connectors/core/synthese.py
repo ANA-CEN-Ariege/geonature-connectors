@@ -249,6 +249,22 @@ def empreinte_de(additional_data: dict) -> str | None:
     return None
 
 
+def compter_existants(lignes: list[dict]) -> int:
+    """Combien de ces lignes sont déjà en Synthèse, par leur `unique_id_sinp`.
+
+    Sert au `--dry-run`, qui sans cela annonce comme « à écrire » des observations déjà
+    présentes. Un moissonnage complet recoupe presque toujours un incrémental antérieur :
+    confondre les deux fait croire à un doublon là où l'`ON CONFLICT` ne fera rien.
+    """
+    if not lignes:
+        return 0
+    return db.session.execute(
+        text("""SELECT count(*) FROM gn_synthese.synthese
+                WHERE unique_id_sinp = ANY(CAST(:u AS uuid[]))"""),
+        {"u": [l["unique_id_sinp"] for l in lignes]},
+    ).scalar() or 0
+
+
 def insert_batch(lignes: list[dict]) -> tuple[int, int]:
     """Écrit un lot. Retourne (insérées, mises à jour).
 
