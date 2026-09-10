@@ -1274,13 +1274,15 @@ def vn_diagnostic(groupe, debug, jours):
                 for e in entrees:
                     if not isinstance(e, dict):
                         continue
-                    freq_sighting.update(e)
+                    # `.keys()` et non le dict : `Counter.update(mapping)` ajoute les
+                    # VALEURS comme effectifs, ce qui explose sur des valeurs textuelles.
+                    freq_sighting.update(e.keys())
                     liste = e.get("observers")
                     if isinstance(liste, list) and liste and isinstance(liste[0], dict):
-                        freq_obs.update(liste[0])
+                        freq_obs.update(liste[0].keys())
                     lieu = e.get("place")
                     if isinstance(lieu, dict):
-                        freq_place.update(lieu)
+                        freq_place.update(lieu.keys())
 
                 total = len(entrees)
 
@@ -1296,20 +1298,33 @@ def vn_diagnostic(groupe, debug, jours):
                 _lister("champs de observers[0]", freq_obs)
                 _lister("champs de place", freq_place)
 
-                attendus = {"atlas_code": "statut de reproduction des oiseaux",
-                            "details": "âge et sexe, donc reproduction des autres groupes",
-                            "behaviours": "comportement",
-                            "medias": "preuve d'existence",
-                            "extended_info": "mortalité",
-                            "project_code": "jeu de données par projet",
-                            "timing": "heure d'observation",
-                            "uuid": "identifiant SINP du producteur",
-                            "name": "nom de l'observateur"}
-                absents = [f"{c} ({usage})" for c, usage in attendus.items()
-                           if c not in freq_obs]
-                if absents:
-                    click.secho(f"  {'':<34}        ⚠ jamais rencontré(s) : "
-                                f"{'; '.join(absents)}", fg="yellow")
+                # ⚠ Tous ces champs ne sont pas attendus partout. `atlas_code` est un
+                # code de nidification EOAC : il ne concerne QUE les oiseaux, et son
+                # absence sur un groupe de reptiles ne signale rien. Le signaler comme
+                # un manque enverrait chercher un défaut là où il n'y en a pas.
+                attendus = {
+                    "timing": ("heure d'observation", "tous"),
+                    "uuid": ("identifiant SINP du producteur", "tous"),
+                    "name": ("nom de l'observateur", "forme longue"),
+                    "anonymous": ("consentement d'anonymat", "forme longue"),
+                    "atlas_code": ("reproduction des oiseaux", "oiseaux seulement"),
+                    "details": ("âge et sexe", "quand l'observateur les ventile"),
+                    "behaviours": ("comportement", "quand il est noté"),
+                    "medias": ("preuve d'existence", "quand une photo est jointe"),
+                    "extended_info": ("mortalité", "quand l'animal est trouvé mort"),
+                    "project_code": ("jeu de données par projet", "quand un projet existe"),
+                }
+                manquants = [(c, u, p) for c, (u, p) in attendus.items()
+                             if c not in freq_obs]
+                systematiques = [f"{c} ({u})" for c, u, p in manquants if p == "tous"]
+                conditionnels = [f"{c} ({u} — {p})" for c, u, p in manquants
+                                 if p != "tous"]
+                if systematiques:
+                    click.secho(f"  {'':<34}        ⚠ absent(s) alors qu'attendu(s) "
+                                f"partout : {'; '.join(systematiques)}", fg="yellow")
+                if conditionnels:
+                    click.echo(f"  {'':<34}        non rencontré(s), ce qui peut être "
+                               f"normal : {'; '.join(conditionnels)}")
         return reponse
 
     click.echo(f"Instance {cfg['url']}, groupe taxonomique {groupe} :\n")
