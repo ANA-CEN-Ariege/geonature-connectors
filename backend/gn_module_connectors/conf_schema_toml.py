@@ -263,11 +263,6 @@ class VisioNatureSchemaConf(Schema):
     # Vide = aucun filtre, donc toute l'étendue de l'instance : sur Faune-Occitanie,
     # treize départements. « 9 » et « 09 » sont acceptés indifféremment.
     departements = fields.List(fields.String(), load_default=list)
-    # Filtre appliqué côté serveur, transmis tel quel à l'API. Seul moyen d'éviter de
-    # télécharger l'instance entière — mais un paramètre inconnu de l'API est ignoré sans
-    # erreur, d'où la vérification systématique sur `departements` ci-dessus.
-    # `geonature connectors visionature-perimetres` liste les valeurs de l'instance.
-    filtre_api = fields.Dict(load_default=dict)
     # ── Moissonnage complet ──────────────────────────────────────────────────
     # Le moissonnage complet passe par `observations/search` : `api_list` est déprécié
     # en amont et refusé par l'API. Une recherche sans périmètre territorial est refusée

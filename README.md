@@ -664,12 +664,12 @@ stable, et le fait que la reproduction soit une propriété de l'ensemble.
 ### Restreindre le périmètre
 
 Sans filtre, `visionature-import` moissonne **toute l'étendue de l'instance** : treize départements
-sur Faune-Occitanie, la France entière sur Faune-France. Deux réglages, complémentaires :
+sur Faune-Occitanie, la France entière sur Faune-France. Un seul réglage, qui agit des
+deux côtés :
 
 ```toml
 [visionature]
 departements = ["09"]
-# filtre_api = { id_territorial_unit = "..." }
 ```
 
 `departements` est vérifié sur `place.county` de chaque relevé — le code de département
@@ -678,12 +678,12 @@ que porte chaque observation, à côté de `insee` et `municipality`. C'est le f
 `hors_perimetre`, et un lieu dont le département est indéterminable est écarté aussi :
 le laisser passer ferait du filtre une passoire silencieuse.
 
-⚠️ **`filtre_api` est inerte sur ce connecteur.** La clé est déclarée, lue et affichée au
-démarrage, mais `sources/visionature/api.py` ne la transmet nulle part — vérifié, zéro
-occurrence. Elle date d'avant le passage au moissonnage par `observations/search`, qui
-borne le territoire par `territorial_unit_ids` déduit de `departements` : l'économie de
-téléchargement que `filtre_api` visait, `search` la fait déjà, et mieux. Les connecteurs
-dbChiro et GeoNature l'appliquent bien, chacun dans son `api.py`.
+`departements` sert donc deux fois : il borne le téléchargement côté serveur, et il
+vérifie chaque relevé côté client. Une clé `filtre_api` a existé ici jusqu'à la version
+0.1.0 ; elle datait d'avant le passage à `observations/search` et n'était plus transmise
+nulle part. Elle a été retirée plutôt que documentée comme inactive — un réglage qui
+donne à croire qu'on a borné son moissonnage alors qu'on ramène tout est pire que pas de
+réglage. Elle reste offerte sur dbChiro et GeoNature, où elle est bien appliquée.
 
 Découvrir les valeurs de l'instance :
 
@@ -696,13 +696,11 @@ Le `short_name` qu'affiche cette commande est le code employé par `Client_API_V
 configuration le précise : « use the territory short_name, not the territory id ».
 
 ⚠️ **Un paramètre inconnu de l'API est ignoré sans erreur** : rien ne distingue un filtre
-appliqué d'un filtre inexistant. C'est pourquoi `filtre_api` ne fait jamais foi seul, là
-où il est appliqué. Si les rejets `hors_perimetre` dépassent un dixième du volume lu
-alors qu'un filtre serveur est configuré, le moissonnage le signale — le filtre a été
-ignoré et toute l'instance a été téléchargée avant d'être écartée localement.
-
-`--departement` déplace `departements`, jamais `filtre_api` : quand les deux sont posés,
-le moissonnage prévient qu'ils peuvent désigner deux étendues différentes.
+appliqué d'un filtre inexistant. C'est pourquoi le filtre serveur ne fait jamais foi
+seul, ici comme sur les trois autres connecteurs. Si les rejets `hors_perimetre`
+dépassent un dixième du volume lu alors qu'un périmètre territorial est posé, le
+moissonnage le signale — le filtre a été ignoré et toute l'instance a été téléchargée
+avant d'être écartée localement.
 
 ### Résolution taxonomique
 

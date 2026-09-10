@@ -346,7 +346,6 @@ departements = ["09"]
 # ⚠ Un paramètre inconnu de l'API est ignoré SANS erreur : rien ne distingue un filtre
 # appliqué d'un filtre inexistant. D'où la vérification systématique sur `departements`,
 # et l'avertissement affiché en fin de moissonnage si le filtre serveur semble ignoré.
-# filtre_api = { id_territorial_unit = "..." }
 
 # ── Moissonnage complet ──────────────────────────────────────────────────────
 # Le moissonnage complet passe par `observations/search`, découpé en tranches de dates

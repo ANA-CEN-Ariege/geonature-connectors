@@ -789,7 +789,6 @@ def visionature_import(groupes, since, debut, fin, departements_demandes, batch_
     # faute de périmètre ferait passer une erreur de saisie pour une lenteur.
     departements = vn_perim.normaliser(list(departements_demandes)
                                        or cfg.get("departements"))
-    filtre_api = dict(cfg.get("filtre_api") or {})
     if not departements:
         raise click.ClickException(
             "Aucun périmètre : renseignez --departement ou [visionature] departements. "
@@ -817,12 +816,7 @@ def visionature_import(groupes, since, debut, fin, departements_demandes, batch_
     v_taxref = syn_core.version_taxref()
     click.secho(f"instance={instance} source={id_source} srid={srid} "
                 f"taxref={v_taxref or 'inconnu'}", fg="green")
-    click.echo(f"  périmètre : département(s) {', '.join(sorted(departements))}"
-               + (f", filtre serveur {filtre_api}" if filtre_api else ""))
-    if departements_demandes and filtre_api:
-        click.secho(f"  ⚠ --departement déplace le périmètre, pas [visionature] "
-                    f"filtre_api ({filtre_api}) : vérifiez qu'ils désignent bien la "
-                    f"même étendue.", fg="yellow")
+    click.echo(f"  périmètre : département(s) {', '.join(sorted(departements))}")
     if not v_taxref:
         click.secho("  ⚠ paramètre `taxref_version` absent de gn_commons.t_parameters : "
                     "meta_v_taxref restera NULL.", fg="yellow")
@@ -1158,14 +1152,17 @@ def visionature_import(groupes, since, debut, fin, departements_demandes, batch_
                     "ouverts et fermés, à porter à l'administrateur de l'instance.",
                     fg="yellow")
     if hors_perimetre:
-        # Un rejet massif alors qu'un filtre serveur est configuré signale que l'API l'a
+        # Un rejet massif alors qu'un filtre serveur est posé signale que l'API l'a
         # ignoré : le paramètre n'existe pas, ou ne porte pas ce nom sur cette instance.
+        # Le filtre serveur est ici `territorial_unit_ids`, déduit de `departements` et
+        # transmis à `observations/search` — c'est lui qui borne le téléchargement.
         click.secho(f"  {hors_perimetre} observation(s) hors périmètre écartée(s).",
-                    fg="yellow" if filtre_api else None)
-        if filtre_api and hors_perimetre > total_lus / 10:
-            click.secho("  ⚠ le filtre serveur semble ignoré par l'API : la quasi-totalité "
-                        "de l'instance a été téléchargée avant d'être écartée ici. "
-                        "Vérifiez le nom du paramètre avec `visionature-perimetres`.", fg="yellow")
+                    fg="yellow" if territoires else None)
+        if territoires and hors_perimetre > total_lus / 10:
+            click.secho("  ⚠ le filtre territorial semble ignoré par l'API : la quasi-"
+                        "totalité de l'instance a été téléchargée avant d'être écartée "
+                        "ici. Vérifiez les identifiants avec `visionature-perimetres`.",
+                        fg="yellow")
     suffixe = f", {total_supprimes} supprimée(s)" if total_supprimes else ""
     verbes = ("à écrire", "déjà en base") if dry_run else ("écrite(s)", "mise(s) à jour")
     click.secho(f"\n{'DRY-RUN — ' if dry_run else ''}{total_lus} observation(s) lue(s), "
@@ -1448,9 +1445,11 @@ def visionature_reanonymiser(yes):
 def visionature_perimetres():
     """Liste les unités territoriales de l'instance VisioNature.
 
-    Sert à renseigner `[visionature] filtre_api`. Le `short_name` est le code employé
-    par Client_API_VN pour filtrer — sur les instances régionales françaises, c'est le
-    code de département, celui qu'on retrouve dans `place.county` de chaque observation.
+    Sert à renseigner `[visionature] departements`, ou `--departement`. Le `short_name`
+    est le code employé par Client_API_VN pour filtrer — sur les instances régionales
+    françaises, c'est le code de département, celui qu'on retrouve dans `place.county`
+    de chaque observation, et c'est de lui qu'est déduit le `territorial_unit_ids`
+    transmis à `observations/search`.
     """
     from geonature.utils.config import config as gn_config
     from .sources.visionature import api as vn_api
