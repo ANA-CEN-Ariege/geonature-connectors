@@ -48,7 +48,10 @@ def _controleur(classe, cfg):
         base_url=cfg["url"].rstrip("/") + "/",
         client_key=cfg["client_key"],
         client_secret=cfg["client_secret"],
-        max_retry=cfg.get("max_retry", 3),
+        # Leur instance rend des 502 et 504 sous charge. Le client attend `retry_delay`
+        # entre deux tentatives et n'abandonne qu'au-delà de `max_retry` ; cinq essais
+        # coûtent quelques secondes et évitent de perdre un moissonnage sur un incident.
+        max_retry=cfg.get("max_retry", 5),
         max_requests=cfg.get("max_requests", 0),
         max_chunks=cfg.get("max_chunks", 100),
         timeout=cfg.get("timeout", 120),

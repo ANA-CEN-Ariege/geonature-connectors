@@ -211,7 +211,10 @@ class VisioNatureSchemaConf(Schema):
     cache_heures = fields.Float(load_default=0)
     # Répertoire de cache. Vide = ~/.cache/gn_module_connectors (ou XDG_CACHE_HOME).
     cache_dir = fields.String(load_default="")
-    max_retry = fields.Integer(load_default=3)
+    # Tentatives sur erreur transitoire (5xx). L'instance Faune-Occitanie rend des 502
+    # et 504 sous charge ; cinq essais coûtent quelques secondes et évitent de perdre un
+    # moissonnage entier sur un incident passager.
+    max_retry = fields.Integer(load_default=5)
     max_chunks = fields.Integer(load_default=100)
     # ⚠ Secondes. Doit être fourni : dans le client Biolovision vendorisé, `timeout` est
     # le seul paramètre du constructeur sans valeur par défaut. Laissé à None, `requests`

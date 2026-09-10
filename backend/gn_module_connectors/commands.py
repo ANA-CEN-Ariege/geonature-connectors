@@ -803,6 +803,7 @@ def vn_import(groupes, since, batch_size, dry_run):
 
     total_lus = total_ecrits = total_maj = total_supprimes = hors_perimetre = 0
     groupes_refuses: list[tuple[str, str]] = []
+    suppressions_manquees: list[tuple[str, str]] = []
     jdds: dict = {}
 
     for rang, groupe in enumerate(groupes, 1):
@@ -822,7 +823,18 @@ def vn_import(groupes, since, batch_size, dry_run):
         if since:
             # Les suppressions d'abord : une observation supprimée puis recréée sous le
             # même identifiant serait sinon retirée après avoir été réécrite.
-            supprimes = vn_api.observations_supprimees(cfg, str(groupe), since)
+            # Une erreur sur les suppressions ne doit pas empêcher le moissonnage des
+            # créations : leur instance rend des 502 et des 504 sous charge, et perdre
+            # un import entier pour un incident passager serait disproportionné. Le
+            # défaut est signalé — ne pas avoir répercuté des suppressions se rattrape
+            # au passage suivant, l'ignorer en silence non.
+            try:
+                supprimes = vn_api.observations_supprimees(cfg, str(groupe), since)
+            except vn_api.bio.BiolovisionApiException as erreur:
+                supprimes = []
+                suppressions_manquees.append((str(groupe), repr(erreur)))
+                click.secho(f"    suppressions non récupérées ({erreur!r}) — "
+                            f"le moissonnage continue", fg="yellow")
             if supprimes:
                 if dry_run:
                     click.echo(f"    {len(supprimes)} relevé(s) supprimé(s) à la "
@@ -914,6 +926,13 @@ def vn_import(groupes, since, batch_size, dry_run):
 
     if not dry_run:
         db.session.commit()
+    if suppressions_manquees:
+        click.secho(f"\n  ⚠ suppressions non récupérées sur "
+                    f"{len(suppressions_manquees)} groupe(s) : "
+                    f"{', '.join(g for g, _ in suppressions_manquees)}. "
+                    f"Les observations retirées à la source sont donc encore en "
+                    f"Synthèse ; relancez le même --since pour les rattraper.",
+                    fg="yellow")
     if groupes_refuses:
         click.secho(f"\n  {len(groupes_refuses)} groupe(s) refusé(s) par l'API :", fg="yellow")
         for groupe, motif in groupes_refuses:
