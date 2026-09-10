@@ -192,6 +192,19 @@ taxo_groups = []
 # rapprochement des observations d'un même contributeur.
 pseudonymisation_secret = ""
 
+# ── Retour vers la donnée source ─────────────────────────────────────────────
+# Alimente gn_synthese.t_sources.url_source, d'où le bouton « voir la donnée source ».
+# Non renseignée, la valeur est <instance>/index.php?m_id=54&id=
+#
+# ⚠ GeoNature construit le lien en insérant un SLASH :
+#     link.href = url_source + '/' + id_pk_source
+# Le résultat est donc .../index.php?m_id=54&id=/176983543, que Biolovision ne lit pas.
+# Aucune valeur d'url_source ne permet d'obtenir &id=176983543 à travers ce
+# constructeur : la limite est dans GeoNature, pas dans le connecteur.
+#
+# Mettre "" pour supprimer le bouton plutôt que d'offrir un lien mort.
+# url_source = ""
+
 # ── Périmètre géographique ───────────────────────────────────────────────────
 # Codes de département à conserver. Vérifiés sur `place.county` de chaque relevé, donc
 # fiables quoi qu'il arrive. Vide = toute l'étendue de l'instance : sur Faune-Occitanie,

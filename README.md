@@ -456,6 +456,30 @@ que le premier est bien authentifié.
   none` et sur le contrôleur `observers` ;
 - **corps vide** : tout le reste. C'est celui qui coûte des heures.
 
+### Le lien « voir la donnée source »
+
+⚠️ **GeoNature insère un slash entre `url_source` et `entity_source_pk_value`** :
+
+```typescript
+link.href = url_source + '/' + id_pk_source;   // synthese-list.component.ts:181
+```
+
+Une URL en chaîne de requête devient donc `…/index.php?m_id=54&id=/176983543`, que
+Biolovision ne sait pas lire. **Aucune valeur d'`url_source` ne permet d'obtenir
+`&id=176983543`** à travers ce constructeur : la limite est dans le cœur, pas dans le
+connecteur. Elle vaut pour toute source dont l'URL de retour n'est pas de la forme
+`.../chemin/<identifiant>`.
+
+Deux conduites possibles, au choix de l'exploitant :
+
+```toml
+[visionature]
+# url_source = ""    # supprime le bouton plutôt que d'offrir un lien mort
+```
+
+Le laisser vide vaut mieux qu'un bouton qui mène à une page d'erreur ; le laisser tel
+quel garde une trace de l'identifiant, qu'un utilisateur averti sait corriger à la main.
+
 ### Restreindre le périmètre
 
 Sans filtre, `vn-import` moissonne **toute l'étendue de l'instance** : treize départements

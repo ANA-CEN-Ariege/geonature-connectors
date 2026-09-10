@@ -189,6 +189,14 @@ class VisioNatureSchemaConf(Schema):
     # erreur, d'où la vérification systématique sur `departements` ci-dessus.
     # `geonature connectors vn-territoires` liste les valeurs de l'instance.
     filtre_api = fields.Dict(load_default=dict)
+    # URL de retour vers la donnée source, dans `gn_synthese.t_sources.url_source`.
+    # Non renseignée, elle vaut `<instance>/index.php?m_id=54&id=`.
+    # ⚠ GeoNature insère un SLASH entre `url_source` et `entity_source_pk_value`
+    # (`link.href = url_source + '/' + id_pk_source`), ce qui donne `…&id=/176983543`.
+    # Aucune valeur ne permet d'obtenir `&id=176983543` à travers ce constructeur ;
+    # mettre "" supprime le bouton plutôt que de proposer un lien mort.
+    url_source = fields.String(load_default=None, allow_none=True)
+
     # ── Moissonnage complet ──────────────────────────────────────────────────
     # Le moissonnage complet passe par `observations/search` : `api_list` est déprécié
     # en amont et refusé par l'API. Une recherche sans périmètre territorial est refusée
