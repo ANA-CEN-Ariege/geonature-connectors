@@ -213,14 +213,26 @@ def filtres_serveur(cfg) -> dict:
     return filtres
 
 
-def observations(session, cfg, journal=None) -> list[dict]:
+def observations(session, cfg, journal=None, max_results: int = 0) -> list[dict]:
     """Toutes les observations du périmètre configuré, en features GeoJSON.
 
     Le nombre total annoncé par la première page sert de garde-fou : si la pagination
     s'arrête avant de l'atteindre, on le signale plutôt que de rendre un corpus tronqué
     qu'un bilan présenterait comme complet.
+
+    `max_results` borne volontairement la moisson — pour un premier essai d'écriture sur
+    une instance de travail, plutôt que de verser 8 000 observations d'un coup. La
+    troncature étant alors **voulue**, elle ne déclenche pas l'avertissement de
+    pagination incomplète : un garde-fou qui crie à chaque usage normal cesse d'être lu.
+
+    ⚠ Le tri de l'API étant `-timestamp_update`, une moisson bornée ramène les
+    observations **les plus récemment modifiées**, pas un échantillon représentatif.
+    C'est sans importance pour éprouver une écriture, mais il ne faut pas en tirer de
+    conclusion sur le corpus.
     """
     taille = min(int(cfg.get("page_size", TAILLE_PAGE_MAX)), TAILLE_PAGE_MAX)
+    if max_results:
+        taille = min(taille, max_results)
     filtres = filtres_serveur(cfg)
     features: list[dict] = []
     annonce = None
@@ -234,6 +246,12 @@ def observations(session, cfg, journal=None) -> list[dict]:
                         + (f" (filtres {filtres})" if filtres else ""))
         lot = ((charge.get("results") or {}).get("features")) or []
         features.extend(lot)
+        if max_results and len(features) >= max_results:
+            features = features[:max_results]
+            if journal:
+                journal(f"  moisson bornée à {max_results} observation(s) "
+                        f"(les plus récemment modifiées)")
+            return features
         if not charge.get("next") or not lot:
             break
         numero += 1

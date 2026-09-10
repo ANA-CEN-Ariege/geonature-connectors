@@ -440,3 +440,78 @@ def test_un_filtre_anti_robot_est_nomme_explicitement():
             ReponseFactice(200, "https://demo.dbchiro.org/api/v1/search",
                            text="<html>within.website challenge</html>"),
             "https://demo.dbchiro.org/api/v1/search")
+
+
+# ── Moisson bornée ───────────────────────────────────────────────────────────
+
+class SessionFactice:
+    """Rend des pages canoniques, en enregistrant les paramètres demandés."""
+
+    def __init__(self, total, taille_reelle=None):
+        self.total = total
+        self.taille_reelle = taille_reelle
+        self.appels = []
+
+    def get(self, url, params=None, timeout=None):
+        params = params or {}
+        self.appels.append(params)
+        taille = self.taille_reelle or int(params.get("page_size", 100))
+        page = int(params.get("page", 1))
+        debut = (page - 1) * taille
+        lot = [{"id": i, "type": "Feature"}
+               for i in range(debut, min(debut + taille, self.total))]
+        suivant = "http://exemple/?page=%d" % (page + 1) if debut + taille < self.total else None
+        return ReponseFactice(200, url,
+                              json_={"count": self.total, "next": suivant,
+                                     "results": {"features": lot}})
+
+
+def test_la_moisson_bornee_sarrete_au_plafond():
+    session = SessionFactice(8008)
+    features = A.observations(session, {"url": "https://x", "page_size": 5000},
+                              max_results=25)
+    assert len(features) == 25
+
+
+def test_la_moisson_bornee_ne_demande_pas_plus_que_necessaire():
+    """Inutile de réclamer 5 000 observations pour en garder 25."""
+    session = SessionFactice(8008)
+    A.observations(session, {"url": "https://x", "page_size": 5000}, max_results=25)
+    assert session.appels[0]["page_size"] == 25
+    assert len(session.appels) == 1
+
+
+def test_une_troncature_voulue_ne_declenche_pas_lavertissement():
+    """Un garde-fou qui crie à chaque usage normal cesse d'être lu."""
+    session = SessionFactice(8008)
+    messages = []
+    features = A.observations(session, {"url": "https://x"}, journal=messages.append,
+                              max_results=10)
+    assert len(features) == 10
+    assert not any("pagination incomplète" in m for m in messages)
+    assert any("bornée" in m for m in messages)
+
+
+def test_une_moisson_complete_verifie_toujours_le_total():
+    session = SessionFactice(50)
+    messages = []
+    features = A.observations(session, {"url": "https://x", "page_size": 5000},
+                              journal=messages.append)
+    assert len(features) == 50
+    assert not any("pagination incomplète" in m for m in messages)
+
+
+def test_une_pagination_qui_sarrete_trop_tot_est_signalee():
+    """L'instance annonce 8 008 mais n'en rend que 50 : le bilan ne doit pas le taire."""
+    session = SessionFactice(8008, taille_reelle=50)
+
+    class Menteuse(SessionFactice):
+        def get(self, url, params=None, timeout=None):
+            self.appels.append(params or {})
+            return ReponseFactice(200, url,
+                                  json_={"count": 8008, "next": None,
+                                         "results": {"features": [{"id": 1}] * 50}})
+
+    messages = []
+    A.observations(Menteuse(8008), {"url": "https://x"}, journal=messages.append)
+    assert any("pagination incomplète" in m for m in messages)

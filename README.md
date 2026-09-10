@@ -852,8 +852,13 @@ departements = ["09"]
 ```bash
 geonature connectors dbchiro-zonages --q ariege   # trouver l'identifiant de zonage
 geonature connectors dbchiro-import --dry-run
+geonature connectors dbchiro-import --max-results 25   # premier essai d'écriture
 geonature connectors dbchiro-import
 ```
+
+⚠ `--max-results` ramène les observations **les plus récemment modifiées**, l'API triant
+sur `-timestamp_update`. C'est fait pour éprouver une écriture sur une instance de
+travail, pas pour prélever un échantillon représentatif.
 
 ### Le compte de service décide du périmètre
 
@@ -1017,7 +1022,7 @@ finir en erreur de décodage JSON.
 python3 -m pytest tests/ -q
 ```
 
-299 tests, sans dépendance à GeoNature ni à la base. Ils couvrent les cas qui ont
+304 tests, sans dépendance à GeoNature ni à la base. Ils couvrent les cas qui ont
 réellement mordu pendant le développement : le faux-ami `Nymph` / « Nymphe », les dates
 en intervalle ISO, l'asymétrie énumération/URL des licences, la distinction entre origine
 du taxon et état de l'individu, et le déterminisme de l'identifiant unique.

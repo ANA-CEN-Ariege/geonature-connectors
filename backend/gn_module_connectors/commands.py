@@ -1223,9 +1223,14 @@ def vn_groupes():
 @click.option("--importer-absences/--ecarter-absences", default=None,
               help="Verser les codes d'absence en STATUT_OBS « Non observé » "
                    "(défaut : configuration).")
+@click.option("--max-results", default=0, type=int,
+              help="Plafonne le nombre d'observations moissonnées (0 = tout). Les plus "
+                   "récemment modifiées d'abord — pour un premier essai d'écriture, pas "
+                   "pour un échantillon représentatif.")
 @click.option("--batch-size", default=None, type=int)
 @click.option("--dry-run", is_flag=True)
-def dbchiro_import(area, departements, importer_absences, batch_size, dry_run):
+def dbchiro_import(area, departements, importer_absences, max_results, batch_size,
+                   dry_run):
     """Importe des observations dbChiro dans la Synthèse."""
     from geonature.utils.config import config as gn_config
     from .core import (report as report_core, synthese as syn_core,
@@ -1291,7 +1296,8 @@ def dbchiro_import(area, departements, importer_absences, batch_size, dry_run):
     click.echo("Connexion à l'instance dbChiro…")
     try:
         session = db_api.connecter(cfg)
-        features = db_api.observations(session, cfg, journal=click.echo)
+        features = db_api.observations(session, cfg, journal=click.echo,
+                                       max_results=max_results)
     except db_api.ErreurDbChiro as exc:
         raise click.ClickException(str(exc))
     click.echo(f"  {len(features)} observation(s) reçue(s).")
