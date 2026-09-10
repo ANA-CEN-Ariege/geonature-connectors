@@ -662,24 +662,12 @@ def vn_import(groupes, since, batch_size, dry_run):
                     "meta_v_taxref restera NULL.", fg="yellow")
 
     # L'URL de la source ne peut être connue qu'ici : elle dépend de l'instance.
-    #
-    # ⚠ GeoNature construit le lien « voir la donnée source » en insérant un SLASH :
-    #     link.href = url_source + '/' + id_pk_source
-    # (`synthese-list.component.ts:181` et `synthese-info-obs.component.ts:356`).
-    # Une URL en chaîne de requête devient donc `…?m_id=54&id=/176983543`, que
-    # Biolovision ne sait pas lire. Le défaut ci-dessous produit cette forme faute de
-    # mieux : il n'existe pas de valeur d'`url_source` qui donne `&id=176983543` à
-    # travers ce constructeur.
-    #
-    # D'où le réglage : chaque exploitant peut poser la forme qui convient à son
-    # instance, ou une chaîne vide pour supprimer un bouton qui mène à une page d'erreur.
-    url_source = cfg.get("url_source")
-    if url_source is None:
-        url_source = f"{instance}/index.php?m_id=54&id="
+    # Le séparateur est laissé au constructeur de lien de GeoNature, qui ne l'ajoute que
+    # s'il manque (`shared/syntheseSharedModule/source-link.ts`).
     db.session.execute(
         db_text("UPDATE gn_synthese.t_sources SET url_source = :u "
                 "WHERE id_source = :s AND url_source IS DISTINCT FROM :u"),
-        {"u": url_source or None, "s": id_source})
+        {"u": f"{instance}/index.php?m_id=54&id=", "s": id_source})
 
     # Cache des référentiels : outil de mise au point, désactivé par défaut. Voir
     # `core/cache.py` — le référentiel des observateurs contient des noms de personnes.
