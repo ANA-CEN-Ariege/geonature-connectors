@@ -382,6 +382,30 @@ def precision_metres(sighting: dict, observation: dict) -> int | None:
     return _entier(observation.get("precision"))
 
 
+def identifiant_releve(sighting: dict, observation: dict) -> str:
+    """Identifiant du relevé, quelle que soit la réponse qui l'a livré.
+
+    ⚠ Selon le point d'entrée, il ne se trouve pas au même endroit :
+
+    - `api_list` et `api_get` posent `@id` sur le relevé ;
+    - **`observations/search` ne le pose PAS**. Ses relevés ne portent que `date`,
+      `observers`, `place` et `species` ; l'identifiant est dans
+      `observers[0].id_sighting`, à côté de `id_universal`.
+
+    Le lire uniquement sur le relevé laissait `entity_source_pk_value` vide pour tout ce
+    qui vient de `search` — c'est-à-dire pour tout le moissonnage. Le bouton « voir la
+    donnée source » de la Synthèse pointait alors vers
+    `…/index.php?m_id=54&id=` sans identifiant.
+    """
+    for valeur in (sighting.get("@id"),
+                   observation.get("id_sighting"),
+                   observation.get("id_universal")):
+        texte = str(valeur or "").strip()
+        if texte:
+            return texte
+    return ""
+
+
 def code_projet(observation: dict) -> str | None:
     """Code projet VisioNature, s'il existe.
 
@@ -447,7 +471,7 @@ def to_row(sighting: dict, observation: dict, *, cd_nom: int, id_dataset: int | 
     provenance = {
         "source": "VisioNature",
         "instance": instance,
-        "sighting_id": str(sighting.get("@id") or ""),
+        "sighting_id": identifiant_releve(sighting, observation),
         "observation_id": str(observation.get("@id") or ""),
         "species_id": str(espece.get("@id") or ""),
         "species_name": espece.get("name") or "",
@@ -502,7 +526,7 @@ def to_row(sighting: dict, observation: dict, *, cd_nom: int, id_dataset: int | 
         "id_source": id_source,
         "id_module": id_module,
         "id_dataset": id_dataset,
-        "entity_source_pk_value": str(sighting.get("@id") or ""),
+        "entity_source_pk_value": identifiant_releve(sighting, observation),
         "cd_nom": cd_nom,
         "nom_cite": (espece.get("name") or "?")[:1000],
         # `date_max = date_min` : une observation VisioNature est ponctuelle, elle ne

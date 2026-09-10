@@ -457,6 +457,37 @@ que le premier est bien authentifié.
   none` et sur le contrôleur `observers` ;
 - **corps vide** : tout le reste. C'est celui qui coûte des heures.
 
+### Le lien « voir la donnée source »
+
+Le bouton de la Synthèse ouvre la fiche de l'observation sur le portail VisioNature
+d'origine. Il passe par une **redirection du module** plutôt que d'y pointer directement.
+
+⚠️ GeoNature construit ce lien en insérant systématiquement un séparateur :
+
+```typescript
+link.href = url_source + '/' + id_pk_source;   // synthese-list.component.ts:181
+```
+
+Une URL de retour en chaîne de requête — celle de Biolovision est
+`…/index.php?m_id=54&id=` — devient donc `…&id=/176983543`, que le portail ne sait pas
+lire. Aucune valeur d'`url_source` ne peut produire `&id=176983543` à travers ce
+constructeur.
+
+Plutôt que de détourner `entity_source_pk_value` pour y loger un fragment d'URL, le
+module donne au cœur ce qu'il sait produire — **un chemin terminé par l'identifiant** :
+
+```
+url_source              <API_ENDPOINT>/connectors/visionature
+entity_source_pk_value  176983543
+lien produit            <API_ENDPOINT>/connectors/visionature/176983543
+                        → 302 vers …/index.php?m_id=54&id=176983543
+```
+
+La colonne garde l'identifiant brut, `entity_source_pk_field` reste exact, et le cœur
+n'est pas modifié. La route (`blueprint.voir_dans_visionature`) refuse tout identifiant
+qui ne soit pas numérique, plutôt que de concaténer dans une redirection ce qui vient
+d'une URL.
+
 ### Restreindre le périmètre
 
 Sans filtre, `vn-import` moissonne **toute l'étendue de l'instance** : treize départements

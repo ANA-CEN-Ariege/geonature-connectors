@@ -661,11 +661,22 @@ def vn_import(groupes, since, batch_size, dry_run):
         click.secho("  ⚠ paramètre `taxref_version` absent de gn_commons.t_parameters : "
                     "meta_v_taxref restera NULL.", fg="yellow")
 
-    # L'URL de la source ne peut être connue qu'ici : elle dépend de l'instance.
-    db.session.execute(
-        db_text("UPDATE gn_synthese.t_sources SET url_source = :u "
-                "WHERE id_source = :s AND url_source IS DISTINCT FROM :u"),
-        {"u": f"{instance}/index.php?m_id=54&id=", "s": id_source})
+    # `url_source` pointe sur la redirection du module, et non directement sur le
+    # portail. GeoNature construit le lien en insérant toujours un séparateur —
+    # `url_source + '/' + entity_source_pk_value` — ce qu'une URL de retour en chaîne de
+    # requête ne supporte pas : `…/index.php?m_id=54&id=` donnerait `…&id=/176983543`.
+    # Un chemin terminé par l'identifiant est en revanche exactement ce que le cœur sait
+    # produire. `entity_source_pk_value` garde donc l'identifiant brut, et
+    # `blueprint.voir_dans_visionature` se charge de la redirection.
+    api = str(gn_config.get("API_ENDPOINT") or "").rstrip("/")
+    if api:
+        db.session.execute(
+            db_text("UPDATE gn_synthese.t_sources SET url_source = :u "
+                    "WHERE id_source = :s AND url_source IS DISTINCT FROM :u"),
+            {"u": f"{api}/connectors/visionature", "s": id_source})
+    else:
+        click.secho("  ⚠ API_ENDPOINT absent de la configuration GeoNature : le bouton "
+                    "« voir la donnée source » ne sera pas alimenté.", fg="yellow")
 
     # Cache des référentiels : outil de mise au point, désactivé par défaut. Voir
     # `core/cache.py` — le référentiel des observateurs contient des noms de personnes.
@@ -877,13 +888,13 @@ def vn_import(groupes, since, batch_size, dry_run):
                     if respecter:
                         motif = vn_conf.est_confidentielle(observation, sighting)
                         if motif:
-                            rejets.add("confidentielle", sighting.get("@id"),
+                            rejets.add("confidentielle", vn_tr.identifiant_releve(sighting, observation),
                                        (sighting.get("species") or {}).get("name"), motif)
                             continue
                     cd_nom = vn_taxo.resolve(sighting, index)
                     if not cd_nom:
                         espece = (sighting.get("species") or {})
-                        rejets.add("no_cd_nom", sighting.get("@id"), espece.get("name"),
+                        rejets.add("no_cd_nom", vn_tr.identifiant_releve(sighting, observation), espece.get("name"),
                                    f"species_id={espece.get('@id')}")
                         continue
                     ligne = vn_tr.to_row(sighting, observation, cd_nom=cd_nom,
@@ -900,7 +911,7 @@ def vn_import(groupes, since, batch_size, dry_run):
                                          version_taxref=v_taxref,
                                          repro=contexte_repro)
                     if ligne is None:
-                        rejets.add("no_coordinates", sighting.get("@id"),
+                        rejets.add("no_coordinates", vn_tr.identifiant_releve(sighting, observation),
                                    (sighting.get("species") or {}).get("name"), "")
                         continue
                     ligne["_projet"] = vn_tr.code_projet(observation) if par_projet else None
@@ -1898,6 +1909,20 @@ def vn_purge(projet, taxon, drop_empty_datasets, yes):
     click.echo(f"{n} observation(s) concernée(s) — {quoi}.")
 
     if not n:
+        total = purge_core.compter(id_source, id_dataset)
+        if taxon and total:
+            # « 0 concernée » alors que la Synthèse en montre : le nom de rang cherché
+            # n'existe pas dans TAXREF, ou pas sous cette forme. Montrer ce qu'il y a.
+            click.secho(f"  ⚠ aucun taxon ne correspond à « {taxon} », alors que la "
+                        f"source porte {total} observation(s). Rangs présents :",
+                        fg="yellow")
+            click.echo(f"    {'classe':<20}  {'ordre':<20}  {'famille':<24}  n")
+            for classe, ordre, famille, combien in purge_core.rangs_presents(
+                    id_source, id_dataset):
+                click.echo(f"    {str(classe or '—'):<20}  {str(ordre or '—'):<20}  "
+                           f"{str(famille or '—'):<24}  {combien}")
+            click.echo("  Reprenez --taxon avec l'un de ces noms, ou omettez-le pour "
+                       "purger toute la source.")
         return
     if not yes:
         click.secho("Simulation. Relancez avec --yes pour supprimer.", fg="yellow")

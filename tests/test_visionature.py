@@ -1035,3 +1035,32 @@ def test_anonymize_impose_bien_le_pseudonyme():
         {"@uid": "7", "name": "Untel", "anonymous": "0",
          "anonymous_in_export": "anonymize"}, {"7": False}, "cle")
     assert nom.startswith("obs-") and "anonymat demandé" in motif
+
+
+# ── Identifiant du relevé, et donc lien vers la donnée source ────────────────
+
+def test_lidentifiant_du_releve_vient_des_observers_dans_search():
+    """`observations/search` ne pose pas `@id` sur le relevé.
+
+    Ses relevés ne portent que `date`, `observers`, `place` et `species` ; l'identifiant
+    est dans `observers[0].id_sighting`. Le lire uniquement sur le relevé laissait
+    `entity_source_pk_value` vide pour TOUT le moissonnage, et le bouton « voir la donnée
+    source » de la Synthèse pointait vers `…/index.php?m_id=54&id=` sans identifiant.
+    """
+    releve = {"date": {}, "species": {}, "place": {}}
+    observation = {"id_sighting": "176983543", "id_universal": "9:176983543"}
+    assert T.identifiant_releve(releve, observation) == "176983543"
+
+
+def test_lidentifiant_du_releve_prime_quand_il_existe():
+    """`api_list` et `api_get`, eux, le posent bien sur le relevé."""
+    assert T.identifiant_releve({"@id": "123"}, {"id_sighting": "999"}) == "123"
+
+
+def test_repli_sur_id_universal():
+    assert T.identifiant_releve({}, {"id_universal": "9:1"}) == "9:1"
+
+
+def test_sans_identifiant_la_valeur_est_vide_et_non_none():
+    """`entity_source_pk_value` est une colonne texte : None y ferait échouer l'insert."""
+    assert T.identifiant_releve({}, {}) == ""

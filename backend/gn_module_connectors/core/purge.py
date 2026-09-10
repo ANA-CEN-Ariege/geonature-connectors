@@ -37,6 +37,29 @@ def _conditions(taxon: str | None, max_uncertainty: int | None) -> tuple[str, di
     return ("".join(f" AND {c}" for c in clauses), params)
 
 
+def rangs_presents(id_source: int, id_dataset: int | None = None) -> list[tuple]:
+    """Rangs TAXREF réellement portés par les observations d'une source.
+
+    Un `--taxon` qui ne correspond à rien laisse l'utilisateur sans indice : « 0
+    observation concernée » alors qu'il en voit dans l'interface. Les noms de rangs de
+    TAXREF ne sont pas ceux du langage courant, et ils changent d'une version à l'autre —
+    autant montrer ce que la base contient plutôt que de faire deviner.
+    """
+    return [
+        tuple(r) for r in db.session.execute(
+            text("""SELECT t.classe, t.ordre, t.famille, count(*)
+                    FROM gn_synthese.synthese s
+                    JOIN taxonomie.taxref t ON t.cd_nom = s.cd_nom
+                    WHERE s.id_source = :src
+                      AND (:jdd IS NULL OR s.id_dataset = :jdd)
+                    GROUP BY 1, 2, 3
+                    ORDER BY 4 DESC
+                    LIMIT 15"""),
+            {"src": id_source, "jdd": id_dataset},
+        ).all()
+    ]
+
+
 def compter(id_source: int, id_dataset: int | None = None, taxon: str | None = None,
             max_uncertainty: int | None = None) -> int:
     cond, params = _conditions(taxon, max_uncertainty)
