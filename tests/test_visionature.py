@@ -924,3 +924,48 @@ def test_un_refus_qui_persiste_au_plancher_remonte(monkeypatch):
     with pytest.raises(bio.HTTPError):
         list(A.moissonner_recherche({}, "1", date(2026, 1, 1), date(2026, 1, 5),
                                     ["109"], tranche_jours=2))
+
+
+def test_trois_lots_refuses_daffilee_abandonnent_le_groupe(monkeypatch):
+    """Un groupe hors périmètre refuse TOUS ses lots : s'obstiner est inutile.
+
+    Mesuré sur faune-occitanie.org : un jour d'oiseaux rend 26 023 identifiants, soit
+    260 lots. Les émettre tous alors que le premier a été refusé fait passer pour lent
+    ce qui est simplement fermé.
+    """
+    from gn_module_connectors.sources.visionature.biolovision import api as bio
+
+    appels = []
+
+    class ControleurFactice:
+        def api_list(self, groupe, id_sightings_list=None, **_k):
+            appels.append(id_sightings_list)
+            raise bio.HTTPError(403)
+
+    monkeypatch.setattr(A, "_controleur", lambda *_a, **_k: ControleurFactice())
+    with pytest.raises(A.GroupeInaccessible, match="hors du périmètre"):
+        A.observations_par_identifiants({}, "1", [str(i) for i in range(2000)])
+
+    assert len(appels) == A.ECHECS_AVANT_ABANDON, "il ne faut pas émettre les vingt lots"
+
+
+def test_un_echec_isole_ninterrompt_pas(monkeypatch):
+    """Un refus ponctuel au milieu d'un moissonnage sain doit être absorbé."""
+    from gn_module_connectors.sources.visionature.biolovision import api as bio
+
+    etat = {"n": 0}
+
+    class ControleurFactice:
+        def api_list(self, groupe, id_sightings_list=None, **_k):
+            etat["n"] += 1
+            if etat["n"] == 2:
+                raise bio.HTTPError(500)
+            cles = id_sightings_list.split(",")
+            return {"data": {"sightings": [{"@id": c} for c in cles]}}
+
+    monkeypatch.setattr(A, "_controleur", lambda *_a, **_k: ControleurFactice())
+    releves, inaccessibles = A.observations_par_identifiants(
+        {}, "1", [str(i) for i in range(300)])
+
+    assert len(releves) == 200
+    assert len(inaccessibles) == 100

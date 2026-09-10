@@ -21,6 +21,14 @@ l'absence d'une occurrence, jamais sa suppression.
 from .biolovision import api as bio
 
 
+class GroupeInaccessible(Exception):
+    """Un groupe taxonomique dont l'API refuse systématiquement les données.
+
+    Distincte d'une erreur ponctuelle : elle signale qu'insister est inutile, et porte
+    les identifiants qui n'ont pas même été demandés.
+    """
+
+
 def _controleur(classe, cfg):
     """Instancie un contrôleur Biolovision.
 
@@ -351,6 +359,14 @@ def identifiant(entree: dict) -> str | None:
 # (`max_list_length`), et découpe la liste en tranches de cette taille.
 LOT_IDENTIFIANTS = 100
 
+# Lots consécutifs en échec avant d'abandonner le groupe.
+#
+# Un refus n'est pas toujours ponctuel : quand un groupe taxonomique est hors du périmètre
+# de la clé d'API, TOUS les lots échouent. S'obstiner revient alors à émettre des
+# centaines de requêtes vouées au refus — 260 pour un jour d'oiseaux — et à faire passer
+# pour lent ce qui est simplement fermé. Trois échecs d'affilée suffisent à conclure.
+ECHECS_AVANT_ABANDON = 3
+
 
 def observations_par_identifiants(cfg, id_taxo_group: str, identifiants: list[str],
                                   journal=None) -> tuple[list[dict], list[tuple[str, str]]]:
@@ -373,6 +389,7 @@ def observations_par_identifiants(cfg, id_taxo_group: str, identifiants: list[st
     """
     controleur = _controleur(bio.ObservationsAPI, cfg)
     releves, inaccessibles = [], []
+    echecs = 0
     for debut in range(0, len(identifiants), LOT_IDENTIFIANTS):
         lot = identifiants[debut:debut + LOT_IDENTIFIANTS]
         try:
@@ -380,8 +397,19 @@ def observations_par_identifiants(cfg, id_taxo_group: str, identifiants: list[st
                                           id_sightings_list=",".join(lot),
                                           short_version=SHORT_VERSION)
             releves.extend(_extraire(reponse))
+            echecs = 0
         except bio.BiolovisionApiException as erreur:
+            echecs += 1
             inaccessibles.extend((cle, f"lot : {erreur!r}") for cle in lot)
+            if echecs >= ECHECS_AVANT_ABANDON:
+                restants = identifiants[debut + len(lot):]
+                inaccessibles.extend(
+                    (cle, f"groupe abandonné après {echecs} lots refusés d'affilée")
+                    for cle in restants)
+                raise GroupeInaccessible(
+                    f"{echecs} lots consécutifs refusés ({erreur!r}) : le groupe "
+                    f"{id_taxo_group} paraît hors du périmètre de la clé d'API. "
+                    f"{len(restants)} identifiant(s) non demandé(s).") from erreur
         if journal:
             journal(debut + len(lot), len(identifiants))
     return releves, inaccessibles

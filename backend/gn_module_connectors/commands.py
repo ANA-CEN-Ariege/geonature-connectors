@@ -826,6 +826,10 @@ def vn_import(groupes, since, batch_size, dry_run):
             try:
                 releves, inaccessibles = vn_api.observations_modifiees(
                     cfg, str(groupe), since, journal=_avancement)
+            except vn_api.GroupeInaccessible as erreur:
+                groupes_refuses.append((str(groupe), str(erreur)))
+                click.secho(f"    {erreur}", fg="yellow")
+                continue
             except vn_api.bio.BiolovisionApiException as erreur:
                 groupes_refuses.append((str(groupe), f"diff : {erreur!r}"))
                 click.secho(f"    refusé par l'API ({erreur!r})", fg="yellow")
