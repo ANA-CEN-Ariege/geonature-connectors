@@ -182,7 +182,7 @@ client_secret = ""
 #
 # ⚠ Ces identifiants sont ceux de Faune-Occitanie, relevés le 10/09/2026. Rien ne
 #   garantit qu'ils soient les mêmes sur une autre instance : les vérifier avec
-#       geonature connectors vn-groupes
+#       geonature connectors visionature-groupes
 #   qui affiche l'identifiant, le code, l'`access_mode` et la couverture « repro ».
 #
 # La colonne « repro » ci-dessous indique les groupes pour lesquels le module sait
@@ -224,7 +224,7 @@ client_secret = ""
 #    43  TAXO_GROUP_DERMAPTERA       —       Dermaptères
 #    51  TAXO_GROUP_FORMICIDAE       —       Fourmis
 #
-# `vn-volumetrie` chiffre le coût de chacun avant de choisir : sur Faune-Occitanie,
+# `visionature-volumetrie` chiffre le coût de chacun avant de choisir : sur Faune-Occitanie,
 # les oiseaux pèsent 76 % des modifications quotidiennes à eux seuls.
 #
 #   taxo_groups = ["2", "6", "7"]     # chiroptères, reptiles, amphibiens
