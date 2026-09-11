@@ -77,6 +77,24 @@ STATUT_BIO_REPRODUCTION = "3"
 # donc une station, pas un périmètre d'inventaire.
 NAT_OBJ_GEO_STATIONNEL = "St"
 
+# Statut de la source. dbChiroWeb est un outil de saisie de terrain : chaque observation
+# vient d'une session menée sur un gîte ou un point d'écoute. L'argument est celui de
+# VisioNature, qui pose la même constante ; faute de la poser ici, la colonne prenait le
+# défaut de la Synthèse — « NSP » (Ne sait pas) —, ce qui est faux et non pas prudent.
+STATUT_SOURCE = "Te"          # Terrain
+
+# Objet du dénombrement. `total_count` compte des individus : les `countdetails` (sexe,
+# âge, état sexuel) ne sont pas exposés par `/api/v1/search`, mais le total, lui, porte
+# bien sur des animaux. Sans cette valeur, un effectif entrait en Synthèse sans qu'on
+# sache ce qu'il dénombrait.
+#
+# ⚠ `TYP_DENBR` reste au défaut, à dessein, et c'est une divergence assumée avec GBIF et
+# VisioNature. Un comptage de gîte est souvent une estimation — 200 individus en essaim
+# ne se comptent pas un à un — et l'API n'expose aucun équivalent de l'`estimation_code`
+# de VisioNature. Écrire « Compté » ferait passer une estimation pour un comptage, ce
+# qui fausse précisément les analyses quantitatives que la colonne sert à qualifier.
+OBJ_DENBR_INDIVIDU = "IND"
+
 
 def contact(properties: dict) -> str:
     """Code de méthode de contact d'une observation, normalisé."""
@@ -118,6 +136,14 @@ def est_colonie_reproduction(properties: dict) -> bool:
     return properties.get("breed_colo") is True
 
 
+def effectif(properties: dict) -> int | None:
+    """`total_count` de l'observation, quand dbChiro le renseigne."""
+    try:
+        return int(str(properties.get("total_count")).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 def est_douteuse(properties: dict) -> bool:
     """`is_doubtful` : la détermination est-elle signalée comme incertaine ?"""
     return properties.get("is_doubtful") is True
@@ -135,7 +161,10 @@ def cd_nomenclatures(properties: dict, *, absence: bool = False,
         "METH_OBS": CONTACT_METH_OBS.get(code),
         "ETA_BIO": CONTACT_ETA_BIO.get(code),
         "STATUT_OBS": STATUT_OBS_ABSENT if absence else STATUT_OBS_PRESENT,
+        "STATUT_SOURCE": STATUT_SOURCE,
         "NAT_OBJ_GEO": NAT_OBJ_GEO_STATIONNEL,
+        "OBJ_DENBR": (None if absence or not effectif(properties)
+                      else OBJ_DENBR_INDIVIDU),
         "STATUT_BIO": (STATUT_BIO_REPRODUCTION
                        if est_colonie_reproduction(properties) else None),
     }

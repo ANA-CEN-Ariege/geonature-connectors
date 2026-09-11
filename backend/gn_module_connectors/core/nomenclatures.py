@@ -53,27 +53,44 @@ class Resolver:
     configuration se lit en libellés, les tables de correspondance s'écrivent en codes,
     et la traduction se fait une fois au démarrage plutôt qu'en propageant deux
     vocabulaires dans toute la chaîne. `valeurs()` sert les messages d'erreur.
+
+    Enfin `manques` : les valeurs qu'aucune des deux familles n'a su résoudre. Le
+    connecteur GeoNature tient déjà le sien, parce qu'il doit distinguer le libellé d'un
+    producteur du niveau de diffusion ; celui-ci sert aux trois autres, qui retombaient
+    sur le défaut sans rien dire.
     """
 
     def __init__(self):
-        self._ids: dict[tuple[str, str], int | None] = {}
         self._defauts: dict[str, int | None] = {}
         # Un type de nomenclature entier par entrée, chargé en une requête.
         self._types: dict[str, "TypeNomenclature"] = {}
+        # Valeurs qu'on n'a pas su résoudre, collectées plutôt que taries : la commande
+        # les affiche en fin d'import. Sans ce registre, une correspondance devenue
+        # fausse — une valeur que l'instance a retirée de son référentiel — se solderait
+        # par une colonne au défaut, sans un mot. C'est le silence qu'on reproche à
+        # api2GN ; il n'a pas de raison d'être toléré pour les autres sources.
+        self.manques: set[tuple[str, str]] = set()
 
     def id(self, mnemonique: str, cd: str | None) -> int | None:
-        """id_nomenclature, ou le défaut de la colonne si `cd` est None ou inconnu."""
+        """id_nomenclature, ou le défaut de la colonne si `cd` est None ou inconnu.
+
+        Résolu par le type déjà chargé, et non par `get_id_nomenclature` : une requête
+        par type plutôt qu'une par valeur, et surtout **le même filtre `active` que
+        `id_souple`**. La fonction SQL, elle, n'en pose aucun (cf. `_charger_type`) :
+        les deux familles de méthodes écrivaient donc des valeurs différentes sur une
+        instance ayant retiré une valeur de son référentiel — l'une l'écrivait, l'autre
+        la refusait.
+        """
         if cd is None:
             return self.defaut(mnemonique)
-        cle = (mnemonique, str(cd))
-        if cle not in self._ids:
-            self._ids[cle] = db.session.execute(
-                text("SELECT ref_nomenclatures.get_id_nomenclature(:m, :c)"),
-                {"m": mnemonique, "c": str(cd)},
-            ).scalar()
+        trouve = self._charger_type(mnemonique).codes.get(str(cd))
+        if trouve is not None:
+            return trouve
         # Une valeur absente du référentiel de l'instance ne doit pas faire échouer
-        # l'insertion : on retombe sur le défaut, qui est toujours valide.
-        return self._ids[cle] if self._ids[cle] is not None else self.defaut(mnemonique)
+        # l'insertion : on retombe sur le défaut, qui est toujours valide. Mais on la
+        # consigne, sans quoi la perte serait invisible.
+        self.manques.add((mnemonique, str(cd)))
+        return self.defaut(mnemonique)
 
     def defaut(self, mnemonique: str) -> int | None:
         if mnemonique not in self._defauts:
@@ -93,8 +110,13 @@ class Resolver:
         pour la poignée de valeurs d'un fichier de configuration, pas dans la boucle qui
         transforme quinze colonnes de chaque observation.
 
-        Le filtre `active` reproduit ce que fait `get_id_nomenclature` : sans lui, on
-        résoudrait vers des valeurs que l'instance a retirées de son référentiel.
+        ⚠ Le filtre `active` ne reproduit **pas** `ref_nomenclatures.get_id_nomenclature`,
+        contrairement à ce qui a longtemps été écrit ici : cette fonction ne filtre pas
+        (`Nomenclature-api-module`, `migrations/data/nomenclatures.sql`, définition
+        unique). Le filtre est un choix du module — ne pas écrire une valeur que
+        l'instance a délibérément retirée de son référentiel —, et `id()` l'applique
+        désormais aussi, faute de quoi deux connecteurs traitaient différemment la même
+        valeur désactivée.
         """
         if mnemonique not in self._types:
             codes: dict[str, int] = {}
@@ -184,6 +206,35 @@ class Resolver:
         par_code = type_nomenclature.libelle_par_cd
         return [f"{cd} ({par_code[cd]})" if cd in par_code else cd
                 for cd in sorted(type_nomenclature.codes, key=lambda c: (len(c), c))]
+
+
+def exiger_cd(resolver: Resolver, mnemonique: str, valeur: str, reglage: str) -> str:
+    """`cd_nomenclature` d'une valeur **de configuration**, ou `ValueError`.
+
+    Une valeur venue du producteur qu'on ne sait pas résoudre est un fait à consigner :
+    elle part dans `manques` et l'import continue, des dizaines de milliers
+    d'observations ne devant pas s'arrêter sur le vocabulaire d'un tiers.
+
+    Une valeur venue de la **configuration** est autre chose : quelqu'un l'a posée
+    délibérément. `Resolver.id` retombe sur le défaut du type, et `NIV_PRECIS` n'en a
+    aucun — une coquille dans `niveau_diffusion` donnait donc NULL, c'est-à-dire la
+    **suppression silencieuse de la restriction** que l'exploitant croyait avoir mise, au
+    moment précis où elle devait jouer. D'où l'échec franc.
+
+    Accepte indifféremment un code ou un libellé : l'interface de GeoNature affiche
+    « Aucune », pas « 4 », et exiger le code sans le dire était la moitié du piège.
+
+    Pendant de `geonature.nomenclatures._exige`, qui rend un `id_nomenclature` et vit
+    dans le connecteur pour le garder exempt de dépendance à la base.
+    """
+    cd = resolver.cd_souple(mnemonique, valeur)
+    if cd is None:
+        connues = ", ".join(resolver.valeurs(mnemonique)[:8])
+        raise ValueError(
+            f"{reglage} = « {valeur} » est introuvable dans le référentiel "
+            f"{mnemonique} de cette instance. Employez un cd_nomenclature ou un libellé "
+            f"exact." + (f" Valeurs connues : {connues}…" if connues else ""))
+    return cd
 
 
 @dataclass

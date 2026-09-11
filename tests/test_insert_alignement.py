@@ -204,12 +204,18 @@ ITEM_GEONATURE = {
     "y_centroid_4326": 42.8,
     # ⚠ Libellés, pas de cd_nomenclature — c'est tout l'enjeu du connecteur.
     "nature_objet_geo": "Stationnel",
-    "type_regroupement": "Session",
+    "type_regroupement": "REL",          # TYP_GRP : les libellés SINP sont les codes
     "methode_regroupement": "Relevé de terrain",
-    "comportement": "Alimentation",
+    # ⚠ Les libellés sont ceux de `t_nomenclatures.label_default`, au caractère près :
+    # « Alimentation » et « Vivant » figuraient ici alors que le référentiel écrit
+    # « Chasse/alimentation » et « Observé vivant ». Le résolveur factice acceptant
+    # n'importe quel libellé, les tests restaient verts sur deux valeurs qu'aucune
+    # instance n'aurait produites — `tests/test_nomenclatures.py` vérifie désormais
+    # chaque libellé de cette fixture contre le référentiel.
+    "comportement": "Chasse/alimentation",
     "technique_obs": "Vu",
     "statut_biologique": "Non renseigné",
-    "etat_biologique": "Vivant",
+    "etat_biologique": "Observé vivant",
     "naturalite": "Sauvage",
     "preuve_existante": "Oui",
     "precision_diffusion": "Précise",
@@ -217,7 +223,7 @@ ITEM_GEONATURE = {
     "sexe": "Femelle",
     "objet_denombrement": "Individu",
     "type_denombrement": "Compté",
-    "niveau_sensibilite": "Non sensible",
+    "niveau_sensibilite": "Non sensible - Diffusion précise",
     "statut_observation": "Présent",
     "floutage_dee": "Non",
     "statut_source": "Terrain",

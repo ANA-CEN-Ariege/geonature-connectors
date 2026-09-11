@@ -36,6 +36,15 @@ from geonature.utils.env import db
 # serait de toute façon écrasé. C'est le défaut du traitement de `gn_vn2synthese`, qui
 # y écrit une valeur aussitôt perdue.
 #
+# Quatre colonnes s'y sont ajoutées — `info_geo_type` (TYP_INF_GEO), `blurring`
+# (DEE_FLOU), `grp_typ` (TYP_GRP) et `determination_method` (METH_DETERMIN). Une vue
+# `v_synthese_sinp` les publie toutes, et les omettre ne les laissait pas vides : elles
+# prenaient le DEFAULT de la Synthèse. Une observation que le producteur rattache à une
+# commune (« Rattachement ») entrait donc en « Géoréférencement », et une donnée qu'il
+# déclare floutée entrait en « Non floutée » — deux affirmations contraires à la source,
+# et non de simples absences. Les trois autres connecteurs n'ont rien à en dire et
+# passent le défaut, ce que `tests/test_insert_alignement.py` impose de toute façon.
+#
 # `id_nomenclature_diffusion_level`, en revanche, est laissée au producteur : GeoNature
 # a retiré son DEFAULT et cessé de la calculer (migration « Do not auto-compute
 # diffusion_level »). NULL y signifie « le producteur ne se prononce pas », et c'est une
@@ -56,6 +65,8 @@ INSERT_SQL = text(
         id_nomenclature_biogeo_status, id_nomenclature_exist_proof,
         id_nomenclature_valid_status, id_nomenclature_behaviour,
         id_nomenclature_diffusion_level, id_nomenclature_geo_object_nature,
+        id_nomenclature_info_geo_type, id_nomenclature_blurring,
+        id_nomenclature_grp_typ, id_nomenclature_determination_method,
         comment_description,
         the_geom_4326, the_geom_point, the_geom_local,
         last_action
@@ -73,6 +84,8 @@ INSERT_SQL = text(
         :id_nomenclature_biogeo_status, :id_nomenclature_exist_proof,
         :id_nomenclature_valid_status, :id_nomenclature_behaviour,
         :id_nomenclature_diffusion_level, :id_nomenclature_geo_object_nature,
+        :id_nomenclature_info_geo_type, :id_nomenclature_blurring,
+        :id_nomenclature_grp_typ, :id_nomenclature_determination_method,
         :comment_description,
         ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
         ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
@@ -119,6 +132,10 @@ INSERT_SQL = text(
         id_nomenclature_behaviour = EXCLUDED.id_nomenclature_behaviour,
         id_nomenclature_diffusion_level = EXCLUDED.id_nomenclature_diffusion_level,
         id_nomenclature_geo_object_nature = EXCLUDED.id_nomenclature_geo_object_nature,
+        id_nomenclature_info_geo_type = EXCLUDED.id_nomenclature_info_geo_type,
+        id_nomenclature_blurring = EXCLUDED.id_nomenclature_blurring,
+        id_nomenclature_grp_typ = EXCLUDED.id_nomenclature_grp_typ,
+        id_nomenclature_determination_method = EXCLUDED.id_nomenclature_determination_method,
         comment_description = EXCLUDED.comment_description,
         the_geom_4326 = EXCLUDED.the_geom_4326,
         the_geom_point = EXCLUDED.the_geom_point,

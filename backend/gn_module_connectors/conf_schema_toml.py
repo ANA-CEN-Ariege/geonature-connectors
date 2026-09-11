@@ -188,6 +188,9 @@ class VisioNatureSchemaConf(Schema):
     #                    précise. C'est le choix de gn_vn2synthese, moins restrictif.
     # Les observations non masquées gardent un niveau NULL : GeoNature ne calcule plus
     # cette colonne, et NULL y signifie « le producteur ne se prononce pas ».
+    # ⚠ Code ou libellé, au choix, mais une valeur inconnue du référentiel arrête
+    # l'import (`core.nomenclatures.exiger_cd`) : elle rendait NULL en silence, donc
+    # aucune restriction sur les observations mêmes que le réglage protège.
     niveau_diffusion_masquees = fields.String(load_default="4")
 
     # ── Jeux de données ──────────────────────────────────────────────────────
@@ -360,6 +363,7 @@ class DbChiroSchemaConf(Schema):
     # interprète correctement depuis qu'il a cessé de calculer cette colonne.
     # Le référentiel de sensibilité de GeoNature, qui couvre les chiroptères, s'applique
     # de toute façon au déclenchement du trigger d'insertion.
+    # ⚠ Code ou libellé, et une valeur inconnue arrête l'import : cf. `[visionature]`.
     niveau_diffusion = fields.String(load_default="")
 
     # ── Moissonnage ──────────────────────────────────────────────────────────

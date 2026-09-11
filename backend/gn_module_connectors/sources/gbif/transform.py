@@ -171,6 +171,13 @@ COLONNES_NOMENCLATURE = {
     # défaut, mais doit figurer ici puisque l'INSERT — partagé avec VisioNature — la
     # porte désormais.
     "id_nomenclature_geo_object_nature": "NAT_OBJ_GEO",
+    # Quatre colonnes que la Synthèse porte et que seule une vue `v_synthese_sinp` sait
+    # renseigner (cf. connecteur GeoNature). Darwin Core n'en dit rien : le résolveur applique
+    # le défaut de chacune, exactement ce qu'aurait fait le DEFAULT de la colonne.
+    "id_nomenclature_info_geo_type": "TYP_INF_GEO",
+    "id_nomenclature_blurring": "DEE_FLOU",
+    "id_nomenclature_grp_typ": "TYP_GRP",
+    "id_nomenclature_determination_method": "METH_DETERMIN",
 }
 
 

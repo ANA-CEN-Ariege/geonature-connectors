@@ -790,7 +790,12 @@ milieu du chemin (`/sighting/<id>/detail`), la concaténation du cœur ne pouvai
 produire de valide.
 
 La suppression n'est pas gérée, comme pour GBIF. Les `countdetails` (sexe, âge, état
-sexuel) ne sont pas exposés par `/api/v1/search` : seul `total_count` remonte.
+sexuel) ne sont pas exposés par `/api/v1/search` : seul `total_count` remonte. Il alimente
+`OBJ_DENBR = « Individu »` — sans quoi l'effectif entrait en Synthèse sans dire ce qu'il
+dénombrait —, mais **pas** `TYP_DENBR` : un comptage de gîte est souvent une estimation,
+et l'API n'expose aucun équivalent de l'`estimation_code` de VisioNature. Écrire
+« Compté » ferait passer une estimation pour un comptage. C'est une divergence assumée
+avec GBIF et VisioNature, qui écrivent les deux.
 
 Enfin, une instance protégée par un filtre anti-robot bloquera le connecteur —
 `demo.dbchiro.org` l'est. Le cas est détecté et signalé explicitement plutôt que de
@@ -907,8 +912,8 @@ Synthèse :
 **Les géométries non ponctuelles sont ramenées à leur centroïde.** `core/synthese.py`
 n'insère que des points (`ST_MakePoint`). Une placette, une maille ou un polygone de
 prospection perd donc sa forme. `nature_objet_geo` et `type_info_geo` du producteur sont
-conservés dans `additional_data` pour que la fiche dise de quoi ce point est le centre,
-mais l'information géométrique, elle, est perdue.
+repris en colonne, pour que la fiche dise au moins de quoi ce point est le centre, mais
+l'information géométrique, elle, est perdue.
 
 **`determiner` et `validator` ne vont pas en colonne.** Elles existent en Synthèse mais
 pas dans `INSERT_SQL`, et les y ajouter obligerait les trois autres `to_row` à fournir le
@@ -920,6 +925,14 @@ l'INSERT commun est un suivi identifié.
 `id_nomenclature_biogeo_status` (`STAT_BIOGEO`, absente de `v_synthese_sinp`) et
 `id_nomenclature_valid_status` (la vue publie `validateur`, un nom de personne, pas un
 statut — il vient donc de `[validation]`). Les deux prennent le défaut de leur colonne.
+
+**Les dix-sept autres sont reprises en colonne**, y compris les quatre qui partaient
+naguère en `additional_data` : `type_info_geo`, `floutage_dee`, `type_regroupement` et
+`methode_determination`. Les omettre ne les laissait pas vides — la colonne prenait le
+défaut de l'instance, et deux de ces défauts **contredisent** la source : une observation
+que le producteur rattache à une commune entrait en « Géoréférencement », une donnée
+qu'il déclare floutée entrait en « Non floutée ». Les trois autres connecteurs n'ont rien
+à en dire et passent le défaut.
 
 **`[geonature.schedule]` n'est pas câblé**, comme `[visionature.schedule]` et
 `[dbchiro.schedule]` : `tasks.py` n'ordonnance que GBIF. Planifier l'import passe par
@@ -1063,6 +1076,15 @@ retrouver **moins protégée ici qu'à la source**. Le réglage
 `[geonature] niveau_diffusion_si_sensible` rétablit une restriction dès que le producteur
 déclare l'observation sensible, mais c'est un choix d'exploitation, pas un automatisme.
 
+**Un niveau de diffusion mal saisi arrête désormais l'import.** `niveau_diffusion`,
+`niveau_diffusion_masquees` et `niveau_diffusion_si_sensible` acceptent indifféremment le
+`cd_nomenclature` et le libellé, et refusent tout le reste — au démarrage, avant le
+premier appel d'API. Auparavant, seul le connecteur GeoNature échouait : les deux autres
+passaient la valeur à un résolveur qui retombe sur le défaut du type, et `NIV_PRECIS`
+n'en a pas. Une coquille, ou le libellé que l'interface affiche (« Aucune ») au lieu du
+code, donnait donc NULL — aucune restriction de diffusion, aucun message — sur les
+observations mêmes que le réglage protège.
+
 **Le court-circuit repose sur `dataset.modified`.** Si un producteur pousse des données
 sans mettre cette date à jour, le jeu sera sauté à tort. Une exécution `--forcer`
 trimestrielle est une précaution raisonnable.
@@ -1086,6 +1108,14 @@ Deux fichiers méritent d'être connus de qui modifie le module :
   d'un **lot entier** ; une clé produite en trop est un calcul jeté en silence. C'est le
   contrôle qui manquait quand le connecteur VisioNature a été écrit avec huit colonnes de
   nomenclature là où l'INSERT en portait quatorze.
+- **`tests/test_referentiel_sinp.py`** confronte chaque correspondance à un extrait
+  versionné du référentiel SINP (`tests/data/referentiel_sinp.json`, tiré du SQL
+  d'installation de GeoNature). Les autres tests vérifient qu'on choisit la bonne valeur ;
+  celui-ci vérifie qu'elle **existe** — un `cd_nomenclature` inventé ou un libellé
+  approché rend NULL, donc le défaut de la colonne, sans le moindre signe. Il a été écrit
+  après un audit qui a trouvé deux libellés impossibles dans la fixture du connecteur
+  GeoNature (« Vivant » pour « Observé vivant », « Alimentation » pour
+  « Chasse/alimentation »), verts depuis toujours.
 - **`tests/test_noms_definis.py`** passe le module à l'analyse statique. Les imports étant
   locaux aux commandes — pour ne pas charger l'API Biolovision quand on lance une commande
   GBIF —, un import oublié ne se voit ni à l'import du module ni à la compilation : il
@@ -1110,6 +1140,7 @@ qu'une instance sera disponible.
 |---|---|
 | [`docs/decisions.md`](docs/decisions.md) | Le **pourquoi** : ce qui a été mesuré, essayé, écarté, et les résultats négatifs qui évitent de refaire une enquête inutile |
 | [`connectors_config.toml.example`](connectors_config.toml.example) | La référence de configuration, commentée réglage par réglage |
+| [`docs/audit-nomenclatures.md`](docs/audit-nomenclatures.md) | L'audit des correspondances SINP : méthode, sources de vérité, constats et suites, table de couverture par connecteur |
 | `docs/gbif-ariege.md` | L'analyse GBIF complète : volumes, licences, contraintes, chiffres mesurés sur l'Ariège |
 | `docs/data/` | Listes de référence : jeux PatriNat de l'Ariège, jeux CC BY-NC |
 

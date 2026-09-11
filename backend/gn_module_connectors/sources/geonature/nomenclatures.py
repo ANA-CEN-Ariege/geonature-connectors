@@ -35,6 +35,16 @@ COLONNES_VUE = {
     "preuve_existante": "PREUVE_EXIST",
     "comportement": "OCC_COMPORTEMENT",
     "nature_objet_geo": "NAT_OBJ_GEO",
+    # Ces quatre-là partaient en `additional_data`, faute d'être portées par l'INSERT
+    # commun. Ce n'était pas neutre : la colonne, elle, prenait le défaut local, et deux
+    # de ces défauts **contredisent** la source — « Géoréférencement » sur une donnée que
+    # le producteur rattache à une commune, « Non floutée » sur une donnée qu'il déclare
+    # floutée. L'INSERT les porte désormais ; les trois autres connecteurs passent le
+    # défaut, ce qui leur coûte quatre lignes.
+    "type_info_geo": "TYP_INF_GEO",
+    "floutage_dee": "DEE_FLOU",
+    "type_regroupement": "TYP_GRP",
+    "methode_determination": "METH_DETERMIN",
 }
 
 # Colonne de synthese ← mnémonique. Doit couvrir TOUTES les colonnes `id_nomenclature_*`
@@ -56,10 +66,14 @@ COLONNES_NOMENCLATURE = {
     "id_nomenclature_valid_status": "STATUT_VALID",
     "id_nomenclature_behaviour": "OCC_COMPORTEMENT",
     "id_nomenclature_geo_object_nature": "NAT_OBJ_GEO",
+    "id_nomenclature_info_geo_type": "TYP_INF_GEO",
+    "id_nomenclature_blurring": "DEE_FLOU",
+    "id_nomenclature_grp_typ": "TYP_GRP",
+    "id_nomenclature_determination_method": "METH_DETERMIN",
 }
 
 # Colonne de synthese → colonne de la vue, pour les seules colonnes que la vue alimente.
-# Les deux absentes de ce dictionnaire prendront le défaut de leur colonne :
+# Les deux sans correspondance prendront le défaut de leur colonne :
 #
 # - `id_nomenclature_biogeo_status` (STAT_BIOGEO) : la vue ne l'expose pas. Elle a été
 #   ajoutée à la Synthèse après l'écriture de `v_synthese_sinp`, qui n'a pas suivi ;
@@ -71,15 +85,12 @@ SOURCE_DE = {
     for colonne, mnemonique in COLONNES_NOMENCLATURE.items()
 }
 
-# Nomenclatures que la vue livre mais que l'INSERT commun ne sait pas écrire. Les ajouter
-# à `INSERT_SQL` obligerait les trois autres `to_row` à fournir le paramètre lié —
-# `tests/test_insert_alignement.py` l'impose dans les deux sens. Elles partent donc en
-# `additional_data`, où elles restent lisibles sur la fiche d'observation.
+# Ce que la vue livre, que l'INSERT commun ne porte pas, et qui part donc en
+# `additional_data`. Il n'y reste que `methode_regroupement` : ce n'est pas une
+# nomenclature mais le champ libre `synthese.grp_method`, que l'INSERT n'écrit pas —
+# l'y ajouter est un autre sujet que celui des nomenclatures.
 HORS_INSERT = {
-    "type_regroupement": "gn_type_regroupement",
     "methode_regroupement": "gn_methode_regroupement",
-    "type_info_geo": "gn_type_info_geo",
-    "methode_determination": "gn_methode_determination",
 }
 
 
@@ -97,7 +108,7 @@ def valeurs(item: dict) -> dict[str, str]:
 
 def resoudre(item: dict, resolver, *, statut_validation: str | None = None,
              manques: set | None = None) -> dict[str, int | None]:
-    """Les quinze colonnes `id_nomenclature_*` de l'INSERT, résolues.
+    """Les dix-neuf colonnes `id_nomenclature_*` de l'INSERT, résolues.
 
     Chaque colonne prend le défaut de la Synthèse quand la vue ne dit rien : c'est
     exactement ce qu'aurait fait le DEFAULT de la colonne si l'on insérait ligne à ligne.

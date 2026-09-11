@@ -35,6 +35,13 @@ COLONNES_NOMENCLATURE = {
     "id_nomenclature_valid_status": "STATUT_VALID",
     "id_nomenclature_behaviour": "OCC_COMPORTEMENT",
     "id_nomenclature_geo_object_nature": "NAT_OBJ_GEO",
+    # Quatre colonnes que la Synthèse porte et que seule une vue `v_synthese_sinp` sait
+    # renseigner (cf. connecteur GeoNature). VisioNature n'en dit rien : le résolveur applique
+    # le défaut de chacune, exactement ce qu'aurait fait le DEFAULT de la colonne.
+    "id_nomenclature_info_geo_type": "TYP_INF_GEO",
+    "id_nomenclature_blurring": "DEE_FLOU",
+    "id_nomenclature_grp_typ": "TYP_GRP",
+    "id_nomenclature_determination_method": "METH_DETERMIN",
 }
 
 # Champs dont un changement justifie de réécrire l'observation.

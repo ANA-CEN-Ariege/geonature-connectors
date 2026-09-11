@@ -80,8 +80,8 @@ class ResolverStrict:
 
 
 def test_un_libelle_est_resolu_comme_un_libelle_pas_comme_un_code():
-    """Le cœur du sujet. La vue livre « Vivant », pas « 2 »."""
-    resolver = ResolverStrict({("ETA_BIO", "Vivant"): 4242})
+    """Le cœur du sujet. La vue livre « Observé vivant », pas « 2 »."""
+    resolver = ResolverStrict({("ETA_BIO", "Observé vivant"): 4242})
     resolus = N.resoudre(item(), resolver)
     assert resolus["id_nomenclature_bio_condition"] == 4242
 
@@ -90,7 +90,7 @@ def test_un_libelle_inconnu_est_collecte_et_non_avale():
     """api2GN rend NULL sans rien dire. Ici la perte doit remonter jusqu'au bilan."""
     manques = set()
     resolus = N.resoudre(item(), ResolverStrict(), manques=manques)
-    assert ("ETA_BIO", "Vivant") in manques
+    assert ("ETA_BIO", "Observé vivant") in manques
     # L'insertion doit tout de même aboutir : on retombe sur le défaut de la colonne.
     assert resolus["id_nomenclature_bio_condition"] == "ETA_BIO=defaut"
 
@@ -120,14 +120,35 @@ def test_le_statut_de_validation_vient_de_la_configuration():
     assert resolus["id_nomenclature_valid_status"] == 77
 
 
-def test_les_nomenclatures_hors_insert_partent_en_donnees_additionnelles():
-    """Quatre nomenclatures que l'INSERT commun ne porte pas. Les jeter serait une perte
-    muette ; les ajouter à l'INSERT obligerait les trois autres connecteurs à les
-    fournir."""
+def test_les_quatre_nomenclatures_tardives_rejoignent_leur_colonne():
+    """Elles partaient en `additional_data`, la colonne prenant le défaut local.
+
+    Ce n'était pas une simple perte : deux de ces défauts **contredisent** la source.
+    Une observation que le producteur rattache à une commune entrait en
+    « Géoréférencement », et une donnée qu'il déclare floutée entrait en « Non floutée ».
+    """
+    resolus = N.resoudre(item(), ResolverStrict({
+        ("TYP_INF_GEO", "Rattachement"): 11, ("DEE_FLOU", "Oui"): 12,
+        ("TYP_GRP", "OBS"): 13, ("METH_DETERMIN", "Examen visuel à distance"): 14,
+    }), )
+    assert resolus["id_nomenclature_info_geo_type"] == "TYP_INF_GEO=defaut"
+    resolus = N.resoudre(item(type_info_geo="Rattachement", floutage_dee="Oui",
+                              type_regroupement="OBS",
+                              methode_determination="Examen visuel à distance"),
+                         ResolverStrict({
+                             ("TYP_INF_GEO", "Rattachement"): 11, ("DEE_FLOU", "Oui"): 12,
+                             ("TYP_GRP", "OBS"): 13,
+                             ("METH_DETERMIN", "Examen visuel à distance"): 14}))
+    assert resolus["id_nomenclature_info_geo_type"] == 11
+    assert resolus["id_nomenclature_blurring"] == 12
+    assert resolus["id_nomenclature_grp_typ"] == 13
+    assert resolus["id_nomenclature_determination_method"] == 14
+
+
+def test_la_methode_de_regroupement_reste_en_donnees_additionnelles():
+    """`grp_method` est un champ libre, pas une nomenclature : l'INSERT ne le porte pas."""
     provenance = json.loads(ligne()["additional_data"])
-    assert provenance["gn_type_regroupement"] == "Session"
-    assert provenance["gn_methode_determination"] == "Autre méthode de détermination"
-    assert provenance["gn_type_info_geo"] == "Géoréférencement"
+    assert provenance["gn_methode_regroupement"] == "Relevé de terrain"
 
 
 # ── Diffusion et sensibilité ────────────────────────────────────────────────

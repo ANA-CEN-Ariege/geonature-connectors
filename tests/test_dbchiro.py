@@ -169,6 +169,35 @@ def test_toutes_les_methodes_mesurees_sont_couvertes():
         assert N.CONTACT_METH_OBS.get(code) is not None, code
 
 
+# ── Origine et dénombrement ──────────────────────────────────────────────────
+
+def test_la_donnee_dbchiro_vient_du_terrain():
+    """Le défaut de la Synthèse est « NSP » (Ne sait pas), ce qui est faux et non pas
+    prudent : dbChiroWeb n'enregistre que des sessions de terrain. VisioNature pose la
+    même constante pour la même raison."""
+    assert N.cd_nomenclatures(props())["STATUT_SOURCE"] == "Te"
+
+
+def test_un_effectif_dit_ce_quil_denombre():
+    """Sans OBJ_DENBR, un effectif entrait en Synthèse sans que l'on sache de quoi il
+    était le compte — la colonne restant à « Ne sait pas »."""
+    assert N.cd_nomenclatures(props(total_count=12))["OBJ_DENBR"] == "IND"
+    assert N.cd_nomenclatures(props(total_count=None))["OBJ_DENBR"] is None
+
+
+def test_une_absence_ne_denombre_rien():
+    """Un effectif nul déclaré par une absence ne dénombre aucun individu."""
+    assert N.cd_nomenclatures(props(total_count=0), absence=True)["OBJ_DENBR"] is None
+    assert N.cd_nomenclatures(props(total_count=3), absence=True)["OBJ_DENBR"] is None
+
+
+def test_le_type_de_denombrement_reste_au_defaut():
+    """Divergence assumée avec GBIF et VisioNature : un comptage de gîte est souvent une
+    estimation, et l'API n'expose aucun équivalent de l'`estimation_code` de VisioNature.
+    Écrire « Compté » ferait passer une estimation pour un comptage."""
+    assert N.cd_nomenclatures(props(total_count=200)).get("TYP_DENBR") is None
+
+
 # ── Phénologie ───────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("periode", ["Estivage", "Estivant", "Hivernant", "Hibernant"])

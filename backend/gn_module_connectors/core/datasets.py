@@ -372,21 +372,25 @@ def resoudre_nomenclature(mnemonique: str, valeur: str) -> int | None:
     poignée de valeurs d'un fichier TOML. Pour résoudre des libellés dans la boucle de
     transformation d'un import, employer `core/nomenclatures.Resolver.id_souple`, qui
     charge un type entier en une requête et met le résultat en cache.
+
+    Ne rend qu'une valeur `active`, comme le `Resolver` : configurer le module sur une
+    valeur que l'instance a retirée de son référentiel n'a pas de sens.
     """
     valeur = (valeur or "").strip()
     if not valeur:
         return None
-    par_code = db.session.execute(
-        text("SELECT ref_nomenclatures.get_id_nomenclature(:m, :c)"),
-        {"m": mnemonique, "c": valeur},
-    ).scalar()
-    if par_code is not None:
-        return par_code
+    # Une seule requête, et le filtre `active` sur les deux branches. Le code était
+    # auparavant confié à `get_id_nomenclature`, qui — contrairement à ce qu'on lit
+    # souvent — ne filtre pas : une valeur que l'instance a retirée de son référentiel
+    # restait configurable ici alors que `Resolver` la refuse partout ailleurs.
+    # L'ordre préserve la priorité du code sur le libellé.
     return db.session.execute(
         text("""SELECT t.id_nomenclature FROM ref_nomenclatures.t_nomenclatures t
                 JOIN ref_nomenclatures.bib_nomenclatures_types b ON b.id_type = t.id_type
-                WHERE b.mnemonique = :m
-                  AND lower(trim(t.label_default)) = lower(trim(:c))
+                WHERE b.mnemonique = :m AND t.active
+                  AND (t.cd_nomenclature = :c
+                       OR lower(trim(t.label_default)) = lower(trim(:c)))
+                ORDER BY (t.cd_nomenclature = :c) DESC
                 LIMIT 1"""),
         {"m": mnemonique, "c": valeur},
     ).scalar()

@@ -275,8 +275,10 @@ def provenance(item: dict, *, instance: str, id_export: str, licence: str = "",
         "gn_licence_url": licence_url,
         "gn_date_modification": _texte(item.get("date_modification")) or "",
         "gn_version_taxref_source": _texte(item.get("version_taxref")) or "",
+        # La sensibilité reste ici : le trigger de la Synthèse la recalcule localement,
+        # et l'avis du producteur serait sinon perdu. Le floutage, lui, a rejoint sa
+        # colonne (`id_nomenclature_blurring`) et n'a plus à être dupliqué.
         "gn_sensibilite_source": _texte(item.get("niveau_sensibilite")) or "",
-        "gn_floutage": _texte(item.get("floutage_dee")) or "",
         # `determiner` et `validator` existent en Synthèse mais pas dans l'INSERT commun :
         # les y ajouter obligerait les trois autres connecteurs à fournir le paramètre lié.
         "gn_determinateur": _texte(item.get("determinateur")) or "",

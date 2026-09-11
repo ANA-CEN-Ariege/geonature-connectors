@@ -397,7 +397,8 @@ forcer_anonymat = false
 # ⚠ Ne concerne pas les observations masquées (hidden) : voir ci-dessous.
 respecter_confidentialite = true
 
-# Niveau de diffusion (cd_nomenclature NIV_PRECIS) des observations masquées à la source.
+# Niveau de diffusion (cd_nomenclature NIV_PRECIS, ou libellé) des observations masquées
+# à la source.
 # Dans VisioNature, on masque une observation pour protéger l'espèce ou le site — nid de
 # rapace, station d'orchidée, gîte à chiroptères — et non pour la retirer du circuit :
 # elle est donc importée, mais marquée non diffusable.
@@ -410,6 +411,10 @@ respecter_confidentialite = true
 #                  précise. C'est le choix de gn_vn2synthese, moins restrictif.
 # Les observations non masquées gardent un niveau NULL, GeoNature ne calculant plus
 # cette colonne : NULL y signifie « le producteur ne se prononce pas ».
+# Le libellé est accepté aussi bien que le code — "Aucune" vaut "4" —, et une valeur que
+# le référentiel de l'instance ne connaît pas **arrête l'import**. Elle donnait
+# auparavant NULL sans un mot, c'est-à-dire aucune restriction, précisément sur les
+# observations que ce réglage protège.
 niveau_diffusion_masquees = "4"
 
 # ── Jeux de données ──────────────────────────────────────────────────────────
@@ -531,9 +536,12 @@ pseudonymiser_observateurs = false
 #   python3 -c "import secrets; print(secrets.token_hex(32))"
 pseudonymisation_secret = ""
 
-# Niveau de diffusion (cd_nomenclature NIV_PRECIS) appliqué à toutes les observations.
+# Niveau de diffusion (cd_nomenclature NIV_PRECIS, ou libellé) appliqué à toutes les
+# observations.
 #   0 Standard   1 Commune   2 Maille   3 Département   4 Aucune   5 Précise
-# Vide = NULL, c'est-à-dire « le producteur ne se prononce pas ».
+# Vide = NULL, c'est-à-dire « le producteur ne se prononce pas ». Une valeur inconnue du
+# référentiel arrête l'import : elle donnait auparavant NULL en silence, donc aucune
+# restriction là où l'exploitant en avait demandé une.
 #
 # La géométrie reste **exacte en base** dans tous les cas : la flouter serait
 # irréversible et ruinerait tout suivi de gîte. La restriction porte sur la diffusion.
@@ -675,6 +683,8 @@ pseudonymisation_secret = ""
 
 # cd_nomenclature ou libellé NIV_PRECIS imposé à TOUTES les observations.
 #   0 Standard   1 Commune   2 Maille   3 Département   4 Aucune   5 Précise
+# Une valeur inconnue du référentiel arrête l'import, et le fait désormais au démarrage,
+# avant le premier appel à l'instance distante.
 # Vide = on reprend le `precision_diffusion` du producteur, ce qui vaut mieux : son
 # arbitrage est porté par la donnée, observation par observation.
 niveau_diffusion = ""

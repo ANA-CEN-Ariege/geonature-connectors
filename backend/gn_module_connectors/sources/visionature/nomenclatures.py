@@ -78,7 +78,12 @@ STATUT_SOURCE = "Te"          # Terrain
 # `mortality` (3,6 %), toutes avec `wounded = "0"`.
 ETA_BIO_MORT = "3"        # Trouvé mort
 ETA_BIO_VIVANT = "2"      # Observé vivant
-ETA_BIO_NON_OBSERVE = "1"  # Non observé
+# ⚠ « 1 » est « Non renseigné », et non « Non observé » : ETA_BIO n'a que quatre valeurs
+# — NSP, Non renseigné, Observé vivant, Trouvé mort — et « Non observé » appartient à
+# STATUT_OBS, pas à celle-ci. La valeur reste la bonne pour une absence : aucun individu
+# n'ayant été vu, son état biologique n'est pas renseignable. Seul le nom mentait, et il
+# laissait croire qu'ETA_BIO redisait l'absence que STATUT_OBS exprime déjà.
+ETA_BIO_ABSENCE = "1"     # Non renseigné
 
 # ⚠ Divergence assumée : un bloc `mortality` avec `wounded = 1` décrit un animal
 # **blessé**, donc vivant au moment de l'observation. Le verser en « Trouvé mort »
@@ -275,7 +280,7 @@ def etat_biologique(observation: dict, absence: bool) -> str | None:
     if _conditions(observation) & CONDITIONS_MORTES:
         return ETA_BIO_MORT
     if absence:
-        return ETA_BIO_NON_OBSERVE
+        return ETA_BIO_ABSENCE
     # VisioNature est un outil de saisie de terrain sur faune vivante : hors mortalité
     # déclarée, l'animal a été vu ou entendu vivant. C'est aussi la position de
     # `gn_vn2synthese`. Il subsiste un angle mort assumé : un cadavre saisi sans passer

@@ -500,6 +500,7 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
     if prevalidation and not dry_run:
         click.echo(f"  {prevalidation.ecrites} pré-validation(s) écrite(s) dans "
                    f"gn_commons.t_validations (STATUT_VALID {prevalidation.cd}).")
+    _manques_nomenclature(resolver)
     for l in rejets.summary_lines():
         click.echo(l)
 
@@ -525,6 +526,48 @@ def _prevalidation(resolver):
                    f"{statut.cd}, tracée dans gn_commons.t_validations "
                    f"(validation_auto)")
     return statut
+
+
+def _manques_nomenclature(resolver) -> None:
+    """Signale les `cd_nomenclature` que l'instance n'a pas su résoudre.
+
+    Le connecteur GeoNature tient ce compte depuis toujours, parce qu'il traduit les
+    libellés d'un tiers. Les trois autres travaillent sur des tables de correspondance
+    figées, ce qui semblait mettre à l'abri — à tort : une instance peut avoir désactivé
+    une valeur du référentiel, et les surcharges de configuration (`[visionature.atlas]
+    comportement`) sont écrites par l'exploitant. Dans les deux cas la colonne prenait le
+    défaut, sans un mot.
+    """
+    manques = getattr(resolver, "manques", None)
+    if not manques:
+        return
+    click.secho(f"  ⚠ {len(manques)} valeur(s) de nomenclature inconnue(s) de cette "
+                f"instance — valeur par défaut appliquée :", fg="yellow")
+    for mnemonique, cd in sorted(manques)[:10]:
+        click.echo(f"      {mnemonique} « {cd} »")
+
+
+def _niveau_diffusion(resolver, valeur: str, reglage: str) -> str:
+    """`cd_nomenclature` NIV_PRECIS d'un réglage de configuration, ou refus de l'import.
+
+    Résolu une fois, au démarrage, comme la pré-validation et pour la même raison : la
+    valeur avait jusqu'ici pour seul juge `Resolver.id`, qui retombe sur le défaut du
+    type — et `NIV_PRECIS` n'en a pas. Une coquille, ou le libellé que l'interface
+    affiche (« Aucune ») au lieu du code, donnait donc NULL : aucune restriction de
+    diffusion, aucun message, sur les observations mêmes que le réglage protège.
+    """
+    from .core import nomenclatures as nomen_core
+
+    valeur = str(valeur or "").strip()
+    if not valeur:
+        return ""
+    try:
+        cd = nomen_core.exiger_cd(resolver, "NIV_PRECIS", valeur, reglage)
+    except ValueError as erreur:
+        raise click.ClickException(str(erreur))
+    click.echo(f"  niveau de diffusion appliqué : NIV_PRECIS « {cd} »"
+               + (f" (saisi « {valeur} »)" if cd != valeur else ""))
+    return cd
 
 
 def _jdd_validable() -> bool:
@@ -922,7 +965,9 @@ def visionature_import(groupes, since, debut, fin, departements_demandes, batch_
     if forcer_anonymat:
         click.echo("  anonymat forcé pour tous les observateurs")
     respecter = cfg.get("respecter_confidentialite", True)
-    niveau_masquees = cfg.get("niveau_diffusion_masquees", "4")
+    niveau_masquees = _niveau_diffusion(
+        resolver, cfg.get("niveau_diffusion_masquees", "4"),
+        "[visionature] niveau_diffusion_masquees")
     par_projet = cfg.get("jdd_par_code_projet", True)
     # Producteurs déclarés par l'exploitant, jamais créés depuis les données : les tirer
     # d'une API peuplerait bib_organismes de variantes d'orthographe.
@@ -1172,6 +1217,7 @@ def visionature_import(groupes, since, debut, fin, departements_demandes, batch_
     if prevalidation and not dry_run:
         click.echo(f"  {prevalidation.ecrites} pré-validation(s) écrite(s) dans "
                    f"gn_commons.t_validations (STATUT_VALID {prevalidation.cd}).")
+    _manques_nomenclature(resolver)
     for ligne in rejets.summary_lines_observations():
         click.echo(ligne)
     # Les espèces du référentiel absentes de TAXREF sont journalisées mais comptées à
@@ -1615,9 +1661,8 @@ def dbchiro_import(area, departements, importer_absences, max_results, batch_siz
     resolver = nomen_core.Resolver()
     prevalidation = _prevalidation(resolver)
     statut_validation = prevalidation.cd if prevalidation else None
-    niveau_diffusion = cfg.get("niveau_diffusion", "")
-    if niveau_diffusion:
-        click.echo(f"  niveau de diffusion appliqué : NIV_PRECIS « {niveau_diffusion} »")
+    niveau_diffusion = _niveau_diffusion(resolver, cfg.get("niveau_diffusion", ""),
+                                         "[dbchiro] niveau_diffusion")
     if not pseudonymiser:
         click.secho("  observateurs publiés en clair — dbChiro ne porte aucun marqueur "
                     "de consentement individuel, ce choix engage l'accord de "
@@ -1702,6 +1747,7 @@ def dbchiro_import(area, departements, importer_absences, max_results, batch_siz
     if prevalidation and not dry_run:
         click.echo(f"  {prevalidation.ecrites} pré-validation(s) écrite(s) dans "
                    f"gn_commons.t_validations (STATUT_VALID {prevalidation.cd}).")
+    _manques_nomenclature(resolver)
     for ligne in rejets.summary_lines():
         click.echo(ligne)
     chemin = rejets.write_csv(Path("dbchiro_rejets.csv"))
@@ -2810,6 +2856,13 @@ def geonature_import(id_export, jeux, depuis, complet, perimetre, max_results,
     resolver = nomen_core.Resolver()
     prevalidation = _prevalidation(resolver)
     statut_validation = prevalidation.cd if prevalidation else None
+    # Résolus ici plutôt qu'à la première observation : `niveau_diffusion` échouait déjà
+    # sur une coquille, mais après le premier appel d'API et sous forme de trace Python.
+    niveau_diffusion = _niveau_diffusion(resolver, cfg.get("niveau_diffusion", ""),
+                                         "[geonature] niveau_diffusion")
+    niveau_si_sensible = _niveau_diffusion(
+        resolver, cfg.get("niveau_diffusion_si_sensible", ""),
+        "[geonature] niveau_diffusion_si_sensible")
     if not pseudonymiser:
         click.echo("  observateurs repris en clair — le producteur distant a déjà "
                    "arbitré ce qu'il diffuse.")
@@ -2885,8 +2938,8 @@ def geonature_import(id_export, jeux, depuis, complet, perimetre, max_results,
             srid=contexte["srid"], resolver=resolver, instance=contexte["instance"],
             id_export=str(cfg["id_export"]), statut_validation=statut_validation,
             pseudonymiser=pseudonymiser, secret_pseudo=secret,
-            code_diffusion=cfg.get("niveau_diffusion", ""),
-            code_diffusion_si_sensible=cfg.get("niveau_diffusion_si_sensible", ""),
+            code_diffusion=niveau_diffusion,
+            code_diffusion_si_sensible=niveau_si_sensible,
             version_taxref=contexte["version_taxref"],
             licence=cfg["_licence"].get("name", ""),
             licence_url=cfg["_licence"].get("href", ""), manques=manques)

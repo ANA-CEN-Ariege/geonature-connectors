@@ -329,8 +329,12 @@ indiscernable d'une observation ordinaire.
 | bloc `mortality` présent | `3` — Trouvé mort |
 | bloc `mortality` avec `wounded = 1` | `2` — Observé vivant |
 | `details[].condition` ∈ {PEL, MUMMIE, BONESREMAINS, REMAINS} | `3` |
-| absence constatée | `1` — Non observé |
+| absence constatée | `1` — Non renseigné |
 | sinon | `2` — Observé vivant |
+
+⚠ `1` est bien « Non renseigné » : `ETA_BIO` ne connaît que NSP, Non renseigné, Observé
+vivant et Trouvé mort. « Non observé » est une valeur de `STATUT_OBS`, que l'absence
+renseigne par ailleurs. La table ci-dessus le nommait mal, et le code avec elle.
 
 Deux écarts avec `gn_vn2synthese` :
 
@@ -781,6 +785,81 @@ Deux divergences assumées :
   cas où une source contredit le statut global.
 
 ---
+
+---
+
+## Audit des nomenclatures, 11 septembre 2026
+
+Le détail — méthode, sources de vérité, table de couverture — est dans
+[`audit-nomenclatures.md`](audit-nomenclatures.md). Ne sont consignés ici que les
+arbitrages qu'il a fallu rendre, et qui pourraient être repris autrement.
+
+### Ce que l'audit a mesuré, et pourquoi il fallait le mesurer
+
+Une correspondance de nomenclature fausse ne lève rien et ne journalise rien : elle
+remplit une colonne d'une valeur plausible. Trois sources de vérité ont donc été lues
+plutôt que supposées — le référentiel SINP installé par GeoNature, la table des DEFAULT
+de `gn_synthese`, et la définition SQL de `gn_exports.v_synthese_sinp`. Les 148 couples
+(mnémonique, `cd_nomenclature`) écrits en dur visaient tous une valeur existante et
+active ; c'est le résultat le plus important, et le moins visible.
+
+### Le filtre `active` est un choix du module, pas une imitation de GeoNature
+
+`_charger_type` prétendait reproduire `ref_nomenclatures.get_id_nomenclature`. Cette
+fonction ne filtre pas sur `active` — définition unique dans `nomenclatures.sql`, aucune
+redéfinition. Les deux familles de méthodes du résolveur divergeaient donc sur une valeur
+retirée du référentiel : `id()` l'écrivait, `id_souple()` la refusait.
+
+Arbitrage retenu : **ne pas écrire une valeur que l'instance a désactivée**, et l'appliquer
+partout. L'inverse se défendrait — le référentiel local n'a pas à censurer le vocabulaire
+d'un producteur —, mais il faudrait alors l'assumer dans les deux familles, et accepter
+qu'une valeur retirée réapparaisse en Synthèse à chaque moissonnage.
+
+### Une valeur de configuration fausse doit arrêter l'import
+
+La règle existait déjà pour `[validation] status` et `[geonature] niveau_diffusion`. Elle
+manquait à `[visionature] niveau_diffusion_masquees` et `[dbchiro] niveau_diffusion`, qui
+passaient par `Resolver.id` : échec silencieux, repli sur le défaut du type — et
+`NIV_PRECIS` n'en a pas, donc NULL. Une coquille, ou le libellé que l'interface affiche
+(« Aucune ») au lieu du code, supprimait la restriction de diffusion sur les observations
+mêmes que le réglage protège.
+
+Le partage se fait par `core.nomenclatures.exiger_cd`, appelée depuis les commandes et
+non depuis les connecteurs : `sources/*` ne dépend pas de `geonature.utils.env`, et c'est
+ce qui rend la suite de tests exécutable hors instance. `geonature.nomenclatures._exige`
+reste donc en double, pour la même raison.
+
+### Quatre colonnes de nomenclature ajoutées à l'INSERT commun
+
+`info_geo_type`, `blurring`, `grp_typ` et `determination_method` étaient laissées de
+côté, leur valeur partant en `additional_data`. Le raisonnement d'origine — les ajouter
+oblige les trois autres connecteurs à fournir le paramètre lié — tenait sur le coût, pas
+sur le fond : la colonne ne restait pas vide, elle prenait le défaut local. Deux de ces
+défauts contredisent la source, « Géoréférencement » sur une donnée rattachée à une
+commune et « Non floutée » sur une donnée floutée. Le coût est de quatre lignes par
+connecteur ; il a été payé.
+
+### `TYP_DENBR` reste au défaut pour dbChiro
+
+`OBJ_DENBR` est désormais renseigné — `total_count` compte des individus, c'est sûr —
+mais pas le type de dénombrement. Un comptage de gîte est souvent une estimation, et
+l'API n'expose aucun équivalent de l'`estimation_code` de VisioNature. Écrire « Compté »
+ferait passer une estimation pour un comptage, ce qui fausse précisément l'analyse que
+cette colonne sert à qualifier. Divergence assumée avec GBIF et VisioNature, qui
+l'écrivent tous deux — le cas de GBIF est d'ailleurs le plus discutable des trois, son
+`individualCount` ne disant pas davantage comment il a été obtenu.
+
+### Un test ne vaut que par ce qu'il confronte
+
+Deux des libellés de la fixture GeoNature n'existaient dans aucun référentiel
+(« Vivant » pour « Observé vivant », « Alimentation » pour « Chasse/alimentation »), et
+la suite était verte depuis toujours : le résolveur factice accepte n'importe quelle
+chaîne. D'où `tests/data/referentiel_sinp.json`, un extrait versionné du SQL
+d'installation, et `tests/test_referentiel_sinp.py`, qui vérifie que chaque
+correspondance vise une valeur **qui existe** — ce qu'aucun test ne faisait.
+
+L'extrait est un plancher, jamais un plafond : une instance peut enrichir son
+référentiel, et le test ne vérifie donc que l'existence.
 
 ---
 

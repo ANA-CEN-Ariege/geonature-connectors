@@ -1,0 +1,243 @@
+{
+ "_source": "Extrait de ref_nomenclatures.t_nomenclatures tel que l'installe GeoNature : Nomenclature-api-module, src/pypnnomenclature/migrations/data/nomenclatures_inpn_data.sql (version lue : GeoNature 2.15.4). cd_nomenclature -> label_default, valeurs actives uniquement. Sert à vérifier hors instance que les correspondances des connecteurs visent des valeurs qui existent : une instance peut enrichir ce référentiel, elle ne le réduit pas.",
+ "types": {
+  "METH_OBS": {
+   "0": "Vu",
+   "1": "Entendu",
+   "2": "Coquilles d'œuf",
+   "3": "Ultrasons",
+   "4": "Empreintes",
+   "5": "Exuvie",
+   "6": "Fèces/Guano/Epreintes",
+   "7": "Mues",
+   "8": "Nid/Gîte",
+   "9": "Pelote de réjection",
+   "10": "Restes dans pelote de réjection",
+   "11": "Poils/plumes/phanères",
+   "12": "Restes de repas",
+   "13": "Spore",
+   "14": "Pollen",
+   "15": "Oosphère",
+   "16": "Ovule",
+   "17": "Fleur",
+   "18": "Feuille",
+   "19": "ADN environnemental",
+   "20": "Autre",
+   "21": "Inconnu",
+   "22": "Mine",
+   "23": "Galerie/terrier",
+   "24": "Oothèque",
+   "25": "Vu et entendu",
+   "26": "Olfactif",
+   "27": "Empreintes et fèces"
+  },
+  "ETA_BIO": {
+   "0": "NSP",
+   "1": "Non renseigné",
+   "2": "Observé vivant",
+   "3": "Trouvé mort"
+  },
+  "STATUT_BIO": {
+   "0": "Inconnu",
+   "1": "Non renseigné",
+   "2": "Non Déterminé",
+   "3": "Reproduction",
+   "4": "Hibernation",
+   "5": "Estivation",
+   "9": "Pas de reproduction",
+   "13": "Végétatif"
+  },
+  "NATURALITE": {
+   "0": "Inconnu",
+   "1": "Sauvage",
+   "2": "Cultivé/élevé",
+   "3": "Planté",
+   "4": "Féral",
+   "5": "Subspontané"
+  },
+  "STATUT_OBS": {
+   "No": "Non observé",
+   "Pr": "Présent",
+   "NSP": "Ne Sait Pas"
+  },
+  "STATUT_SOURCE": {
+   "Co": "Collection",
+   "Li": "Littérature",
+   "Te": "Terrain",
+   "NSP": "Ne Sait Pas"
+  },
+  "STADE_VIE": {
+   "0": "Inconnu",
+   "1": "Indéterminé",
+   "2": "Adulte",
+   "3": "Juvénile",
+   "4": "Immature",
+   "5": "Sub-adulte",
+   "6": "Larve",
+   "7": "Chenille",
+   "8": "Têtard",
+   "9": "Œuf",
+   "10": "Mue",
+   "11": "Exuvie",
+   "12": "Chrysalide",
+   "13": "Nymphe",
+   "14": "Pupe",
+   "15": "Imago",
+   "16": "Sub-imago",
+   "17": "Alevin",
+   "18": "Germination",
+   "19": "Fané",
+   "20": "Graine",
+   "21": "Thalle, protothalle",
+   "22": "Tubercule",
+   "23": "Bulbe",
+   "24": "Rhizome",
+   "25": "Emergent",
+   "26": "Post-Larve",
+   "27": "Fruit"
+  },
+  "SEXE": {
+   "0": "Inconnu",
+   "1": "Indéterminé",
+   "2": "Femelle",
+   "3": "Mâle",
+   "4": "Hermaphrodite",
+   "5": "Mixte",
+   "6": "Non renseigné"
+  },
+  "OBJ_DENBR": {
+   "COL": "Colonie",
+   "CPL": "Couple",
+   "HAM": "Hampe florale",
+   "IND": "Individu",
+   "NID": "Nid",
+   "NSP": "Ne Sait Pas",
+   "PON": "Ponte",
+   "SURF": "Surface",
+   "TIGE": "Tige",
+   "TOUF": "Touffe"
+  },
+  "TYP_DENBR": {
+   "Ca": "Calculé",
+   "Co": "Compté",
+   "Es": "Estimé",
+   "NSP": "Ne sait pas"
+  },
+  "STAT_BIOGEO": {
+   "0": "Inconnu/cryptogène",
+   "1": "Non renseigné",
+   "2": "Présent (indigène ou indéterminé)",
+   "3": "Introduit",
+   "4": "Introduit envahissant",
+   "5": "Introduit non établi (dont domestique)",
+   "6": "Occasionnel"
+  },
+  "PREUVE_EXIST": {
+   "0": "Inconnu",
+   "1": "Oui",
+   "2": "Non",
+   "3": "Non acquise"
+  },
+  "STATUT_VALID": {
+   "0": "En attente de validation",
+   "1": "Certain - très probable",
+   "2": "Probable",
+   "3": "Douteux",
+   "4": "Invalide",
+   "5": "Non réalisable",
+   "6": "Inconnu"
+  },
+  "OCC_COMPORTEMENT": {
+   "0": "Inconnu",
+   "1": "Non renseigné",
+   "2": "Echouage",
+   "3": "Dortoir",
+   "4": "Migration",
+   "5": "Construction de toile",
+   "6": "Halte migratoire",
+   "7": "Swarming",
+   "8": "Chasse/alimentation",
+   "9": "Hivernage",
+   "10": "Passage en vol",
+   "11": "Erratique",
+   "12": "Sédentaire",
+   "13": "Estivage",
+   "14": "Nourrissage des jeunes",
+   "15": "Posé",
+   "16": "Déplacement",
+   "17": "Repos",
+   "18": "Chant",
+   "19": "Accouplement",
+   "20": "Cœur copulatoire",
+   "21": "Tandem",
+   "22": "Territorial",
+   "23": "Pond"
+  },
+  "NAT_OBJ_GEO": {
+   "In": "Inventoriel",
+   "St": "Stationnel",
+   "NSP": "Ne sait pas"
+  },
+  "NIV_PRECIS": {
+   "0": "Standard",
+   "1": "Commune",
+   "2": "Maille",
+   "3": "Département",
+   "4": "Aucune",
+   "5": "Précise"
+  },
+  "TYP_INF_GEO": {
+   "1": "Géoréférencement",
+   "2": "Rattachement"
+  },
+  "DEE_FLOU": {
+   "NON": "Non",
+   "NSP": "NSP",
+   "OUI": "Oui"
+  },
+  "TYP_GRP": {
+   "OP": "OP",
+   "NSP": "NSP",
+   "OBS": "OBS",
+   "REL": "REL",
+   "AUTR": "AUTR",
+   "CAMP": "CAMP",
+   "LIEN": "LIEN",
+   "PASS": "PASS",
+   "POINT": "POINT",
+   "STRAT": "STRAT",
+   "INVSTA": "INVSTA"
+  },
+  "METH_DETERMIN": {
+   "1": "Non renseigné",
+   "2": "Autre méthode de détermination",
+   "3": "Analyse d’ADN environnemental",
+   "4": "Analyse ADN de l'individu ou de ses restes",
+   "5": "Analyse biophysique ou biochimique",
+   "6": "Déduction de l'espèce par n° d'identification",
+   "7": "Détermination informatique par un outil de reconnaissance automatique",
+   "8": "Examen biométrique",
+   "9": "Examen auditif direct",
+   "10": "Examen auditif avec transformation électronique",
+   "11": "Examen des organes reproducteurs ou critères spécifiques en laboratoire",
+   "12": "Examen des organes reproducteurs ou critères spécifiques sur le terrain",
+   "13": "Examen des restes de l’individu sous loupe ou microscope",
+   "14": "Examen visuel des restes de l’individu",
+   "15": "Examen des restes de l'individu sur photo ou vidéo",
+   "16": "Examen des traces ou indices de présence sur photo ou vidéo",
+   "17": "Examen direct des traces ou indices de présence",
+   "18": "Examen visuel à distance",
+   "19": "Examen visuel en collection ",
+   "20": "Examen visuel sous loupe ou microscope",
+   "21": "Examen visuel de l’individu en main",
+   "22": "Examen visuel sur photo ou vidéo"
+  },
+  "SENSIBILITE": {
+   "0": "Non sensible - Diffusion précise",
+   "1": "Sensible - Diffusion à la Commune ou Znieff",
+   "2": "Sensible - Diffusion à la maille 10km",
+   "3": "Sensible - Diffusion au département",
+   "4": "Sensible - Aucune diffusion"
+  }
+ }
+}
