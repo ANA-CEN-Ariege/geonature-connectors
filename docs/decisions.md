@@ -61,6 +61,44 @@ tel quel — `batch_size`, `gadm_gid`, `taxo_groups` y côtoient `departements` 
 `importer_absences`. C'est la même incohérence, sur une autre surface, et la corriger
 casserait les configurations en place sans le dire.
 
+### L'enregistrement de la source est commité seul, avant la phase réseau
+
+Chaque connecteur renseigne `t_sources.url_source` au démarrage, pour que le bouton
+« voir la donnée source » de la Synthèse pointe sur la redirection du module. C'est une
+métadonnée, idempotente, sans rapport avec les observations qui suivront — mais elle était
+écrite dans la transaction de l'import, et n'était donc commitée qu'à la fin.
+
+**Conséquence, mesurée le 14 septembre 2026 sur l'instance de test :** l'`UPDATE` garde un
+verrou de ligne pendant toute la moisson. Trois commandes se sont retrouvées empilées
+derrière un `geonature-couverture` parti relire les 411 318 observations d'un export
+distant — plus d'une heure d'attente, aucun message, et `pg_stat_activity` pour seul moyen
+de comprendre :
+
+```
+pid 109  idle in transaction  1h13   UPDATE gn_synthese.t_sources SET url_source = …
+pid 114  active  1h10  attente=Lock/transactionid
+pid 122  active  1h02  attente=Lock/tuple
+pid 174  active  0h19  attente=Lock/tuple
+```
+
+Le diagnostic est d'autant plus pénible que la ligne verrouillée n'a rien à voir avec ce
+que la commande bloquée essaie de faire : une commande figée au démarrage, sans sortie,
+ressemble à un problème de réseau ou d'authentification, pas à un verrou sur une table de
+métadonnées.
+
+L'écriture passe désormais par `_enregistrer_url_source`, qui commite aussitôt. La clause
+`IS DISTINCT FROM` fait qu'une fois la valeur posée, l'`UPDATE` ne touche plus aucune ligne
+et ne verrouille donc plus rien : le cas ne se présente qu'au premier passage, et il dure
+quelques millisecondes.
+
+⚠ **Et `geonature-couverture` n'écrit plus rien du tout.** Sa première ligne d'aide promet
+un diagnostic « sans rien écrire », et sa dernière ligne d'exécution l'affirme — elle
+prenait pourtant ce verrou en écriture. C'est la commande qu'on lance en premier sur un
+export inconnu : celle où une attente inexpliquée serait la plus déroutante.
+
+Vérifié en conditions réelles : un import et un diagnostic lancés en parallèle, 90
+échantillons de `pg_stat_activity` sur trois minutes, **aucune attente sur verrou**.
+
 ---
 
 ---

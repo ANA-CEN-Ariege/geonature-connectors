@@ -312,3 +312,48 @@ def test_les_jeux_du_connecteur_sortent_de_la_file_de_validation():
     sans = [a.lineno for a in appels
             if not any(k.arg == "validable" for k in a.keywords)]
     assert not sans, f"upsert_dataset sans `validable` aux lignes {sans}"
+
+
+def test_lenregistrement_de_la_source_est_commite_avant_la_moisson():
+    """Un seul endroit écrit `url_source`, et il commite aussitôt.
+
+    Sans ce commit, l'`UPDATE` garde un verrou de ligne sur `t_sources` pendant toute la
+    suite de la commande — donc pendant la moisson, qui dure des heures sur un corpus
+    entier. Deux exécutions du module ne peuvent alors plus se croiser : la seconde
+    attend sur un verrou que rien ne nomme et paraît figée au démarrage. Constaté le
+    14 septembre 2026 : trois commandes empilées derrière une moisson de 411 318
+    observations, plus d'une heure d'attente, et `pg_stat_activity` pour seul moyen de
+    comprendre.
+
+    Le cas est statique faute de base : c'est le prix à payer, et il vaut mieux que rien.
+    """
+    ecritures = [ligne for ligne in SOURCE.splitlines()
+                 if "UPDATE gn_synthese.t_sources" in ligne]
+    assert len(ecritures) == 1, (
+        f"{len(ecritures)} écritures de t_sources : elles doivent toutes passer par "
+        f"`_enregistrer_url_source`, qui commite.")
+
+    fonction = _fonction("_enregistrer_url_source")
+    commits = [n for n in ast.walk(fonction)
+               if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "commit"]
+    assert commits, "`_enregistrer_url_source` doit commiter l'écriture qu'elle fait"
+
+
+def test_la_commande_de_diagnostic_ne_prend_aucun_verrou():
+    """`geonature-couverture` annonce « sans rien écrire » dès sa première ligne d'aide.
+
+    Renseigner `url_source` est une écriture, si brève soit-elle — et c'est la commande
+    qu'on lance en premier sur un export inconnu, celle où une attente sur un verrou
+    serait la plus déroutante.
+    """
+    fonction = _fonction("geonature_couverture")
+    appels = [n for n in ast.walk(fonction)
+              if isinstance(n, ast.Call)
+              and getattr(n.func, "id", "") == "_contexte_geonature"]
+    assert appels, "geonature-couverture doit construire son contexte"
+    for appel in appels:
+        desactive = [k for k in appel.keywords
+                     if k.arg == "enregistrer_url" and k.value.value is False]
+        assert desactive, (
+            f"ligne {appel.lineno} : _contexte_geonature doit être appelée avec "
+            f"enregistrer_url=False depuis la commande de diagnostic")

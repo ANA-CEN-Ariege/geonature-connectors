@@ -855,6 +855,12 @@ export 12 — licence « Licence Ouverte v2.0 »
 
 Ne lancez l'import qu'une fois chaque ligne comprise.
 
+« N'écrit rien » vaut aussi pour les verrous : la commande peut tourner pendant qu'un
+import est en cours, et l'inverse. Ce n'était pas le cas avant le 14 septembre 2026 —
+l'enregistrement de `url_source` gardait un verrou de ligne sur `t_sources` pendant toute
+la moisson, et une seconde commande restait figée au démarrage, sans message, aussi
+longtemps que durait la première.
+
 ### Importer
 
 ```bash

@@ -9,6 +9,40 @@ from sqlalchemy import text as db_text
 from geonature.utils.env import db
 
 
+def _enregistrer_url_source(id_source: int, chemin: str) -> None:
+    """Renseigne `url_source` de la source, et **commite aussitôt**.
+
+    ⚠ **Le commit n'est pas une coquetterie de style.** Sans lui, l'`UPDATE` garde un
+    verrou de ligne sur `t_sources` pendant tout le reste de la commande — c'est-à-dire
+    pendant la moisson, qui dure des heures sur un corpus entier. Deux exécutions du
+    module ne peuvent alors plus se croiser : la seconde attend la première sur un verrou
+    que rien ne nomme, sans message, sans trace, et paraît figée au démarrage.
+
+    Constaté le 14 septembre 2026 sur l'instance de test : trois commandes empilées
+    derrière une moisson de 411 318 observations, plus d'une heure d'attente, et
+    `pg_stat_activity` pour seul moyen de comprendre. Le diagnostic est d'autant plus
+    difficile que la ligne verrouillée n'a rien à voir avec ce que la commande bloquée
+    essaie de faire.
+
+    L'écriture est de toute façon indépendante de l'import : c'est une métadonnée de la
+    source, idempotente, sans rapport avec les observations qui suivront. Rien ne
+    justifiait de la garder dans la transaction de l'import — et la clause
+    `IS DISTINCT FROM` fait qu'une fois posée, elle ne verrouille plus rien.
+    """
+    from geonature.utils.config import config as gn_config
+
+    api = str(gn_config.get("API_ENDPOINT") or "").rstrip("/")
+    if not api:
+        click.secho("  ⚠ API_ENDPOINT absent de la configuration GeoNature : le bouton "
+                    "« voir la donnée source » ne sera pas alimenté.", fg="yellow")
+        return
+    db.session.execute(
+        db_text("UPDATE gn_synthese.t_sources SET url_source = :u "
+                "WHERE id_source = :s AND url_source IS DISTINCT FROM :u"),
+        {"u": f"{api}/connectors/{chemin}", "s": id_source})
+    db.session.commit()
+
+
 @click.command("statut")
 def statut():
     """Diagnostic : vérifie que le module voit bien GeoNature et son référentiel."""
@@ -871,15 +905,7 @@ def visionature_import(groupes, since, debut, fin, departements_demandes, batch_
     # Un chemin terminé par l'identifiant est en revanche exactement ce que le cœur sait
     # produire. `entity_source_pk_value` garde donc l'identifiant brut, et
     # `blueprint.voir_dans_visionature` se charge de la redirection.
-    api = str(gn_config.get("API_ENDPOINT") or "").rstrip("/")
-    if api:
-        db.session.execute(
-            db_text("UPDATE gn_synthese.t_sources SET url_source = :u "
-                    "WHERE id_source = :s AND url_source IS DISTINCT FROM :u"),
-            {"u": f"{api}/connectors/visionature", "s": id_source})
-    else:
-        click.secho("  ⚠ API_ENDPOINT absent de la configuration GeoNature : le bouton "
-                    "« voir la donnée source » ne sera pas alimenté.", fg="yellow")
+    _enregistrer_url_source(id_source, "visionature")
 
     # Cache des référentiels : outil de mise au point, désactivé par défaut. Voir
     # `core/cache.py` — le référentiel des observateurs contient des noms de personnes.
@@ -1630,15 +1656,7 @@ def dbchiro_import(area, departements, importer_absences, max_results, batch_siz
     # concaténation du cœur — `url_source + '/' + entity_source_pk_value` — ne peut rien
     # produire de valide. `blueprint.voir_dans_dbchiro` reconstruit l'URL complète, et
     # `entity_source_pk_value` garde l'identifiant brut.
-    api = str(gn_config.get("API_ENDPOINT") or "").rstrip("/")
-    if api:
-        db.session.execute(
-            db_text("UPDATE gn_synthese.t_sources SET url_source = :u "
-                    "WHERE id_source = :s AND url_source IS DISTINCT FROM :u"),
-            {"u": f"{api}/connectors/dbchiro", "s": id_source})
-    else:
-        click.secho("  ⚠ API_ENDPOINT absent de la configuration GeoNature : le bouton "
-                    "« voir la donnée source » ne sera pas alimenté.", fg="yellow")
+    _enregistrer_url_source(id_source, "dbchiro")
 
     # La table taxonomique est vérifiée contre TAXREF avant toute écriture : un cd_nom
     # déprécié par une montée de version satisfait la clé étrangère sans qu'aucun
@@ -2360,9 +2378,13 @@ def _bbox_de(wkt: str):
     return (min(lons), min(lats), max(lons), max(lats))
 
 
-def _contexte_geonature(cfg):
-    """Identifiants et référentiels de l'instance locale, communs à toutes les commandes."""
-    from geonature.utils.config import config as gn_config
+def _contexte_geonature(cfg, enregistrer_url: bool = True):
+    """Identifiants et référentiels de l'instance locale, communs à toutes les commandes.
+
+    `enregistrer_url` est faux pour les commandes qui se donnent pour n'écrire rien :
+    renseigner `url_source` est une écriture, si brève soit-elle, et `geonature-couverture`
+    promet un diagnostic sans effet de bord.
+    """
     from .core import synthese as syn_core, datasets as ds_core
     from .migrations.f7b204e9c318_source_geonature import SOURCE_NAME, CA_UUID
 
@@ -2382,15 +2404,8 @@ def _contexte_geonature(cfg):
     # `url_source` pointe sur la redirection du module : le permalien d'une observation
     # GeoNature contient un fragment (`/#/synthese/occurrence/<id>`), que la concaténation
     # du cœur — `url_source + '/' + entity_source_pk_value` — ne peut pas produire.
-    api = str(gn_config.get("API_ENDPOINT") or "").rstrip("/")
-    if api:
-        db.session.execute(
-            db_text("UPDATE gn_synthese.t_sources SET url_source = :u "
-                    "WHERE id_source = :s AND url_source IS DISTINCT FROM :u"),
-            {"u": f"{api}/connectors/geonature", "s": id_source})
-    else:
-        click.secho("  ⚠ API_ENDPOINT absent de la configuration GeoNature : le bouton "
-                    "« voir la donnée source » ne sera pas alimenté.", fg="yellow")
+    if enregistrer_url:
+        _enregistrer_url_source(id_source, "geonature")
 
     return {"id_source": id_source, "id_module": id_module, "srid": srid,
             "version_taxref": v_taxref, "af_repli": af_repli, "instance": instance}
@@ -2511,7 +2526,10 @@ def geonature_couverture(id_export, perimetre, max_results):
                                     taxonomy as gn_taxo, nomenclatures as gn_nomen)
 
     cfg = _cfg_geonature(id_export)
-    contexte = _contexte_geonature(cfg)
+    # Aucune écriture, verrou compris : la commande promet un diagnostic sans effet
+    # de bord, et c'est elle qu'on lance en premier sur un export inconnu — le moment
+    # où une attente inexpliquée sur un verrou serait la plus déroutante.
+    contexte = _contexte_geonature(cfg, enregistrer_url=False)
     filtres, bbox = _filtres_geonature(cfg, perimetre)
 
     try:
