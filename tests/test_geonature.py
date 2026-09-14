@@ -601,6 +601,28 @@ def _lot(debut, combien):
     return [item(id_synthese=debut + i) for i in range(combien)]
 
 
+class RequestsGeoJSON(RequestsFactice):
+    """Le serveur tel qu'il répond quand l'export déclare un `geometry_field`.
+
+    Deux comportements, pas un : `items` est une FeatureCollection, **et** `as_geofeature`
+    en retire les lignes sans géométrie. `total` et `total_filtered`, eux, les comptent
+    toujours — ils sont calculés avant le filtre.
+    """
+
+    def __init__(self, pages, sans_geometrie=(), **kw):
+        super().__init__(pages, **kw)
+        self.sans_geometrie = set(sans_geometrie)
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        reponse = super().get(url, params=params, headers=headers, timeout=timeout)
+        reponse._charge["items"] = {
+            "type": "FeatureCollection",
+            "features": [{"type": "Feature", "geometry": None, "properties": e}
+                         for e in reponse._charge["items"]
+                         if e.get("id_synthese") not in self.sans_geometrie]}
+        return reponse
+
+
 def test_offset_est_un_numero_de_page_pas_un_decalage_de_lignes(monkeypatch):
     """Contre-intuitif, écrit nulle part dans la documentation du module d'export, et
     lourd de conséquences : traité comme un décalage de lignes, il ferait sauter
@@ -747,6 +769,99 @@ def test_une_page_de_connexion_html_est_reconnue():
 def test_une_reponse_sans_items_nest_pas_une_api_dexport():
     with pytest.raises(A.ErreurGeoNature, match="items"):
         A._verifier_json(ReponseFactice({"results": []}), "https://x/api")
+
+
+def _feature(**surcharges):
+    """La forme que rend réellement un export déclarant un `geometry_field`."""
+    return {"type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [1.61, 42.93]},
+            "properties": item(**surcharges)}
+
+
+def test_une_collection_geojson_est_aplatie_en_enregistrements():
+    """L'export « Synthese SINP » livré par GeoNature déclare `geometry_field = geom` :
+    l'API rend alors une FeatureCollection, colonnes rangées sous `properties`. Ne pas
+    la reconnaître faisait échouer le connecteur sur l'export de référence de n'importe
+    quelle instance."""
+    charge = A._verifier_json(ReponseFactice({
+        "total": 2, "total_filtered": 2,
+        "items": {"type": "FeatureCollection",
+                  "features": [_feature(id_synthese=1), _feature(id_synthese=2)]},
+        "license": {"name": "Licence Ouverte v2.0"}}), "https://x/api")
+    assert [e["id_synthese"] for e in charge["items"]] == [1, 2]
+    assert "wkt_4326" in charge["items"][0]
+    assert A.verifier_colonnes(charge["items"][0])[0] == []
+
+
+def test_une_liste_plate_traverse_sans_etre_touchee():
+    """L'autre forme, rendue par `return_query()` quand l'export n'a pas de géométrie."""
+    charge = A._verifier_json(
+        ReponseFactice({"items": [item(id_synthese=7)]}), "https://x/api")
+    assert charge["items"] == [item(id_synthese=7)]
+
+
+def test_une_collection_geojson_vide_ne_casse_pas_la_pagination():
+    """Dernière page d'une moisson : `moissonner` doit y lire une liste vide, et non un
+    dict dont `len()` vaudrait 2 — la boucle ne s'arrêterait jamais."""
+    charge = A._verifier_json(ReponseFactice(
+        {"items": {"type": "FeatureCollection", "features": []}}), "https://x/api")
+    assert charge["items"] == []
+
+
+def test_une_moisson_pagine_sur_des_collections_geojson(monkeypatch):
+    """Le bout en bout : c'est la pagination qui tombait, pas la lecture d'une page."""
+    monkeypatch.setattr(A, "requests", RequestsGeoJSON([_lot(1, 3), _lot(4, 3),
+                                                        _lot(7, 1)]))
+    items, meta = A.moissonner({**CFG, "page_size": 3}, {})
+    assert [e["id_synthese"] for e in items] == [1, 2, 3, 4, 5, 6, 7]
+    assert meta["complet"]
+
+
+def test_une_ligne_sans_geometrie_narrete_pas_la_moisson(monkeypatch):
+    """Le défaut le plus grave de la forme GeoJSON, et le plus discret : `as_geofeature`
+    retire les lignes dont la géométrie est nulle — `the_geom_4326` est nullable dans
+    `gn_synthese` — alors que le `LIMIT` SQL les a bien consommées. Une seule observation
+    sans géométrie rendait une page plus courte que la limite en plein milieu du corpus ;
+    la moisson s'y arrêtait et abandonnait tout le reste. Ici, sans le correctif, on
+    n'obtiendrait que [1, 3]."""
+    faux = RequestsGeoJSON([_lot(1, 3), _lot(4, 3), _lot(7, 1)], sans_geometrie={2})
+    monkeypatch.setattr(A, "requests", faux)
+    items, meta = A.moissonner({**CFG, "page_size": 3}, {}, journal=lambda m: None)
+    assert [e["id_synthese"] for e in items] == [1, 3, 4, 5, 6, 7]
+
+
+def test_le_deficit_dune_moisson_geojson_est_impute_a_sa_vraie_cause(monkeypatch):
+    """Le verdict ne change pas — la réconciliation reste interdite, ces observations
+    existent à la source et leur absence ne prouve aucune suppression — mais accuser la
+    « pagination incomplète » enverrait chercher un défaut qui n'est pas là."""
+    faux = RequestsGeoJSON([_lot(1, 3), _lot(4, 3)], sans_geometrie={2, 5})
+    monkeypatch.setattr(A, "requests", faux)
+    messages = []
+    items, meta = A.moissonner({**CFG, "page_size": 3}, {}, journal=messages.append)
+    assert len(items) == 4 and meta["total_filtered"] == 6
+    assert not meta["complet"]
+    assert any("géométrie est nulle" in m and "réconciliation" in m for m in messages)
+    assert not any("pagination incomplète" in m for m in messages)
+
+
+def test_en_geojson_la_fin_du_corpus_ne_se_lit_que_sur_une_page_vide(monkeypatch):
+    """La contrepartie assumée : une requête de plus par moisson."""
+    faux = RequestsGeoJSON([_lot(1, 3), _lot(4, 3)])
+    monkeypatch.setattr(A, "requests", faux)
+    items, meta = A.moissonner({**CFG, "page_size": 3}, {})
+    assert [a["offset"] for a in faux.appels] == [0, 1, 2]
+    assert meta["complet"] and len(items) == 6
+
+
+def test_en_forme_plate_une_page_courte_reste_la_derniere(monkeypatch):
+    """Le raccourci garde sa valeur là où il est vrai : sans géométrie déclarée, le
+    serveur ne retire rien, une page courte est bien la fin du corpus, et la requête
+    supplémentaire est épargnée."""
+    faux = RequestsFactice([_lot(1, 3), _lot(4, 2)])
+    monkeypatch.setattr(A, "requests", faux)
+    items, meta = A.moissonner({**CFG, "page_size": 3}, {})
+    assert [a["offset"] for a in faux.appels] == [0, 1]
+    assert meta["complet"] and len(items) == 5
 
 
 def test_le_filtre_incremental_porte_sur_la_bonne_colonne():

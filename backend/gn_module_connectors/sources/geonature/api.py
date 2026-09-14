@@ -110,7 +110,44 @@ def _verifier_json(reponse, url: str) -> dict:
         raise ErreurGeoNature(
             f"Réponse inattendue de {url} : aucun champ « items ». Ce n'est pas l'API "
             f"d'export d'un GeoNature.")
+    brut = charge.get("items")
+    charge["geojson"] = isinstance(brut, dict)
+    charge["items"] = _aplatir(brut)
     return charge
+
+
+def _aplatir(items):
+    """`items` en liste d'enregistrements plats, quelle que soit la forme reçue.
+
+    ⚠ **L'API rend deux formes selon l'export, et c'est l'export qui choisit, pas la
+    vue.** `get_one_export_api` appelle `as_geofeature()` dès que l'export déclare un
+    `geometry_field`, et `return_query()` sinon. Dans le premier cas `items` n'est pas une
+    liste mais une FeatureCollection GeoJSON, dont chaque entrée range les colonnes sous
+    `properties`.
+
+    Ce n'est pas un cas de bord : l'export « Synthese SINP » livré par GeoNature déclare
+    `geometry_field = geom`. La forme GeoJSON est donc celle que rend l'export de
+    référence de n'importe quelle instance — la supposer absente faisait échouer le
+    connecteur sur sa cible la plus ordinaire, par un `KeyError: 0` en cours de
+    pagination.
+
+    ⚠ **Cette forme perd des lignes en chemin, et l'appelant doit le savoir** — d'où le
+    drapeau `geojson` posé sur la charge. `as_geofeature` ne retient que les
+    enregistrements dont la géométrie n'est pas nulle, alors que le `LIMIT` SQL, lui, les
+    a bien consommés. Une page peut donc rendre moins d'enregistrements que la limite sans
+    être la dernière ; `moissonner` en tient compte.
+
+    La géométrie de la Feature est écartée sciemment : `verifier_colonnes` exige déjà
+    l'une des colonnes `x_centroid_4326` / `y_centroid_4326` / `wkt_4326`, et c'est
+    d'elles que `transform` tire le point. Reprendre en plus le GeoJSON ajouterait une
+    seconde source de vérité géographique sans rien résoudre.
+    """
+    if isinstance(items, dict):
+        traits = items.get("features")
+        if isinstance(traits, list):
+            return [(t or {}).get("properties") or {} for t in traits]
+        return []
+    return items or []
 
 
 def filtres_serveur(cfg, depuis: str = "", champ_date: str = "date_modification",
@@ -202,7 +239,7 @@ def moissonner(cfg, filtres: dict, journal=None,
     et surtout `complet` : la réconciliation des suppressions n'a le droit de s'exécuter
     que sur une moisson complète, et c'est ce drapeau qui l'autorise.
 
-    Trois pièges de pagination, tous rencontrés sur des API de ce genre :
+    Quatre pièges de pagination, tous rencontrés sur des API de ce genre :
 
     - **la limite est rabotée sans le dire.** Le serveur plafonne à `max_page_size_api`,
       et rend simplement moins de lignes. On adopte donc la valeur annoncée par la page 0
@@ -215,6 +252,13 @@ def moissonner(cfg, filtres: dict, journal=None,
     - **un `offset` ignoré boucle indéfiniment.** Si la page N commence par la même ligne
       que la page N-1, on s'arrête net : sans ce contrôle, la moisson gonfle en mémoire
       jusqu'à ce que le processus meure, sans qu'aucun message ne désigne la cause.
+    - **une page courte ne prouve la fin du corpus que sur la forme plate.** Quand l'export
+      déclare une géométrie, `as_geofeature` retire de sa FeatureCollection les lignes dont
+      la géométrie est nulle — que le `LIMIT` SQL avait pourtant consommées, et que
+      `total_filtered` compte toujours. Or `the_geom_4326` est *nullable* dans
+      `gn_synthese`. Une seule observation sans géométrie rendait donc une page plus courte
+      que la limite en plein milieu du corpus, et la moisson s'arrêtait là en abandonnant
+      tout le reste. Sur cette forme, la seule fin lisible est une page vide.
 
     ⚠ S'y ajoute un dédoublonnage sur `id_synthese`, qui n'est pas une précaution de
     confort. Le raisonnement « le tri ascendant interdit les répétitions » suppose que le
@@ -248,12 +292,14 @@ def moissonner(cfg, filtres: dict, journal=None,
 
     items: list[dict] = []
     meta: dict = {"complet": True, "limite": limite, "total": None,
-                  "total_filtered": None, "license": {}, "doublons": 0}
+                  "total_filtered": None, "license": {}, "doublons": 0,
+                  "geojson": False}
     vus: set[str] = set()
     numero, precedent = 0, None
     while True:
         charge = page(cfg, numero, limite, tri)
         lot = charge.get("items") or []
+        meta["geojson"] = meta["geojson"] or bool(charge.get("geojson"))
         if numero == 0:
             meta["total"] = charge.get("total")
             meta["total_filtered"] = charge.get("total_filtered")
@@ -293,7 +339,12 @@ def moissonner(cfg, filtres: dict, journal=None,
             meta["complet"] = False
             return (items, meta)
 
-        if len(lot) < limite:
+        # ⚠ Une page plus courte que la limite ne signe la dernière page que sur la forme
+        # plate. Sur la forme GeoJSON, le serveur a pu retirer les lignes sans géométrie
+        # d'une page par ailleurs pleine : s'arrêter là abandonnerait le reste du corpus.
+        # On y paie une requête de plus — celle qui rend la page vide — contre la garantie
+        # de ne pas tronquer un import sur une donnée que le serveur a filtrée lui-même.
+        if not lot or (not meta["geojson"] and len(lot) < limite):
             break
         numero += 1
 
@@ -311,8 +362,23 @@ def moissonner(cfg, filtres: dict, journal=None,
     annonce = meta["total_filtered"]
     if annonce is not None and len(items) + meta["doublons"] != annonce:
         meta["complet"] = False
-        message = (f"pagination incomplète : {len(items)} enregistrement(s) reçus pour "
-                   f"{annonce} annoncé(s)")
+        manquants = annonce - len(items) - meta["doublons"]
+        if meta["geojson"] and manquants > 0:
+            # La moisson a bien été menée jusqu'à la page vide : ces lignes ne sont pas
+            # des lignes sautées, ce sont des lignes que le serveur refuse de rendre. La
+            # distinction change le message, pas le verdict — `complet` reste faux, car
+            # ces observations existent à la source et leur absence ici ne prouve donc
+            # aucune suppression.
+            message = (f"{manquants} enregistrement(s) annoncé(s) que le serveur n'a pas "
+                       f"rendus. L'export est géographique, et `as_geofeature` retire de "
+                       f"sa FeatureCollection toute ligne dont la géométrie est nulle — "
+                       f"`the_geom_4326` est nullable dans `gn_synthese`. Ces "
+                       f"observations existent à la source et resteront invisibles ici : "
+                       f"la réconciliation des suppressions s'interdit de tourner sur "
+                       f"cette moisson, où leur absence ne prouverait aucune suppression.")
+        else:
+            message = (f"pagination incomplète : {len(items)} enregistrement(s) reçus "
+                       f"pour {annonce} annoncé(s)")
         if journal:
             journal(f"  ⚠ {message}")
         else:

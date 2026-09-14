@@ -651,6 +651,53 @@ d'export est `@permissions_required` : elle exige un compte, là où le jeton n'
 `/api/exports/api/<id>`. L'`id_export` se demande à l'administrateur distant, il ne se
 découvre pas.
 
+### L'API d'export rend deux formes, et la forme géographique perd des lignes
+
+Lu dans les sources du distant, pas déduit : `gn_module_export/blueprint.py` termine
+`get_one_export_api` par
+
+```python
+data = query.as_geofeature() if query.geometry_field else query.return_query()
+```
+
+**C'est l'export qui choisit la forme, pas la vue.** Et l'export « Synthese SINP » que
+GeoNature livre en standard est inséré avec `geometry_field = 'geom'`
+(`gn_module_export/migrations/data/exports.sql`) : la forme géographique est donc celle
+que rend la cible la plus ordinaire qui soit, pas un cas de bord d'administrateur.
+
+Elle a deux conséquences, de gravité inégale, et la seconde est la plus coûteuse :
+
+1. **`items` n'est pas une liste** mais une FeatureCollection, dont chaque entrée range
+   les colonnes sous `properties`. Le connecteur échouait dessus par un `KeyError: 0` en
+   cours de pagination. Bruyant, donc bénin : on ne pouvait pas importer de travers, on ne
+   pouvait pas importer du tout.
+2. **`as_geofeature` retire les lignes dont la géométrie est nulle** —
+   `[… for d in data if getattr(d, self.geometry_field) is not None]`, dans
+   `utils_flask_sqla_geo/generic.py` — alors que le `LIMIT` SQL, lui, les a bien
+   consommées, et que `total_filtered` les compte toujours. Or `the_geom_4326` est
+   *nullable* dans `gn_synthese` : rien n'interdit une observation sans géométrie.
+
+Le second point invalide l'invariant sur lequel reposait la sortie de boucle de
+`moissonner` : « une page plus courte que la limite est la dernière ». Une seule
+observation sans géométrie rendait une page courte **en plein milieu du corpus**, et la
+moisson s'arrêtait là, abandonnant tout le reste. Le contrôle final
+(`reçus + doublons == total_filtered`) le voyait et marquait la moisson incomplète, donc
+la réconciliation restait interdite — mais l'import, lui, était tronqué, et le message
+accusait la pagination au lieu de nommer la cause.
+
+Sur la forme géographique, la seule fin de corpus lisible est donc **une page vide**.
+C'est une requête de plus par moisson, assumée : le prix d'une garantie contre une
+troncature silencieuse. Sur la forme plate, où le serveur ne retire rien, le raccourci
+garde sa valeur et est conservé.
+
+Le déficit résiduel — les lignes que le serveur refuse de rendre — laisse la moisson
+marquée incomplète, et c'est voulu : ces observations *existent* à la source, leur absence
+ici ne prouve donc aucune suppression, et `geonature-reconcilier` les effacerait à tort.
+
+⚠ Tout ceci est établi en lisant le code du serveur, **pas en interrogeant une instance**.
+Voir la réserve en fin de fichier : le connecteur GeoNature n'a toujours pas été confronté
+à un distant réel.
+
 ### Ce que le connecteur reprend du producteur
 
 C'est le seul connecteur à recréer les métadonnées **sous les identifiants SINP du
@@ -886,9 +933,13 @@ nomenclature doit être résolu **comme un libellé**, et un libellé que le ré
 ne connaît pas doit être *collecté* et affiché en fin d'import, jamais avalé. Le résolveur
 factice y est volontairement strict — sa méthode `id()`, celle des trois autres
 connecteurs, lève si on lui passe autre chose qu'un `cd_nomenclature`. Viennent ensuite
-les trois pièges de pagination de l'API d'export : `offset` est un numéro de page et non
-un décalage de lignes, la limite est rabotée par le serveur sans qu'il le dise, et un
-`offset` ignoré boucle indéfiniment.
+les quatre pièges de pagination de l'API d'export : `offset` est un numéro de page et
+non un décalage de lignes, la limite est rabotée par le serveur sans qu'il le dise, un
+`offset` ignoré boucle indéfiniment, et une page plus courte que la limite ne signe la fin
+du corpus que sur la forme plate — sur la forme GeoJSON, le serveur a pu en retirer les
+lignes sans géométrie. Les cas de cette dernière sont bâtis sur un serveur factice qui
+reproduit les **deux** comportements de `as_geofeature` : la FeatureCollection, et son
+filtre sur la géométrie nulle.
 
 ⚠ Les cas GeoNature sont bâtis sur un enregistrement **reconstitué depuis la définition
 SQL de `gn_exports.v_synthese_sinp`**, faute d'accès à une instance distante au moment de

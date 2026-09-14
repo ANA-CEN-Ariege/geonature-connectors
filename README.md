@@ -1069,6 +1069,15 @@ purge ce qui n'est pas revenu. Une occurrence retirée de GBIF reste en base : l
 détecter supposerait de comparer l'ensemble des identifiants du périmètre à chaque
 passage, ce qui annulerait le bénéfice du court-circuit.
 
+**Une observation sans géométrie à la source est invisible d'ici.** Quand l'export
+distant déclare une géométrie — c'est le cas de l'export « Synthese SINP » livré par
+GeoNature — le serveur retire de sa réponse toute ligne dont la géométrie est nulle, tout
+en la comptant dans son total. Le connecteur le détecte, le dit, et **refuse alors de
+considérer la moisson comme complète** : `geonature-reconcilier` s'interdit de tourner
+dessus, puisque l'absence de ces observations ne prouve aucune suppression. Si le message
+apparaît à chaque passage, la réconciliation ne se fera jamais — c'est à la source qu'il
+faut corriger, en donnant une géométrie à ces observations.
+
 **Le référentiel de sensibilité local peut être moins couvrant que celui d'une
 instance distante.** `id_nomenclature_sensitivity` est recalculée à l'insertion par le
 trigger de la Synthèse : une observation protégée chez le producteur peut donc se
