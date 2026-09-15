@@ -22,13 +22,15 @@ observation, et une installation à la portée d'un administrateur fonctionnel.
 - [Configurer](#configurer)
 - [Conventions des commandes](#conventions-des-commandes)
 - [GBIF](#gbif) · [VisioNature](#visionature) · [dbChiro](#dbchiro) · [GeoNature](#geonature)
+  — l'essentiel ici, le détail dans [`docs/connecteurs/`](docs/connecteurs/)
 - [Pré-validation](#pré-validation) — faut-il valider ce qu'on moissonne ?
 - [Purger](#purger) — revenir en arrière
 - [Points de vigilance](#points-de-vigilance) — **à lire avant le premier import**
 - [Tests](#tests) · [Documentation](#documentation) · [Développement](#développement)
 
 Le **pourquoi** des choix — ce qui a été mesuré, essayé, écarté — est dans
-[docs/decisions.md](docs/decisions.md). Ce fichier-ci s'en tient au comment.
+[docs/decisions.md](docs/decisions.md). Ce fichier-ci s'en tient au comment, dans les
+grandes lignes ; chaque source a son propre approfondissement dans `docs/connecteurs/`.
 
 ---
 
@@ -161,8 +163,7 @@ Les commandes se nomment `<source>-<action>`, la source portant son nom entier :
 `gbif-`, `visionature-`, `dbchiro-`, `geonature-`. Une seule exception, `statut`, qui
 ne dépend d'aucune source.
 
-Les options sont en **français**, avec deux exceptions assumées : `--dry-run` et `--yes`,
-que tout utilisateur de ligne de commande reconnaît et que traduire desservirait.
+Les options sont en **français**, avec deux exceptions assumées : `--dry-run` et `--yes`.
 
 Le comportement par défaut est **asymétrique, et c'est voulu** :
 
@@ -199,93 +200,30 @@ gadm_gid = "FRA.11.1_1"      # l'Ariège ; voir gbif-synchroniser-jeux pour le v
 ```
 
 Aucun compte ni jeton : l'API GBIF est publique. Le seul réglage indispensable est le
-périmètre géographique.
-
-### Les réglages qui comptent
-
-| Clé | Défaut | Pourquoi y regarder |
-|---|---|---|
-| `gadm_gid` | `""` | Seul filtre géographique fiable. Sur l'Ariège : `gadmGid` → 1 309 180 occurrences, `stateProvince` → 1 215, une bbox → 2 582 085 (elle déborde sur l'Aude et la Catalogne) |
-| `occurrence_status` | `PRESENT` | Ne pas toucher sans raison : les absences deviendraient des présences fausses. Un seul jeu ariégeois en compte 116 799 |
-| `licenses` | `CC0_1_0`, `CC_BY_4_0` | Le CC BY-NC est viral — une seule occurrence non commerciale rend l'agrégat entier non commercial |
-| `exclude_dataset_keys` | `[]` | **Aucune clé ne permet de dédoublonner automatiquement contre votre Synthèse existante.** Cette liste est un travail de curation manuel, irréductible |
-| `coordinate_uncertainty_max` | *aucun filtre* | Sur l'Ariège, ≤ 1100 m ne retient que 39,9 % des occurrences, et certains jeux publient **tout** à 5 km : un seuil trop bas n'écarte pas les mauvaises données, il annule l'import |
-| `keep_unknown_uncertainty` | `true` | 34,9 % des occurrences ne déclarent aucune incertitude. Les garder revient à accepter une précision inconnue |
-| `skip_gridded_datasets` | `true` | Écarte les jeux publiés au centroïde de maille |
-| `download_doi` | `""` | Obligation de citation. L'API `search` n'en délivre aucun — ne vaut que pour l'API `download` |
-| `batch_size` | `1000` | Les triggers de `synthese` sont `FOR EACH STATEMENT` : leur coût ne s'amortit qu'en lots |
-
----
-
-### 1. Prévisualiser (facultatif)
+périmètre géographique — `gadm_gid` est le seul filtre fiable, une bbox déborde largement
+sur les territoires voisins.
 
 ```bash
-geonature connectors gbif-synchroniser-jeux --dry-run
+geonature connectors gbif-synchroniser-jeux --dry-run   # prévisualiser les JDD (facultatif)
+geonature connectors gbif-import --dry-run
+geonature connectors gbif-import
+geonature connectors gbif-import --jeu <clé> --perimetre FRA.11.1_1 --incertitude-max 1000
 ```
 
-Crée ou met à jour **un JDD GeoNature par jeu de données GBIF**, rattaché au cadre
-d'acquisition du module. C'est le découpage fidèle : GBIF ne produit rien, il agrège —
-le producteur est l'organisation qui publie chaque jeu. Chaque JDD porte donc son
-producteur, sa licence et sa **citation officielle GBIF** en description, ce qui satisfait
-l'obligation d'attribution par la métadonnée elle-même.
+L'import est **idempotent** (identifiants déterministes) et crée les JDD à la volée, un
+par jeu de données GBIF, avec la citation officielle du producteur en description.
 
-L'opération est idempotente : l'`unique_dataset_id` est dérivé en `uuid5` du triplet
-`(GBIF, datasetKey, licence)`. La licence entre dans la clé à dessein — sur iNaturalist
-elle varie observation par observation, et un JDD doit rester homogène.
+⚠️ Deux défauts à ne pas toucher sans raison : `occurrence_status = PRESENT` (sinon les
+absences deviennent des présences fausses) et `licenses` sans CC BY-NC (viral — une seule
+occurrence non commerciale rend l'agrégat entier non commercial). Et **aucune clé ne
+permet de dédoublonner automatiquement** contre votre Synthèse existante :
+`exclude_dataset_keys` est un travail de curation manuel, irréductible.
 
-⚠️ **Cette commande n'est pas un préalable.** `gbif-import` crée le JDD lui-même, au
-moment de la première écriture. C'est délibéré : un jeu publié à la maille, écarté pour
-sa licence, ou dont toutes les occurrences tombent au filtre de précision ne doit pas
-laisser un JDD vide dans le module Métadonnées. Sur un périmètre départemental, 43 des
-200 jeux sont taggés « grillés » par GBIF et n'auraient jamais reçu la moindre
-observation.
+Planification par `[gbif.schedule]` : un worker Celery déjà présent dans GeoNature s'en
+charge, en sautant les jeux inchangés depuis le dernier passage.
 
-`gbif-synchroniser-jeux` reste utile pour prévisualiser le périmètre, et pour rafraîchir les
-métadonnées — titre, citation, DOI — quand un producteur les corrige.
-
-### 2. Importer les occurrences
-
-```bash
-geonature connectors gbif-import \
-    --jeu <clé> --perimetre FRA.11.1_1 \
-    --incertitude-max 1000 --dry-run
-```
-
-Options utiles : `--max-resultats` pour plafonner, `--lot`, `--doi`,
-`--garder-incertitude-inconnue` / `--ecarter-incertitude-inconnue`.
-
-Le JDD est créé à la volée si des occurrences survivent aux filtres. L'import est
-**idempotent** : `unique_id_sinp` est déterministe, et réutilise l'UUID
-contenu dans l'`occurrenceID` quand il y en a un. Pour les données republiées par l'INPN,
-c'est l'identifiant permanent DEE — les observations importées portent donc leur identité
-SINP d'origine. Une seconde exécution n'écrit rien.
-
-Chaque observation conserve dans `additional_data` sa provenance complète :
-`dataset_key`, `dataset_name`, `rights_holder`, `license`, `license_url`, `gbif_url`,
-et le DOI du téléchargement s'il est configuré.
-
-### 3. Automatiser
-
-```toml
-[gbif.schedule]
-enabled = true
-crontab = "0 3 * * 1"     # lundi 3 h
-```
-
-Rien à installer : GeoNature fait déjà tourner un worker Celery avec `--beat`. La tâche
-traite les jeux un par un — un échec sur une source n'emporte pas les autres — et pose un
-verrou consultatif PostgreSQL, libéré automatiquement si le worker meurt.
-
-**Le connecteur saute les jeux inchangés** depuis son dernier passage, en comparant la
-date de modification du jeu côté GBIF à celle des observations déjà en base
-(`meta_create_date` / `meta_update_date`, entretenues par un trigger de la Synthèse —
-aucune table de suivi n'est nécessaire).
-
-| situation | ordre de grandeur |
-|---|---|
-| semaine sans republication | **3-5 min** |
-| semaine où un gros jeu republie | quelques dizaines de minutes |
-| premier import d'un périmètre départemental | plusieurs heures |
+→ Table complète des réglages, volumes mesurés sur l'Ariège, détail de la planification :
+[docs/connecteurs/gbif.md](docs/connecteurs/gbif.md)
 
 ---
 
@@ -294,256 +232,43 @@ aucune table de suivi n'est nécessaire).
 ```toml
 [visionature]
 enabled = true
-url = "https://www.faune-ariege.fr"
+url = "https://www.faune-occitanie.org"
 user_email = "…"
 user_password = "…"
-client_key = "…"          # fournis par Biolovision, séparément du compte utilisateur
+client_key = "…"         
 client_secret = "…"
-pseudonymisation_secret = "…"   # obligatoire, voir plus bas
+pseudonymisation_secret = "…"   # obligatoire — python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+departements = ["09"]           # sinon, moissonne toute l'étendue de l'instance
 ```
 
 ```bash
 geonature connectors visionature-import --dry-run
 geonature connectors visionature-import
-geonature connectors visionature-import --depuis 2026-08-01   # incrémental (10 semaines)
-geonature connectors visionature-import --debut 2005-01-01 --fin 2006-01-01  # historique
-geonature connectors visionature-import --departement 09      # périmètre ponctuel
-geonature connectors visionature-reanonymiser                # simulation
-geonature connectors visionature-reanonymiser --yes
-geonature connectors visionature-purge --taxon Reptilia       # simulation
+geonature connectors visionature-import --depuis 2026-08-01   # incrémental (10 semaines max)
+geonature connectors visionature-import --debut 2005-01-01 --fin 2006-01-01  # historique, sans limite
+geonature connectors visionature-reanonymiser --yes           # rattrape les changements de consentement
 geonature connectors visionature-purge --taxon Reptilia --yes
 ```
 
-⚠️ **`--depuis` ne remonte pas au-delà de dix semaines.** C'est la fenêtre que l'API
-Biolovision couvre en différentiel (`api_diff`). Au-delà, les créations et les
-suppressions de l'intervalle seraient perdues sans le moindre message : la commande
-refuse plutôt que de produire une base incomplète en silence, et renvoie vers `--debut`,
-qui moissonne sur la date d'observation sans limite d'ancienneté. Le contrôle a lieu
-avant tout appel réseau, faute de quoi une erreur de connexion masquerait le vrai
-problème.
+⚠️ **`--depuis` ne remonte pas au-delà de dix semaines** — la fenêtre différentielle de
+l'API Biolovision. Au-delà, utiliser `--debut` : il rattrape un historique sans limite
+d'ancienneté, mais date sur l'**observation** et non la **saisie**, et ne répercute pas
+les suppressions. Les deux options se refusent mutuellement.
 
-| | `--depuis` | `--debut` |
-|---|---|---|
-| intention | synchroniser | rattraper un historique |
-| date cherchée | saisie (`entry_date`) | observation |
-| ancienneté | dix semaines au plus | sans limite |
-| suppressions | répercutées | non traitées |
+⚠️ **`pseudonymisation_secret` ne doit jamais changer, et doit être sauvegardée hors de
+la machine.** Elle seule permet de retrouver les pseudonymes déjà écrits
+(`visionature-reanonymiser` s'appuie dessus) et de rapprocher les observations d'un même
+contributeur. La perdre ou la remplacer après un import a des conséquences
+irréversibles.
 
-L'incrémental traite les **suppressions avant les modifications** : une observation
-supprimée puis recréée sous le même identifiant serait sinon retirée après avoir été
-réécrite.
+Le consentement à l'anonymat est **individuel** (champ `anonymous` par observateur, lu
+observation par observation) : un observateur absent du référentiel est pseudonymisé par
+défaut, l'ignorance ne valant pas consentement. Les observations masquées (`hidden`, pour
+protéger une espèce ou un site sensible) sont **importées**, pas écartées — avec un niveau
+de diffusion « Aucune ».
 
-**`observations/diff` ne livre pas les observations**, seulement la liste de ce qui a
-changé : `id_sighting`, `id_universal`, `modification_type`. Il sert donc à **répercuter
-les suppressions**, et à cela seulement.
-
-⚠️ Les deux voies qui permettraient d'en résoudre les identifiants — `api_get`, une
-observation à la fois, et `api_list(id_sightings_list=…)`, cent à la fois comme le fait
-`_store_update` de `transfer_vn` — peuvent être **refusées par l'API alors même que
-`diff` répond**. Mesuré sur faune-occitanie.org : 403 sur les deux, y compris pour un
-groupe dont `search` accepte les requêtes.
-
-Les créations et modifications passent donc par `search` avec **`entry_date`**, qui fait
-porter la recherche sur la date de **saisie** et non sur celle de l'observation. C'est
-plus juste de toute façon : chercher par date d'observation manquerait les relevés
-anciens encodés récemment, qui sont précisément ce qu'un moissonnage antérieur n'a pas pu
-voir.
-
-Un relevé peut être listé par le différentiel sans être lisible individuellement — l'API
-répond alors 403. Le client vendorisé traitant tout 4xx comme irrécupérable, une seule
-observation protégée faisait échouer le moissonnage entier. Ces relevés sont désormais
-journalisés sous le motif `inaccessible` dans `vn_rejets.csv` et le traitement continue.
-C'est une donnée manquante, pas une panne — mais elle est signalée, car ne pas savoir ce
-qu'on n'a pas serait pire que l'erreur.
-
-### Restreindre le périmètre
-
-Sans filtre, `visionature-import` moissonne **toute l'étendue de l'instance** : treize départements
-sur Faune-Occitanie, la France entière sur Faune-France. Un seul réglage, qui agit des
-deux côtés :
-
-```toml
-[visionature]
-departements = ["09"]
-```
-
-`departements` est vérifié sur `place.county` de chaque relevé — le code de département
-que porte chaque observation, à côté de `insee` et `municipality`. C'est le filtre qui
-**garantit** le périmètre. Les relevés écartés sont journalisés sous le motif
-`hors_perimetre`, et un lieu dont le département est indéterminable est écarté aussi :
-le laisser passer ferait du filtre une passoire silencieuse.
-
-`departements` sert donc deux fois : il borne le téléchargement côté serveur, et il
-vérifie chaque relevé côté client. Une clé `filtre_api` a existé ici jusqu'à la version
-0.1.0 ; elle datait d'avant le passage à `observations/search` et n'était plus transmise
-nulle part. Elle a été retirée plutôt que documentée comme inactive — un réglage qui
-donne à croire qu'on a borné son moissonnage alors qu'on ramène tout est pire que pas de
-réglage. Elle reste offerte sur dbChiro et GeoNature, où elle est bien appliquée.
-
-Découvrir les valeurs de l'instance :
-
-```bash
-geonature connectors visionature-perimetres
-geonature connectors visionature-groupes        # groupes taxonomiques et couverture reproduction
-```
-
-Le `short_name` qu'affiche cette commande est le code employé par `Client_API_VN` — sa
-configuration le précise : « use the territory short_name, not the territory id ».
-
-⚠️ **Un paramètre inconnu de l'API est ignoré sans erreur** : rien ne distingue un filtre
-appliqué d'un filtre inexistant. C'est pourquoi le filtre serveur ne fait jamais foi
-seul, ici comme sur les trois autres connecteurs. Si les rejets `hors_perimetre`
-dépassent un dixième du volume lu alors qu'un périmètre territorial est posé, le
-moissonnage le signale — le filtre a été ignoré et toute l'instance a été téléchargée
-avant d'être écartée localement.
-
-### Observateurs : consentement individuel
-
-VisioNature porte un champ `anonymous` sur **chaque observateur**. Le module le respecte
-plutôt que d'appliquer un réglage global :
-
-| cas | résultat |
-|---|---|
-| `anonymous = 0` | nom publié — aucune demande d'anonymat n'a été exprimée |
-| `anonymous = 1` | pseudonyme |
-| observateur absent du référentiel | pseudonyme — l'ignorance ne vaut pas consentement |
-
-Le pseudonyme est un HMAC-SHA256 stable : les observations d'un même contributeur restent
-rapprochables sans qu'il soit identifiable. **La clé est obligatoire et vient de la
-configuration** — jamais une valeur par défaut, qui rendrait les pseudonymes recalculables
-par un tiers, donc réidentifiables.
-
-Elle est exigée même si aucun observateur ne demande l'anonymat : le module écrit
-systématiquement un identifiant pseudonymisé dans `additional_data.observateur`, quel que
-soit le sort du nom. Sans elle, `visionature-import` refuse de démarrer.
-
-Le consentement est lu **dans le relevé lui-même** : la forme longue de l'API porte
-`anonymous` et `anonymous_in_export` sur chaque observation. C'est la source la plus
-sûre — elle vaut au moment de l'observation, et non au moment où l'on consulte un
-référentiel.
-
-Le référentiel des observateurs n'est donc plus qu'un repli, pour les réponses qui ne
-portent pas ces champs. Il n'est **chargé qu'au premier relevé qui en a besoin**, et le
-plus souvent jamais : sur Faune-Occitanie il pèse 246 699 inscrits, soit plusieurs
-minutes de téléchargement et autant de noms de personnes en mémoire, qu'il serait absurde
-de payer d'avance pour un cas devenu rare.
-
-⚠️ `visionature-reanonymiser`, lui, le charge toujours : c'est sa raison d'être, puisqu'il sert
-précisément à rattraper les changements d'avis exprimés après l'import.
-
-#### Générer la clé de pseudonymisation
-
-Sur la machine qui héberge GeoNature :
-
-```bash
-python3 -c "import secrets; print(secrets.token_urlsafe(48))"
-```
-
-48 octets d'aléa cryptographique, soit environ 64 caractères — largement suffisant pour
-une clé HMAC-SHA256. `openssl rand -base64 48` fait aussi bien.
-
-Reporter la valeur dans `connectors_config.toml`, puis redémarrer le service :
-
-```toml
-[visionature]
-pseudonymisation_secret = "la-chaîne-obtenue"
-```
-
-⚠️ **Cette clé ne doit jamais changer, et doit être sauvegardée hors de la machine.**
-Les pseudonymes n'en dérivent que d'elle et de l'identifiant d'observateur ; le nom réel
-n'est stocké nulle part pour les observateurs anonymisés. La perdre ou la remplacer après
-un import a deux conséquences irréversibles :
-
-- `visionature-reanonymiser` ne retrouve plus aucune ligne — il apparie sur le pseudonyme conservé
-  dans `additional_data.observateur`, et rien d'autre ;
-- le moissonnage suivant produit des pseudonymes différents pour les mêmes observateurs,
-  qui cessent donc d'être rapprochables entre eux.
-
-La consigner dans un gestionnaire de mots de passe **au moment où on la génère**, pas
-après. Et restreindre le fichier : `chmod 600 connectors_config.toml`, qui porte aussi le
-mot de passe Biolovision et le `client_secret`. Il est dans le `.gitignore` du dépôt —
-seul `connectors_config.toml.example`, aux valeurs vides, est suivi.
-
-#### Observations masquées : importées, pas écartées
-
-Dans VisioNature, on masque une observation (`hidden`) pour protéger **l'espèce ou le
-site** — nid de rapace, station d'orchidée, gîte à chiroptères. Ce n'est pas une donnée
-personnelle, et ce n'est pas une mise au rebut : c'est précisément la donnée à enjeu,
-celle que l'accès à l'API est censé apporter. L'écarter reviendrait à ne moissonner que
-le banal.
-
-Ces observations sont donc importées, avec `id_nomenclature_diffusion_level` positionné à
-`NIV_PRECIS 4` — « Aucune ». Le référentiel complet :
-
-| cd | libellé | |
-|----|---------|---|
-| 0 | Standard | |
-| 1 | Commune | |
-| 2 | Maille | choix de `gn_vn2synthese` |
-| 3 | Département | |
-| 4 | Aucune | **défaut de ce module** |
-| 5 | Précise | |
-
-« Aucune » est retenu parce que c'est le code que GeoNature emploie pour traduire
-`diffusable = false`, et parce qu'il correspond au comportement de VisioNature, où une
-observation masquée n'apparaît pas publiquement — même dégradée. `gn_vn2synthese` préfère
-« Maille », qui laisse l'observation alimenter les cartes de répartition sans livrer la
-localisation précise : c'est défendable, et le réglage `niveau_diffusion_masquees` y donne
-accès. Le bon choix dépend de la convention passée avec le producteur. Le fait qu'une observation était masquée
-à la source est en outre conservé dans `additional_data.masquee_source`, pour que
-l'information survive à une modification manuelle du niveau de diffusion.
-
-Les observations **non** masquées gardent un niveau de diffusion NULL. Depuis la migration
-« Do not auto-compute diffusion_level », GeoNature a retiré le DEFAULT de cette colonne et
-ne la calcule plus : NULL y signifie « le producteur ne se prononce pas », ce qui est
-exact. Y inscrire une valeur serait une affirmation que la source ne fait pas.
-
-Un seul motif écarte réellement une observation : `admin_hidden_type = refused`, le rejet
-explicite d'un modérateur. Les motifs `incomplete` et `question` signalent une vérification
-en cours, pas un refus — la donnée est importée. Les commentaires réservés aux modérateurs
-(`hidden_comment`) ne sortent jamais de l'outil.
-
-Une observation portant `second_hand` — saisie rapportant l'observation d'un tiers — est
-importée sans observateur : le nom enregistré est celui du saisisseur, et le porter dans
-`observers` attribuerait l'observation à quelqu'un qui ne l'a pas faite.
-
-### Anonymat : le rattrapage a posteriori
-
-Un observateur peut demander l'anonymat après coup, ou le lever. Ce changement porte sur
-l'**observateur** et non sur l'observation : il n'entre dans aucune empreinte de contenu,
-donc ni le moissonnage incrémental ni le court-circuit sur la date de modification ne le
-rattrapent. Les observations déjà en Synthèse resteraient figées sur le consentement en
-vigueur au moment de l'import.
-
-`visionature-reanonymiser` réaligne `synthese.observers` sur le référentiel courant, dans les deux
-sens. L'appariement se fait sur l'identifiant pseudonymisé conservé dans
-`additional_data.observateur` — seule clé disponible, le nom réel n'étant pas stocké pour
-les observateurs anonymisés. Les lignes dont l'observateur a disparu du référentiel sont
-laissées en l'état et signalées : leur pseudonyme est la seule information dont on
-dispose. Seules les lignes dont la valeur change sont réécrites.
-
-À passer périodiquement — le rattrapage n'a pas de déclencheur naturel.
-
-### Moissonner un gros historique
-
-Débit mesuré sur Faune-Occitanie : **5 763 observations écrites en 3 minutes**, soit
-environ **32 par seconde** — et c'est une borne basse, ces trois minutes incluant le
-chargement du référentiel de 63 616 espèces, qui est un coût fixe.
-
-| volume | durée |
-|---|---|
-| un mois d'un département | 3 min |
-| un an d'un département | ~40 min |
-| vingt ans d'un département | ~13 h |
-| toute une région, quatorze millions | **~5 jours** |
-
-Jusqu'à quelques millions, un moissonnage d'un seul tenant convient : en cas d'erreur de
-correspondance, on purge et on recommence. Au-delà, deux limites deviennent bloquantes —
-il n'y a **pas de reprise sur incident**, et le relevé brut n'est pas conservé, donc
-corriger une correspondance impose de tout retélécharger.
-
-La parade est de **partitionner par département et par année**, chaque partition se
-rejouant en quelques heures :
+Pour un gros historique, partitionner par département et par année (débit mesuré :
+~32 obs/s, ~5 jours pour 14 millions d'observations d'une région) :
 
 ```bash
 for dep in 09 11 12 30 31 32 34 46 48 65 66 81 82; do
@@ -554,169 +279,13 @@ for dep in 09 11 12 30 31 32 34 46 48 65 66 81 82; do
 done
 ```
 
-⚠️ **`--debut`, pas `--depuis`.** Les deux bornent une période, mais ne désignent pas le
-même geste : `--depuis` *synchronise* — recherche sur la date de **saisie**, suppressions
-comprises, dix semaines au plus — quand `--debut` *rattrape un historique* : date
-d'**observation**, sans limite d'ancienneté, sans suppressions. Employer `--depuis` pour
-partitionner vingt ans butait sur le plafond de dix semaines à chaque itération, et la
-boucle entière ne moissonnait rien. Les deux options se refusent désormais mutuellement.
+Un 401 signale une clé invalide ; un 403, une clé valide dont le périmètre ne couvre pas la demande —
+`geonature connectors visionature-diagnostic` sonde ce que le compte peut réellement
+faire.
 
-`--departement` prime sur `[visionature] departements` : une même configuration sert
-ainsi les treize partitions, sans réécriture entre deux départements. Le recouvrement est
-gratuit — l'`ON CONFLICT` ne réécrit que sur changement d'empreinte, et une partition
-rejouée ne coûte que son téléchargement.
-
-⚠️ **Le coût réel n'est pas dans le téléchargement mais dans les zonages.** Chaque
-observation engendre environ **9 lignes de `cor_area_synthese`** — quatorze millions
-d'observations en produisent donc cent vingt-six millions, avec la maintenance d'index
-correspondante. Les 32 observations par seconde mesurées l'ont été sur une Synthèse
-quasi vide ; le débit se dégrade à mesure qu'elle se remplit.
-
-### Quand l'API répond 401 ou 403
-
-Les deux codes ne disent pas la même chose, et c'est le seul diagnostic vraiment utile :
-
-| code | ce que cela veut dire | ce qu'il faut faire |
-|---|---|---|
-| **401** | la clé est inconnue, la signature n'a pas pu être vérifiée | vérifier `client_key` et `client_secret` |
-| **403** | la clé est valide, mais son **périmètre** ne couvre pas ce que vous demandez | demander une extension à Biolovision |
-
-Pour savoir ce que votre compte peut réellement faire, plutôt que de le deviner :
-
-```bash
-geonature connectors visionature-diagnostic
-```
-
-La commande sonde les points d'entrée et rapporte, groupe par groupe, ce qui est servi et
-ce qui est refusé. C'est cela qu'il faut porter à l'administrateur de l'instance.
-
-⚠️ **Sur un 403, le code du module n'est pas en cause.** Le périmètre d'export d'une clé
-Biolovision se décide par groupe taxonomique, indépendamment de l'`access_mode` du portail,
-et rien dans la configuration ne le contourne. Neuf hypothèses ont été éliminées une à une
-avant d'en arriver là ; elles sont consignées dans
-[docs/decisions.md](docs/decisions.md#visionature) pour éviter de refaire l'enquête.
-
-### Accélérer la mise au point : le cache des référentiels
-
-Un moissonnage commence par trois téléchargements — espèces (63 616 sur
-Faune-Occitanie), groupes taxonomiques, observateurs (246 699) — soit plusieurs minutes
-avant que la première observation ne soit traitée. Pénible quand on règle un import.
-
-```toml
-[visionature]
-cache_heures = 24        # 0 = désactivé, et c'est le défaut
-# cache_dir = "…"        # défaut : ~/.cache/gn_module_connectors
-```
-
-```bash
-geonature connectors visionature-vider-cache
-```
-
-⚠️ **Désactivé par défaut, et à laisser désactivé en production**, pour deux raisons
-distinctes :
-
-- le référentiel des observateurs contient des **noms de personnes**. L'activer les écrit
-  sur disque — en 0600, mais en clair — alors que tout le dispositif d'anonymisation vise
-  précisément à ne pas les conserver. Le module l'avertit explicitement à l'écriture ;
-- un référentiel périmé produit des correspondances taxonomiques fausses et des
-  consentements obsolètes, **sans que rien ne le signale**.
-
-La clé de cache inclut l'URL de l'instance : passer de Faune-France à Faune-Occitanie ne
-sert jamais le référentiel de l'autre. Un fichier illisible, corrompu ou sans horodatage
-vaut absence de cache — une optimisation n'a pas le droit de faire échouer ce qu'elle
-accélère.
-
-### Le lien « voir la donnée source »
-
-Le bouton de la Synthèse ouvre la fiche de l'observation sur le portail VisioNature
-d'origine. Il passe par une **redirection du module** plutôt que d'y pointer directement.
-
-⚠️ GeoNature construit ce lien en insérant systématiquement un séparateur :
-
-```typescript
-link.href = url_source + '/' + id_pk_source;   // synthese-list.component.ts:181
-```
-
-Une URL de retour en chaîne de requête — celle de Biolovision est
-`…/index.php?m_id=54&id=` — devient donc `…&id=/176983543`, que le portail ne sait pas
-lire. Aucune valeur d'`url_source` ne peut produire `&id=176983543` à travers ce
-constructeur.
-
-Plutôt que de détourner `entity_source_pk_value` pour y loger un fragment d'URL, le
-module donne au cœur ce qu'il sait produire — **un chemin terminé par l'identifiant** :
-
-```
-url_source              <API_ENDPOINT>/connectors/visionature
-entity_source_pk_value  176983543
-lien produit            <API_ENDPOINT>/connectors/visionature/176983543
-                        → 302 vers …/index.php?m_id=54&id=176983543
-```
-
-La colonne garde l'identifiant brut, `entity_source_pk_field` reste exact, et le cœur
-n'est pas modifié. La route (`blueprint.voir_dans_visionature`) refuse tout identifiant
-qui ne soit pas numérique, plutôt que de concaténer dans une redirection ce qui vient
-d'une URL.
-
-### Jeux de données par code projet
-
-VisioNature rattache les observations à des **codes projet**, qui correspondent à des
-programmes réels : atlas, suivis, plans d'action. Le module en fait un JDD chacun, comme
-`gn_vn2synthese`. Les observations sans code projet vont dans un JDD général par instance.
-
-Les JDD restent créés à la première écriture : un projet dont toutes les observations
-sont rejetées ne laisse pas de jeu vide.
-
-### Résolution taxonomique
-
-**L'API Biolovision n'expose aucune correspondance vers TAXREF.** Vérifié :
-`/api/species/?id=94` renvoie `{"latin_name": "Anas crecca", …}`, sans `cd_nom`.
-L'identifiant d'espèce est purement interne — l'espèce 94 est une Sarcelle d'hiver,
-quand le `cd_nom` 94 de TAXREF désigne *Lacerta salamandra*.
-
-Le rapprochement se fait donc sur `latin_name` contre `taxref.lb_nom`, restreint aux
-taxons valides (`cd_nom = cd_ref`), et construit **une fois au démarrage**. C'est viable :
-sur 300 377 taxons valides, TAXREF compte 299 065 noms distincts, soit 0,4 % d'homonymes.
-
-⚠️ Une homonymie est traitée comme un **échec**, pas comme un choix par défaut : départager
-au hasard deux taxons valides produirait une erreur que rien ne signalerait.
-
-### Heure d'observation
-
-`gn_synthese.synthese.date_min` et `date_max` sont des `timestamp`. Le module y écrivait
-un `date`, donc **minuit pour tout le monde**. L'heure vient de
-`observers[].timing.@timestamp`, avec `@offset` pour l'heure murale locale.
-
-Elle n'est écrite **que si elle a un sens** : chaque bloc de date Biolovision porte un
-indicateur `@notime`, que `gn_vn2synthese` ignore — il écrit donc « 00:00:00 » sans
-distinguer une observation réellement faite à minuit d'une heure inconnue. Mesuré sur 338
-observations réelles : `timing.@notime = 0` dans 95,6 % des cas. `additional_data.heure_connue`
-(`oui` / `non`) tranche l'ambiguïté sur les 4,4 % restants.
-
-L'heure est reportée sur le **jour du relevé** : la date d'observation déclarée fait foi,
-un `timing` décalé ne doit pas faire glisser `date_min` d'un jour.
-
-### Limites connues
-
-La table de reproduction ne couvre que sept groupes taxonomiques : ceux que couvre le
-témoin. Les papillons de nuit, les hyménoptères, les araignées, les poissons et les
-mollusques n'en ont aucune règle et restent au défaut. Rien n'est déduit non plus de
-`details[].condition`, dont l'énumération (VIEW, FLY, LAID, HAND, AUDIO…) alimenterait
-plutôt `METH_OBS`.
-
-`OCC_COMPORTEMENT` n'est déduit de `behaviours[]` que pour « Accouplement » et
-« Territorial » : ce sont les seuls dont le `cd_nomenclature` SINP soit déjà vérifié
-ailleurs dans le module. « Pond », « Tandem » ou « Émergence » n'ont pas d'équivalent
-certain, et un code inventé produirait une valeur fausse mais silencieuse.
-
-`STADE_VIE` et `SEXE` restent au défaut. L'information existe (`details[].age`,
-`details[].sex`) et la décision d'agrégation est prise, mais la règle du cas ambigu reste
-à écrire : « 1 mâle et 2 femelles » n'a pas de sexe unique et doit rester au défaut.
-`gn_vn2synthese` ne les alimente pas davantage — mesuré sur un export de leur production,
-« Inconnu » sur 95 982 lignes sur 95 982.
-
-Le périmètre se restreint par **code de département**, pas par géométrie. Pour un
-territoire qui ne suit pas les limites administratives — un bassin versant, un parc —
-le zonage `VN_COVER` de la LPO reste la bonne réponse, et n'est pas implémenté ici.
+→ Filtrage par périmètre, résolution taxonomique, heure d'observation, cache des
+référentiels, lien vers la donnée source, limites connues :
+[docs/connecteurs/visionature.md](docs/connecteurs/visionature.md)
 
 ---
 
@@ -735,84 +304,35 @@ departements = ["09"]
 ```bash
 geonature connectors dbchiro-perimetres --nom ariege   # trouver l'identifiant de zonage
 geonature connectors dbchiro-import --dry-run
-geonature connectors dbchiro-import --max-resultats 25   # premier essai d'écriture
 geonature connectors dbchiro-import
 ```
 
-⚠ `--max-resultats` ramène les observations **les plus récemment modifiées**, l'API triant
-sur `-timestamp_update`. C'est fait pour éprouver une écriture sur une instance de
-travail, pas pour prélever un échantillon représentatif.
+⚠️ **Le périmètre moissonné est celui que voit le compte de service.** dbChiro n'expose
+aucun jeton d'API : le connecteur se connecte par formulaire, et hérite des droits du
+compte employé. Un compte ordinaire sur une instance `SEE_ALL_NON_SENSITIVE_DATA = true`
+est le bon profil — le tri de sensibilité est alors fait par le serveur, seul juge
+légitime. `access_all_data` ramène aussi les sessions confidentielles et les gîtes
+masqués.
 
-### Le compte de service décide du périmètre
+**Aucun marqueur de consentement individuel** n'existe côté dbChiro : les observations
+publient un nom complet en clair, sauf à activer `pseudonymiser_observateurs = true`.
+L'API livre en revanche les coordonnées exactes de cavités nommées, conservées telles
+quelles — la restriction se règle par `niveau_diffusion`, pas par floutage.
 
-dbChiro n'expose aucun jeton d'API : les vues sont protégées par le `LoginRequiredMixin`
-de Django et le connecteur se connecte par le formulaire, en conservant le cookie de
-session. Conséquence directe : **le périmètre moissonné est celui que voit le compte
-employé**, `SightingListPermissionsMixin` filtrant le queryset selon ses droits.
+Les absences (`0obs`, `0du`) sont écartées par défaut, comme `occurrenceStatus = ABSENT`
+sur GBIF ; `importer_absences = true` les verse avec un effectif à zéro plutôt que NULL.
+La suppression n'est pas gérée, comme pour GBIF.
 
-| compte | ce qu'il ramène |
-|---|---|
-| `access_all_data` | tout, y compris sessions confidentielles, gîtes masqués, études fermées |
-| ordinaire, sur une instance `SEE_ALL_NON_SENSITIVE_DATA = true` | toute la donnée non sensible, gîtes masqués exclus |
-
-**Le second profil est le bon.** Le tri de sensibilité est alors fait par le serveur, qui
-en est le seul juge légitime, plutôt que par nous après coup.
-
-### Les absences
-
-`0obs` (« Aucune chauve-souris ou trace », 171 obs) et `0du` (« Aucun contact
-acoustique », 4 obs) ne désignent aucun taxon. C'est le même piège que
-`occurrenceStatus = ABSENT` du GBIF. Écartées par défaut ; `importer_absences = true` les
-verse en `STATUT_OBS = « Non observé »` sur le `cd_nom` de l'ordre, avec un effectif de
-**zéro** et non NULL — l'ambiguïté entre « aucun individu » et « effectif non renseigné »
-fausserait toute analyse quantitative.
-
-### Observateurs et gîtes : deux points de convention
-
-**Aucun marqueur de consentement individuel n'existe côté dbChiro**, contrairement au
-champ `anonymous` de VisioNature. Les 8 039 observations publient un nom complet en clair.
-Les diffuser suppose donc un accord de l'exploitant portant sur *l'ensemble* des
-contributeurs, et non le consentement de chacun. Le connecteur suit ce choix par défaut ;
-`pseudonymiser_observateurs = true` bascule sur le HMAC sans changer une ligne de code.
-Comme pour VisioNature, aucun rôle n'est créé dans `utilisateurs.t_roles`.
-
-**L'API livre les coordonnées exactes de cavités nommées** — « Trou souffleur - trois
-frères ». La géométrie est conservée telle quelle en base : la flouter serait irréversible
-et ruinerait tout suivi de gîte. La restriction se règle par `niveau_diffusion`
-(`NIV_PRECIS`), qui n'engage que la diffusion. Le référentiel de sensibilité de GeoNature
-s'applique de surcroît au déclenchement du trigger d'insertion.
-
-### Limites connues
-
-Le bouton « voir la donnée source » passe par la redirection
-`/connectors/dbchiro/<id>` du module : le permalien dbChiro portant l'identifiant au
-milieu du chemin (`/sighting/<id>/detail`), la concaténation du cœur ne pouvait rien
-produire de valide.
-
-La suppression n'est pas gérée, comme pour GBIF. Les `countdetails` (sexe, âge, état
-sexuel) ne sont pas exposés par `/api/v1/search` : seul `total_count` remonte. Il alimente
-`OBJ_DENBR = « Individu »` — sans quoi l'effectif entrait en Synthèse sans dire ce qu'il
-dénombrait —, mais **pas** `TYP_DENBR` : un comptage de gîte est souvent une estimation,
-et l'API n'expose aucun équivalent de l'`estimation_code` de VisioNature. Écrire
-« Compté » ferait passer une estimation pour un comptage. C'est une divergence assumée
-avec GBIF et VisioNature, qui écrivent les deux.
-
-Enfin, une instance protégée par un filtre anti-robot bloquera le connecteur —
-`demo.dbchiro.org` l'est. Le cas est détecté et signalé explicitement plutôt que de
-finir en erreur de décodage JSON.
+→ Détail du filtrage par compte, gîtes, limites connues (comptage vs estimation, filtre
+anti-robot) : [docs/connecteurs/dbchiro.md](docs/connecteurs/dbchiro.md)
 
 ---
 
 ## GeoNature
 
-Moissonne une **autre instance GeoNature**. C'est la seule source qui parle déjà le même
-langage que la destination : mêmes nomenclatures SINP, même TAXREF, mêmes identifiants
-permanents. Cela rend le connecteur plus simple sur bien des points — et lui pose deux
-problèmes que les autres n'ont pas.
-
-### Configuration
-
-Minimum vital, dans `connectors_config.toml` :
+Moissonne une **autre instance GeoNature**, via son module d'export. C'est la seule
+source qui parle déjà le même langage que la destination — mêmes nomenclatures SINP,
+même TAXREF, mêmes identifiants permanents.
 
 ```toml
 [geonature]
@@ -821,128 +341,37 @@ url = "https://geonature.exemple.fr"
 id_export = 12
 jeton = "…"
 territoires = ["METROP"]
-organisme_contact_principal = "Association des Naturalistes de l'Ariège"
+organisme_contact_principal = "ANA - CEN Ariège"
 ```
-
-Le fichier `connectors_config.toml.example` commente chaque réglage.
-
-### Diagnostiquer avant d'importer
 
 ```bash
-geonature connectors geonature-couverture
-```
-
-N'écrit rien, et montre cinq choses qui ne se découvriraient sinon qu'une fois les
-données en base :
-
-```
-export 12 — licence « Licence Ouverte v2.0 »
-  48 210 enregistrement(s) annoncé(s)
-  ⚠ le serveur semble avoir ignoré les filtres ['geometry'] : total_filtered égale total
-  colonne(s) absente(s) de la vue :
-    id_perm_grp_sinp — identifiant de regroupement
-  ⚠ TAXREF distant Taxref V17.0 / local Taxref V16.0
-  cd_nom : 1 284 distinct(s), 1 279 résolu(s) (99,6 %), 3 par cd_ref, 2 hors TAXREF
-      cd_nom 452301 (cd_ref 60295) Rhinolophus ferrumequinum — 84 observation(s)
-  id_perm_sinp : 48 210 / 48 210 renseigné(s)
-  ⚠ 312 UUID déjà en Synthèse sous une autre source : GBIF (312)
-  jeux de données : 7 distinct(s), 2 déjà présent(s) localement
-      4d331cae… « Inventaire ZNIEFF de l'Ariège » — actif
-  cadres d'acquisition : 3 distinct(s), 0 présent(s) localement
-  ⚠ 2 libellé(s) de nomenclature non résolu(s) :
-      STATUT_BIO « Reproducteur probable » — 412 observation(s)
-```
-
-Ne lancez l'import qu'une fois chaque ligne comprise.
-
-« N'écrit rien » vaut aussi pour les verrous : la commande peut tourner pendant qu'un
-import est en cours, et l'inverse. Ce n'était pas le cas avant le 14 septembre 2026 —
-l'enregistrement de `url_source` gardait un verrou de ligne sur `t_sources` pendant toute
-la moisson, et une seconde commande restait figée au démarrage, sans message, aussi
-longtemps que durait la première.
-
-### Importer
-
-```bash
+geonature connectors geonature-couverture     # diagnostic, n'écrit rien — à lancer avant tout import
 geonature connectors geonature-import --dry-run
 geonature connectors geonature-import
 geonature connectors geonature-import --perimetre 09 --jeu 4d331cae-65e4-4948-b0b2-a11bc5bb46c2
 ```
 
-| | |
-|---|---|
-| `--export` | identifiant d'export distant (défaut : configuration) |
-| `--jeu` | restreindre à un ou plusieurs `jdd_uuid` distants, répétable |
-| `--depuis` | date ISO 8601 ; sans elle, le filigrane du dernier passage est calculé |
-| `--tout` | relire tout le corpus, sans filtre de date — requis avant `geonature-reconcilier` |
-| `--perimetre` | code d'un zonage local (`09`) ou WKT en 4326 |
-| `--max-resultats` | plafonner la moisson, pour un premier essai d'écriture |
+`geonature-couverture` prévient de cinq choses qui, sinon, ne se découvriraient qu'une
+fois les données en base : filtres ignorés par le serveur, colonnes absentes de la vue
+d'export, version TAXREF distante différente de la locale, correspondances de
+nomenclature non résolues, doublons avec une source déjà présente.
 
-**L'incrémental fait deux passes de date, et ce n'est pas une précaution excessive.**
-`date_modification` est le `meta_update_date` de la Synthèse distante, **NULL tant que la
-ligne n'a jamais été modifiée**. Filtrer sur ce seul champ manquerait toutes les
-*créations* — et définitivement, puisque le passage suivant remonte encore le filigrane
-sans jamais revenir les chercher. Le connecteur interroge donc aussi `date_creation` et
-fusionne les deux sur `id_synthese`. Un filigrane reculé de `marge_heures` (24 par
-défaut) couvre l'écart d'horloge entre les deux instances.
-
-### Répercuter les suppressions
-
-L'API d'export ne publie aucun journal de suppression : une observation retirée là-bas
-cesse simplement d'apparaître. On relit donc tout, et ce qui n'est pas revenu a disparu.
+⚠️ **Les suppressions ne sont pas détectées automatiquement.** L'API d'export ne publie
+aucun journal de suppression ; il faut relire tout le corpus et purger ce qui n'est pas
+revenu :
 
 ```bash
 geonature connectors geonature-import --tout
-geonature connectors geonature-reconcilier          # simule
-geonature connectors geonature-reconcilier --yes    # exécute
+geonature connectors geonature-reconcilier --yes    # simule sans --yes
 ```
 
-Commande **séparée de l'import**, et qui simule par défaut : un import écrit, et y loger
-une suppression de masse violerait l'asymétrie sur laquelle repose tout le module.
+Commande séparée de l'import, protégée par plusieurs garde-fous (moisson complète,
+bornée au couple instance/export, plafond de 5 % du corpus) — sans eux, un filtre mal
+réglé viderait la Synthèse.
 
-Quatre garde-fous, dont aucun n'est de trop — sans eux, un filtre mal réglé vide la
-Synthèse :
-
-1. **la moisson doit être complète.** Un plafond de résultats, un filtre de date ou une
-   pagination interrompue rendraient absentes des lignes bien vivantes ;
-2. **bornée aux jeux réellement relus.** Un jeu hors du périmètre courant n'est pas vidé
-   sous prétexte qu'on ne l'a pas lu ;
-3. **bornée au couple instance/export**, par `additional_data`. Deux exports alimentant la
-   même source ne peuvent pas se supprimer l'un l'autre ;
-4. **un plafond** (`plafond_suppressions`, 5 % du corpus, minimum 100 lignes). Un
-   producteur qui republierait sous de nouveaux identifiants ferait sinon tout disparaître
-   d'un coup.
-
-### Limites connues
-
-**Les géométries non ponctuelles sont ramenées à leur centroïde.** `core/synthese.py`
-n'insère que des points (`ST_MakePoint`). Une placette, une maille ou un polygone de
-prospection perd donc sa forme. `nature_objet_geo` et `type_info_geo` du producteur sont
-repris en colonne, pour que la fiche dise au moins de quoi ce point est le centre, mais
-l'information géométrique, elle, est perdue.
-
-**`determiner` et `validator` ne vont pas en colonne.** Elles existent en Synthèse mais
-pas dans `INSERT_SQL`, et les y ajouter obligerait les trois autres `to_row` à fournir le
-paramètre lié — `tests/test_insert_alignement.py` l'impose dans les deux sens. Elles
-partent en `additional_data` sous `gn_determinateur` et `gn_validateur`. Les ajouter à
-l'INSERT commun est un suivi identifié.
-
-**Deux nomenclatures ne sont pas transposables** faute de figurer dans la vue :
-`id_nomenclature_biogeo_status` (`STAT_BIOGEO`, absente de `v_synthese_sinp`) et
-`id_nomenclature_valid_status` (la vue publie `validateur`, un nom de personne, pas un
-statut — il vient donc de `[validation]`). Les deux prennent le défaut de leur colonne.
-
-**Les dix-sept autres sont reprises en colonne**, y compris les quatre qui partaient
-naguère en `additional_data` : `type_info_geo`, `floutage_dee`, `type_regroupement` et
-`methode_determination`. Les omettre ne les laissait pas vides — la colonne prenait le
-défaut de l'instance, et deux de ces défauts **contredisent** la source : une observation
-que le producteur rattache à une commune entrait en « Géoréférencement », une donnée
-qu'il déclare floutée entrait en « Non floutée ». Les trois autres connecteurs n'ont rien
-à en dire et passent le défaut.
-
-**`[geonature.schedule]` n'est pas câblé**, comme `[visionature.schedule]` et
-`[dbchiro.schedule]` : `tasks.py` n'ordonnance que GBIF. Planifier l'import passe par
-cron.
+→ Diagnostic détaillé, gestion incrémentale par double filtre de date, limites connues
+(géométries ramenées au centroïde, nomenclatures non transposables) :
+[docs/connecteurs/geonature.md](docs/connecteurs/geonature.md)
 
 ---
 
@@ -985,11 +414,11 @@ est dans [docs/decisions.md](docs/decisions.md#pré-validation).
 
 ### `jdd_validable`
 
-Le module Validation ne liste que les jeux `validable = true`, et c'est le défaut de
-GeoNature. `jdd_validable = false` en sort les jeux créés par les connecteurs, à la
-création comme aux passages suivants. Un jeu dont les métadonnées ne sont pas rafraîchies
-(`rafraichir=False`, cas d'un UUID venu du producteur) garde en revanche son réglage :
-il a pu être créé par un autre canal et arbitré à la main.
+Le module Validation ne liste que les jeux `validable = true`. `jdd_validable = false` 
+en sort les jeux créés par les connecteurs, à la création comme aux passages suivants. 
+Un jeu dont les métadonnées ne sont pas rafraîchies (`rafraichir=False`, cas d'un UUID 
+venu du producteur) garde en revanche son réglage : il a pu être créé par un autre canal 
+et arbitré à la main.
 
 ---
 
@@ -1153,6 +582,10 @@ qu'une instance sera disponible.
 
 | Fichier | Contenu |
 |---|---|
+| [`docs/connecteurs/gbif.md`](docs/connecteurs/gbif.md) | GBIF en détail : réglages, workflow JDD, planification, chiffres mesurés |
+| [`docs/connecteurs/visionature.md`](docs/connecteurs/visionature.md) | VisioNature en détail : incrémental, anonymisation, cache, résolution taxonomique, limites |
+| [`docs/connecteurs/dbchiro.md`](docs/connecteurs/dbchiro.md) | dbChiro en détail : périmètre par compte, absences, gîtes, limites |
+| [`docs/connecteurs/geonature.md`](docs/connecteurs/geonature.md) | GeoNature en détail : diagnostic de couverture, incrémental, réconciliation, limites |
 | [`docs/decisions.md`](docs/decisions.md) | Le **pourquoi** : ce qui a été mesuré, essayé, écarté, et les résultats négatifs qui évitent de refaire une enquête inutile |
 | [`connectors_config.toml.example`](connectors_config.toml.example) | La référence de configuration, commentée réglage par réglage |
 | [`docs/audit-nomenclatures.md`](docs/audit-nomenclatures.md) | L'audit des correspondances SINP : méthode, sources de vérité, constats et suites, table de couverture par connecteur |
