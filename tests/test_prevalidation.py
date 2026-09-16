@@ -186,16 +186,17 @@ class _FauxResultat:
 class _FauxSession:
     """Un doublon franchi jusqu'à l'INSERT ferait échouer PostgreSQL (`ON CONFLICT DO
     UPDATE command cannot affect row a second time`) : ce faux n'a donc besoin de savoir
-    répondre qu'aux deux requêtes d'`insert_batch` sans prévalidation — le compte d'appels
-    suffit à les distinguer, dans l'ordre où `insert_batch` les émet."""
+    répondre qu'aux quatre requêtes d'`insert_batch` sans prévalidation (les deux verrous
+    consultatifs, la lecture des lignes déjà présentes, puis l'INSERT) — le compte
+    d'appels suffit à les distinguer, dans l'ordre où `insert_batch` les émet."""
 
     def __init__(self):
         self.appels = []
 
     def execute(self, requete, parametres=None):
         self.appels.append(parametres)
-        if len(self.appels) == 1:
-            return _FauxResultat([])  # rien de déjà présent en base
+        if len(self.appels) <= 3:
+            return _FauxResultat([])  # deux verrous consultatifs, puis rien de déjà présent
         return _FauxResultat(parametres["unique_id_sinp"])  # ce que l'INSERT écrit
 
 
@@ -206,21 +207,122 @@ def test_insert_batch_deduplique_son_lot_par_unique_id_sinp():
     `insert_batch`."""
     _env.db.session = _FauxSession()
     lignes = [
-        {"unique_id_sinp": "11111111-1111-1111-1111-111111111111", "observers": "A"},
-        {"unique_id_sinp": "11111111-1111-1111-1111-111111111111", "observers": "B"},
-        {"unique_id_sinp": "22222222-2222-2222-2222-222222222222", "observers": "C"},
+        {"unique_id_sinp": "11111111-1111-1111-1111-111111111111", "observers": "A",
+         "id_source": 1},
+        {"unique_id_sinp": "11111111-1111-1111-1111-111111111111", "observers": "B",
+         "id_source": 1},
+        {"unique_id_sinp": "22222222-2222-2222-2222-222222222222", "observers": "C",
+         "id_source": 1},
     ]
 
     inserees, maj = S.insert_batch(lignes)
 
     assert (inserees, maj) == (2, 0)
-    parametres_insert = _env.db.session.appels[1]
+    parametres_insert = _env.db.session.appels[3]
     assert parametres_insert["unique_id_sinp"] == [
         "11111111-1111-1111-1111-111111111111",
         "22222222-2222-2222-2222-222222222222",
     ]
     assert parametres_insert["observers"] == ["A", "C"], (
         "la première occurrence du doublon doit l'emporter, pas la dernière")
+
+
+# ── Verrou consultatif contre les exécutions concurrentes ────────────────────
+
+def test_insert_batch_pose_un_verrou_borne_a_la_source():
+    """La clé du verrou doit porter `id_source` : deux sources différentes tournant en
+    parallèle ne doivent pas se bloquer l'une l'autre, seules deux exécutions sur la
+    MÊME source doivent se sérialiser."""
+    _env.db.session = _FauxSession()
+    lignes = [{"unique_id_sinp": "33333333-3333-3333-3333-333333333333",
+               "observers": "D", "id_source": 42}]
+
+    S.insert_batch(lignes)
+
+    verrou = _env.db.session.appels[0]
+    assert verrou == {"ns": S.VERROU_LOT_NAMESPACE, "id_source": 42}
+
+
+def test_le_verrou_est_transactionnel_et_pose_avant_toute_lecture():
+    """`pg_advisory_xact_lock`, pas `pg_advisory_lock` : il se libère tout seul à la fin
+    de la transaction — succès, erreur, ou perte de connexion — sans verrou de session
+    qu'il faudrait explicitement relâcher sur un chemin d'exception.
+
+    Il doit aussi être posé avant la lecture des lignes déjà présentes (`deja`), qui fait
+    elle-même partie de la section critique — voir la docstring d'`insert_batch`.
+    """
+    corps = SQL[SQL.index("def insert_batch("):]
+    corps = corps[:corps.index("\n\ndef ")] if "\n\ndef " in corps else corps
+    assert "pg_advisory_xact_lock(:ns, :id_source)" in corps
+    assert corps.index("pg_advisory_xact_lock") < corps.index("gn_synthese.synthese")
+
+
+# ── Second verrou : contre un AUTRE connecteur sur le même unique_id_sinp ────
+
+def test_insert_batch_pose_aussi_un_verrou_par_unique_id_sinp():
+    """Le verrou borné à `id_source` ne protège pas du cas où deux connecteurs
+    DIFFÉRENTS (donc deux `id_source` différents) écrivent la même ligne : la clé de ce
+    second verrou doit porter l'UUID, pas la source."""
+    _env.db.session = _FauxSession()
+    lignes = [{"unique_id_sinp": "44444444-4444-4444-4444-444444444444",
+               "observers": "E", "id_source": 42}]
+
+    S.insert_batch(lignes)
+
+    verrou = _env.db.session.appels[1]
+    assert verrou == {"ns": S.VERROU_CONFLIT_NAMESPACE,
+                       "u": ["44444444-4444-4444-4444-444444444444"]}
+
+
+def test_le_verrou_par_uuid_ignore_id_source():
+    """Deux lots de sources différentes mais portant le même `unique_id_sinp` doivent
+    demander exactement le même verrou : c'est ce qui les sérialise l'un contre l'autre,
+    là où le premier verrou (borné à `id_source`) ne les distinguerait pas."""
+    _env.db.session = _FauxSession()
+    S.insert_batch([{"unique_id_sinp": "55555555-5555-5555-5555-555555555555",
+                     "observers": "F", "id_source": 1}])
+    verrou_source_1 = _env.db.session.appels[1]
+
+    _env.db.session = _FauxSession()
+    S.insert_batch([{"unique_id_sinp": "55555555-5555-5555-5555-555555555555",
+                     "observers": "G", "id_source": 2}])
+    verrou_source_2 = _env.db.session.appels[1]
+
+    assert verrou_source_1 == verrou_source_2
+
+
+def test_les_deux_verrous_sont_poses_avant_toute_lecture_de_synthese():
+    corps = SQL[SQL.index("def insert_batch("):]
+    corps = corps[:corps.index("\n\ndef ")] if "\n\ndef " in corps else corps
+    assert "verrouiller_conflits_potentiels(lignes)" in corps
+    assert (corps.index("verrouiller_conflits_potentiels")
+            < corps.index("gn_synthese.synthese"))
+
+
+def test_verrouiller_conflits_potentiels_utilise_hashtext_et_un_ordre_stable():
+    """`hashtext` réduit l'UUID à l'entier attendu par `pg_advisory_xact_lock(int, int)` ;
+    `ORDER BY` impose le même ordre d'acquisition à toute exécution concurrente, pour
+    éviter l'interblocage entre deux lots qui ne partagent qu'une partie de leurs UUID."""
+    corps = SQL[SQL.index("def verrouiller_conflits_potentiels("):]
+    corps = corps[:corps.index("\n\ndef ")] if "\n\ndef " in corps else corps
+    assert "pg_advisory_xact_lock(:ns, hashtext(u::uuid::text))" in corps
+    assert "ORDER BY u::uuid" in corps
+
+
+def test_verrouiller_conflits_potentiels_deduplique_les_uuid():
+    """Deux lignes du même UUID ne doivent demander qu'un seul verrou : appeler
+    `pg_advisory_xact_lock` deux fois pour la même clé, dans la même transaction, n'a
+    rien à apporter."""
+    _env.db.session = _FauxSession()
+    lignes = [
+        {"unique_id_sinp": "66666666-6666-6666-6666-666666666666", "id_source": 1},
+        {"unique_id_sinp": "66666666-6666-6666-6666-666666666666", "id_source": 1},
+    ]
+
+    S.verrouiller_conflits_potentiels(lignes)
+
+    assert _env.db.session.appels[0]["u"] == [
+        "66666666-6666-6666-6666-666666666666"]
 
 
 def test_lhistorique_partage_la_transaction_de_linsertion():

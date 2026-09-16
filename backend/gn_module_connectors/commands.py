@@ -1515,6 +1515,11 @@ def visionature_reanonymiser(yes):
                     f"mais dont le nom réel est vide dans le référentiel — laissées en "
                     f"l'état pour ne pas effacer le pseudonyme sans le remplacer.",
                     fg="yellow")
+    if bilan["modifiees_entre_temps"]:
+        click.secho(f"  {bilan['modifiees_entre_temps']} observation(s) modifiée(s) par "
+                    f"un moissonnage concurrent entre la lecture et l'écriture — "
+                    f"laissées en l'état pour ne pas écraser cette valeur plus récente. "
+                    f"Relancez la commande pour les réévaluer.", fg="yellow")
     if not yes and (bilan["vers_pseudonyme"] or bilan["vers_nom"]):
         click.secho("Relancez avec --yes pour appliquer.", fg="yellow")
 
@@ -2901,6 +2906,11 @@ def geonature_import(id_export, jeux, depuis, complet, perimetre, max_results,
         nonlocal conflits_vus
         if not lignes:
             return (0, 0)
+        # Verrou consultatif AVANT le SELECT qui suit, pas seulement dans `insert_batch`
+        # plus bas : celui-ci n'est appelé qu'après le DELETE éventuel de la branche
+        # « remplacer », trop tard pour couvrir la fenêtre SELECT → DELETE elle-même.
+        # Voir `syn_core.verrouiller_conflits_potentiels`.
+        syn_core.verrouiller_conflits_potentiels(lignes)
         concurrents = syn_core.conflits_autre_source(lignes, contexte["id_source"])
         if concurrents:
             conflits_vus += len(concurrents)

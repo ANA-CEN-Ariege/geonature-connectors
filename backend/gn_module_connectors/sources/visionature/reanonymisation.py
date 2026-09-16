@@ -59,10 +59,19 @@ def appliquer(id_source: int, souhaits: dict[str, tuple[bool, str]],
     Si l'anonymat est levé mais que le référentiel ne renvoie aucun nom réel, la ligne
     est laissée en l'état (comptée dans `bilan["nom_manquant"]`) plutôt que d'écraser
     `observers` par NULL, ce qui perdrait toute attribution sans rien restaurer.
+
+    L'UPDATE final est une écriture optimiste : sa clause WHERE revérifie que
+    `observers` vaut toujours ce qui a été lu par `lignes_a_reevaluer()`. Entre les deux,
+    un moissonnage concurrent a pu réécrire cette colonne — y compris pour y appliquer
+    lui-même un anonymat. Sans cette revérification, on écraserait silencieusement cette
+    valeur fraîche par un résultat calculé sur un instantané périmé (perte de mise à
+    jour), avec un risque de vie privée si c'est un nom réel redevenu anonyme entre
+    temps qui se retrouverait ainsi réintroduit. Une ligne ainsi manquée est comptée
+    dans `bilan["modifiees_entre_temps"]` plutôt que d'être silencieusement ignorée.
     """
     bilan = {
         "vers_pseudonyme": 0, "vers_nom": 0, "inchangees": 0, "inconnues": 0,
-        "nom_manquant": 0,
+        "nom_manquant": 0, "modifiees_entre_temps": 0,
     }
     modifications: list[dict] = []
 
@@ -82,21 +91,42 @@ def appliquer(id_source: int, souhaits: dict[str, tuple[bool, str]],
         if voulu == actuel:
             bilan["inchangees"] += 1
             continue
-        bilan["vers_pseudonyme" if anonymat else "vers_nom"] += 1
         modifications.append({
-            "id": id_synthese, "obs": voulu,
+            "id": id_synthese, "obs": voulu, "actuel": actuel,
             "motif": "anonymat demandé" if anonymat else "nom publié",
+            "compteur": "vers_pseudonyme" if anonymat else "vers_nom",
         })
 
-    if modifications and not dry_run:
-        db.session.execute(
+    if not modifications:
+        return bilan
+
+    if dry_run:
+        # Simulation : aucune écriture, donc aucune revérification de concurrence
+        # possible. Le compte reflète ce qui serait tenté, pas ce qui serait obtenu.
+        for mod in modifications:
+            bilan[mod["compteur"]] += 1
+        return bilan
+
+    for mod in modifications:
+        resultat = db.session.execute(
             text("""
                 UPDATE gn_synthese.synthese
                 SET observers = :obs,
                     additional_data = jsonb_set(additional_data, '{anonymat}',
                                                 to_jsonb(:motif::text))
                 WHERE id_synthese = :id
+                  AND observers IS NOT DISTINCT FROM :actuel
             """),
-            modifications,
+            mod,
         )
+        if resultat.rowcount:
+            bilan[mod["compteur"]] += 1
+        else:
+            bilan["modifiees_entre_temps"] += 1
+            logger.warning(
+                "reanonymisation VisioNature : id_synthese=%s ignoré, observers a "
+                "changé entre la lecture et l'écriture (moissonnage concurrent) — "
+                "l'UPDATE n'a rien modifié pour ne pas écraser cette valeur plus "
+                "récente.", mod["id"],
+            )
     return bilan

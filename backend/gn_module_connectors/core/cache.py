@@ -25,6 +25,7 @@ jamais servir le référentiel de l'autre.
 import hashlib
 import json
 import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -63,7 +64,10 @@ def enregistrer(nom: str, instance: str, contenu, heures: float, dossier=None) -
 
     L'écriture passe par un fichier temporaire renommé : une interruption en cours
     d'écriture laisserait sinon un cache tronqué que `charger` accepterait comme valide
-    si le JSON se trouvait rester analysable.
+    si le JSON se trouvait rester analysable. Ce fichier temporaire porte un nom unique
+    par écriture (pid + suffixe aléatoire) : deux processus moissonnant la même instance
+    en parallèle écrivent chacun dans leur propre fichier, sans jamais entrelacer leurs
+    écritures avant le remplacement atomique final.
     """
     if not heures:
         return None
@@ -72,8 +76,10 @@ def enregistrer(nom: str, instance: str, contenu, heures: float, dossier=None) -
         racine.mkdir(parents=True, exist_ok=True)
         os.chmod(racine, 0o700)
         fichier = _chemin(racine, instance, nom)
-        temporaire = fichier.with_suffix(".tmp")
-        with open(temporaire, "w", encoding="utf-8") as flux:
+        descripteur, nom_temporaire = tempfile.mkstemp(
+            prefix=f"{fichier.stem}.{os.getpid()}.", suffix=".tmp", dir=racine)
+        temporaire = Path(nom_temporaire)
+        with os.fdopen(descripteur, "w", encoding="utf-8") as flux:
             json.dump({"horodatage": time.time(), "instance": instance,
                        "contenu": contenu}, flux, ensure_ascii=False)
         os.chmod(temporaire, 0o600)

@@ -468,6 +468,16 @@ def prevalider(lignes: list[dict], statut) -> int:
     statement, donc deux occurrences d'un même identifiant dans le lot le franchiraient
     toutes les deux et laisseraient deux lignes d'historique pour une observation.
 
+    ⚠ Ce `NOT EXISTS` ne protège que contre deux occurrences dans le MÊME statement. Il
+    ne voit pas une transaction concurrente encore non validée : `uuid_attached_row`
+    (`gn_commons.t_validations`) ne porte qu'un index btree ordinaire, aucune contrainte
+    UNIQUE (schéma GeoNature, hors périmètre de ce dépôt), donc pas d'`ON CONFLICT`
+    possible ici comme sur `unique_id_sinp` en Synthèse. Deux exécutions concurrentes du
+    même connecteur sur la même source, traitant un lot qui se chevauche, pourraient sous
+    READ COMMITTED insérer chacune une ligne pour la même observation neuve. C'est
+    pourquoi `insert_batch`, seule appelante, sérialise par `id_source` via un verrou
+    consultatif transactionnel avant d'atteindre ce statement — voir sa docstring.
+
     Le trigger `tri_insert_synthese_update_validation_status` du cœur se charge de
     reporter statut, commentaire et `meta_validation_date` dans la Synthèse. Il ne touche
     aucune colonne de la liste `UPDATE OF` des déclencheurs de zonage et de sensibilité :
@@ -492,6 +502,100 @@ def prevalider(lignes: list[dict], statut) -> int:
     ).rowcount
     statut.ecrites += ecrites
     return ecrites
+
+
+# Espace de noms du verrou consultatif ci-dessous. La forme à deux clés de
+# `pg_advisory_xact_lock` — plutôt qu'une seule clé bigint, comme `tasks.VERROU` pour le
+# scheduler GBIF — l'isole de tout autre verrou du cluster qui utiliserait par coïncidence
+# la même valeur 64 bits : la clé effective devient (NAMESPACE, id_source), jamais
+# `id_source` seul.
+VERROU_LOT_NAMESPACE = 84_101_002
+
+# Espace de noms d'un second verrou, distinct du précédent : celui-ci sérialise par
+# `id_source` (protège une exécution contre une autre exécution de la MÊME source, pour
+# `t_validations` — voir sa docstring), ce qui ne protège pas du cas que
+# `verrouiller_conflits_potentiels` couvre plus bas, où deux connecteurs — donc deux
+# `id_source` différents — écrivent la même ligne au même instant.
+VERROU_CONFLIT_NAMESPACE = 84_101_003
+
+
+def verrouiller_conflits_potentiels(lignes: list[dict]) -> None:
+    """Verrou consultatif transactionnel, un par `unique_id_sinp` du lot.
+
+    Raison d'être : le GBIF republie parfois une observation GeoNature en reprenant son
+    `unique_id_sinp` (voir `conflits_autre_source`). `geonature-import` arbitre ce cas par
+    une séquence SELECT (`conflits_autre_source`) → DELETE (`purge.supprimer_par_uuid`) →
+    INSERT (`insert_batch`), mais rien ne l'isolait d'un AUTRE connecteur écrivant la même
+    ligne au même instant.
+
+    `insert_batch` seul ne suffit pas à s'en protéger : PostgreSQL fait patienter un
+    `INSERT ... ON CONFLICT DO UPDATE` derrière la transaction qui détient déjà la ligne
+    visée (ici, le DELETE de la séquence ci-dessus), puis, une fois cette transaction
+    commitée, rejoue sa clause `DO UPDATE` contre la version qu'elle vient d'écrire — donc
+    contre la ligne fraîchement réinsérée par le premier connecteur, pas contre celle
+    qu'il a supprimée. C'est exactement le mécanisme qui produit la ligne chimère
+    (provenance d'une source, contenu de l'autre) que ce trio est censé éliminer, et
+    qu'un DELETE suivi d'un ré-INSERT ne referme pas de lui-même : il déplace la course
+    d'une étape, il ne la supprime pas.
+
+    Posé à deux endroits :
+
+    - **ici, dans `insert_batch`**, systématiquement, pour les quatre connecteurs : c'est
+      le seul point de passage commun, celui qui protège un GBIF (ou tout autre
+      connecteur) écrivant en direct — sans jamais passer par la séquence ci-dessus —
+      contre l'écriture concurrente qui déclenche la course ;
+    - **explicitement en tête de la fonction qui orchestre la séquence dans
+      `geonature-import`**, avant même son SELECT `conflits_autre_source` : sans ce second
+      appel, la fenêtre entre ce SELECT et le DELETE qui peut suivre resterait ouverte,
+      `insert_batch` n'étant appelé qu'après coup. Le second appel, pour le même lot, ne
+      fait qu'incrémenter le compteur de possession de la même session — une transaction
+      ne s'attend jamais elle-même.
+
+    ⚠ Distinct du verrou `VERROU_LOT_NAMESPACE` d'`insert_batch` : celui-là ne protège que
+    deux exécutions de la MÊME source l'une de l'autre. Ici, la course oppose deux
+    connecteurs différents — donc deux `id_source` différents — sur le même
+    `unique_id_sinp` : la clé doit porter l'UUID, pas la source.
+
+    Un verrou par UUID, dans un unique statement `UNNEST` — comme le reste du fichier —
+    plutôt qu'une clé unique pour tout le lot ou une boucle Python de plusieurs centaines
+    d'allers-retours : la granularité par ligne est ce qui évite qu'un moissonnage GBIF
+    entier attende derrière un import GeoNature avec lequel il ne partage aucun UUID,
+    pour un coût resté celui d'un aller-retour unique, quel que soit le nombre de lignes.
+    Une clé unique pour tout le lot (un hash de la liste, par exemple) n'offrirait pas
+    cette précision : deux lots qui partagent quelques UUID sans être identiques
+    obtiendraient des clés différentes, et ne se sérialiseraient donc pas là où c'est
+    précisément nécessaire.
+
+    `hashtext` réduit l'UUID (128 bits) à l'entier qu'attend
+    `pg_advisory_xact_lock(int, int)` : une collision entre deux UUID distincts ne fait
+    que les sérialiser sans raison l'un contre l'autre, jamais rater un vrai conflit — le
+    même UUID produit toujours le même hash.
+
+    ⚠ Le hash porte sur `u::uuid::text`, pas sur `u` directement. `identifiant_sinp`
+    (`sources/geonature/transform.py`) reprend l'`id_perm_sinp` du producteur **verbatim**
+    — sans le normaliser — et deux représentations distinctes du même UUID (casse,
+    absence de tirets) hacheraient sinon différemment, laissant passer côte à côte deux
+    écritures que ce verrou est censé sérialiser. Le aller-retour par le type `uuid`
+    canonicalise avant hachage, exactement comme `conflits_autre_source` et
+    `compter_existants` le font déjà en comparant via `CAST(... AS uuid[])` plutôt que sur
+    le texte brut.
+
+    `ORDER BY u::uuid` fait acquérir les verrous dans le même ordre à toute exécution
+    concurrente, sur ce même critère canonique : sans lui, deux lots qui ne partagent
+    qu'une partie de leurs UUID pourraient les verrouiller dans des ordres opposés et
+    s'attendre mutuellement (interblocage).
+    """
+    if not lignes:
+        return
+    uuids = list({str(l["unique_id_sinp"]) for l in lignes})
+    db.session.execute(
+        text("""
+            SELECT pg_advisory_xact_lock(:ns, hashtext(u::uuid::text))
+            FROM unnest(CAST(:u AS text[])) AS t(u)
+            ORDER BY u::uuid
+        """),
+        {"ns": VERROU_CONFLIT_NAMESPACE, "u": uuids},
+    )
 
 
 def insert_batch(lignes: list[dict], prevalidation=None) -> tuple[int, int]:
@@ -522,6 +626,43 @@ def insert_batch(lignes: list[dict], prevalidation=None) -> tuple[int, int]:
     GeoNature déduplique le sien — donc `insert_batch` s'en protège pour tous, en ne
     gardant que la première occurrence d'un `unique_id_sinp` dupliqué, comme le fait
     déjà `sources/geonature/api.py`.
+
+    Verrou consultatif transactionnel, borné à `id_source`. Deux exécutions concurrentes
+    du même connecteur sur la même source, dont les lots se chevauchent, pourraient sous
+    READ COMMITTED croire toutes les deux une observation neuve et écrire chacune sa
+    ligne dans `gn_commons.t_validations` — voir la mise en garde de `prevalider`. La
+    Synthèse elle-même n'a pas besoin de ce verrou : `unique_id_sinp` porte une vraie
+    contrainte UNIQUE, et la clause de résolution de conflit d'`INSERT_SQL` s'appuie
+    dessus pour se sérialiser toute seule. C'est `t_validations` qui n'a que ce recours,
+    faute d'une contrainte équivalente sur `uuid_attached_row` — colonne du schéma
+    GeoNature, hors périmètre de ce dépôt.
+
+    Second verrou, distinct de celui-ci et posé juste après : `verrouiller_conflits_potentiels`,
+    par `unique_id_sinp` cette fois, contre le cas que celui-ci ne couvre pas — deux
+    connecteurs DIFFÉRENTS (donc deux `id_source` différents) écrivant la même ligne. Voir
+    sa docstring.
+
+    Trois choix de granularité (pour le verrou borné à `id_source` ci-dessus) :
+
+    - **`pg_advisory_xact_lock`, pas `pg_advisory_lock`.** Le premier se libère tout
+      seul à la fin de la transaction — succès, erreur, ou perte de connexion — sans
+      bloc `try/finally` ni appel `pg_advisory_unlock` à ne pas oublier sur un chemin
+      d'exception. C'est le comportement voulu ici : chaque appelant valide la
+      transaction du lot juste après cet appel (voir les commandes), donc le verrou n'a
+      jamais vocation à survivre à cette fonction.
+    - **Clé dérivée de `id_source`, pas un verrou global.** Un moissonnage GBIF ne doit
+      pas attendre derrière un import VisioNature qui tourne au même instant sur une
+      autre source : seules deux exécutions visant la MÊME source se sérialisent. Toutes
+      les lignes d'un lot partagent la même source (chaque connecteur écrit la sienne),
+      donc `lignes[0]` suffit à la déterminer.
+    - **Autour de tout le corps de la fonction, pas juste autour de `prevalider`.** La
+      lecture ci-dessous des lignes déjà présentes (`deja`) fait elle aussi partie de la
+      section critique : sous concurrence, deux transactions pourraient chacune la voir
+      vide pour la même ligne avant que l'une des deux n'ait validé son INSERT, et
+      annoncer toutes les deux une insertion là où une seule a eu lieu — un bilan faux
+      remonté à l'opérateur, distinct du doublon de `t_validations` mais du même ressort.
+      Verrouiller avant cette lecture couvre les deux à la fois, au seul endroit que
+      partagent tous les appelants.
     """
     if not lignes:
         return (0, 0)
@@ -535,6 +676,14 @@ def insert_batch(lignes: list[dict], prevalidation=None) -> tuple[int, int]:
         vus.add(cle)
         uniques.append(ligne)
     lignes = uniques
+
+    db.session.execute(
+        text("SELECT pg_advisory_xact_lock(:ns, :id_source)"),
+        {"ns": VERROU_LOT_NAMESPACE, "id_source": lignes[0]["id_source"]},
+    )
+    # Second verrou, par `unique_id_sinp` cette fois : protège contre un AUTRE
+    # connecteur (donc une autre `id_source`) écrivant la même ligne — voir sa docstring.
+    verrouiller_conflits_potentiels(lignes)
 
     uuids = [l["unique_id_sinp"] for l in lignes]
     deja = set(db.session.execute(

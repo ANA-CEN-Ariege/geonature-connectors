@@ -64,26 +64,44 @@ def upsert_acquisition_framework(
     ⚠ Un cadre existant n'est jamais modifié. Il peut avoir été créé par un dépôt SINP ou
     saisi à la main, avec des métadonnées plus riches que celles que l'API nous livre :
     les écraser à chaque import détruirait un travail que nous ne savons pas refaire.
+
+    ⚠ Écrit en SQL brut avec `ON CONFLICT ... DO NOTHING RETURNING`, et non via
+    `db.session.add`, pour rester atomique sous exécutions concurrentes : deux imports
+    visant le même `uid` (un cadre repris d'une autre instance GeoNature garde son UUID
+    SINP, donc son identité, d'une exécution à l'autre) ne peuvent pas tous deux constater
+    « rien trouvé » puis tenter d'insérer — la seconde lèverait une `IntegrityError` sur
+    la contrainte UNIQUE réelle de `unique_acquisition_framework_id` et avorterait toute
+    la transaction en cours, potentiellement des milliers de lignes de Synthèse déjà
+    accumulées dans la même session.
     """
     import datetime as _dt
 
     uid = str(uuid.UUID(str(uid)))
+    id_af = db.session.execute(
+        text("""INSERT INTO gn_meta.t_acquisition_frameworks
+                    (unique_acquisition_framework_id, acquisition_framework_name,
+                     acquisition_framework_desc, acquisition_framework_start_date)
+                VALUES (:uid, :nom, :desc, :debut)
+                ON CONFLICT (unique_acquisition_framework_id) DO NOTHING
+                RETURNING id_acquisition_framework"""),
+        {
+            "uid": uid,
+            "nom": (nom or "Cadre importé")[:255],
+            "desc": description or nom or "",
+            "debut": date_debut or _dt.date.today(),
+        },
+    ).scalar()
+    if id_af is not None:
+        return db.session.get(TAcquisitionFramework, id_af), True
+
+    # Conflit : le cadre existe déjà (créé par ce même import ailleurs, par un dépôt SINP,
+    # ou par un autre processus concurrent) — on le récupère sans y toucher.
     af = db.session.scalar(
         select(TAcquisitionFramework).where(
             TAcquisitionFramework.unique_acquisition_framework_id == uid
         )
     )
-    if af is not None:
-        return af, False
-
-    af = TAcquisitionFramework(
-        unique_acquisition_framework_id=uid,
-        acquisition_framework_name=(nom or "Cadre importé")[:255],
-        acquisition_framework_desc=description or nom or "",
-        acquisition_framework_start_date=date_debut or _dt.date.today(),
-    )
-    db.session.add(af)
-    return af, True
+    return af, False
 
 
 def upsert_dataset(
@@ -121,10 +139,17 @@ def upsert_dataset(
     appartient, et la faire remonter dans la file locale noie les données maison sous
     des dizaines de milliers de lignes qu'aucun validateur d'ici n'a vocation à trancher.
     `None` laisse le jeu tel quel, pour ne pas écraser un choix fait à la main.
+
+    ⚠ Écrit en SQL brut avec `ON CONFLICT ... DO NOTHING RETURNING`, et non via
+    `db.session.add`, pour rester atomique sous exécutions concurrentes : deux imports
+    visant le même `unique_dataset_id` (déterministe pour un `(source, cle, licence)`
+    donné, ou imposé par `uid`) ne peuvent pas tous deux constater « rien trouvé » puis
+    tenter d'insérer — la seconde lèverait une `IntegrityError` sur la contrainte UNIQUE
+    réelle de `unique_dataset_id` et avorterait toute la transaction en cours,
+    potentiellement des milliers de lignes de Synthèse déjà accumulées dans la même
+    session.
     """
     uid = uuid.UUID(str(uid)) if uid is not None else dataset_uuid(source, cle, licence)
-    jdd = db.session.scalar(select(TDatasets).where(TDatasets.unique_dataset_id == uid))
-    cree = jdd is None
 
     # `dataset_shortname` est NOT NULL et affiché dans les listes déroulantes : un titre
     # GBIF complet y est illisible, on le tronque proprement.
@@ -134,28 +159,42 @@ def upsert_dataset(
     # qu'on ne les ouvre pas.
     shortname = (shortname or nom)[:30]
 
+    id_jdd = db.session.execute(
+        text("""INSERT INTO gn_meta.t_datasets
+                    (unique_dataset_id, id_acquisition_framework, dataset_name,
+                     dataset_shortname, dataset_desc, marine_domain, terrestrial_domain,
+                     active)
+                VALUES (:uid, :af, :nom, :shortname, :desc, :marin, :terrestre, true)
+                ON CONFLICT (unique_dataset_id) DO NOTHING
+                RETURNING id_dataset"""),
+        {
+            "uid": uid,
+            "af": id_acquisition_framework,
+            "nom": nom[:255],
+            "shortname": shortname,
+            "desc": description,
+            "marin": marin,
+            "terrestre": terrestre,
+        },
+    ).scalar()
+    cree = id_jdd is not None
+
     if cree:
-        jdd = TDatasets(
-            unique_dataset_id=uid,
-            id_acquisition_framework=id_acquisition_framework,
-            dataset_name=nom[:255],
-            dataset_shortname=shortname,
-            dataset_desc=description,
-            marine_domain=marin,
-            terrestrial_domain=terrestre,
-            active=True,
-        )
+        jdd = db.session.get(TDatasets, id_jdd)
         if validable is not None:
             jdd.validable = validable
-        db.session.add(jdd)
-    elif rafraichir:
-        # On rafraîchit les métadonnées éditoriales (le producteur peut corriger son
-        # titre ou sa citation), mais jamais le rattachement ni l'UUID.
-        jdd.dataset_name = nom[:255]
-        jdd.dataset_shortname = shortname
-        jdd.dataset_desc = description
-        if validable is not None and jdd.validable is not validable:
-            jdd.validable = validable
+    else:
+        # Conflit : le jeu existe déjà (créé par ce même import ailleurs, par un autre
+        # canal, ou par un autre processus concurrent).
+        jdd = db.session.scalar(select(TDatasets).where(TDatasets.unique_dataset_id == uid))
+        if rafraichir:
+            # On rafraîchit les métadonnées éditoriales (le producteur peut corriger son
+            # titre ou sa citation), mais jamais le rattachement ni l'UUID.
+            jdd.dataset_name = nom[:255]
+            jdd.dataset_shortname = shortname
+            jdd.dataset_desc = description
+            if validable is not None and jdd.validable is not validable:
+                jdd.validable = validable
     return jdd, cree
 
 
@@ -281,6 +320,12 @@ def attacher_acteur(id_dataset: int, id_organisme: int, cd_role: str) -> bool:
     Un jeu de données sans acteur n'est pas conforme au SINP : le producteur est une
     métadonnée obligatoire du standard. Rien dans GeoNature ne l'impose techniquement,
     d'où la facilité avec laquelle on l'oublie.
+
+    ⚠ `ON CONFLICT DO NOTHING` sur `(id_dataset, id_organism, id_nomenclature_actor_role)`,
+    la contrainte UNIQUE réelle de `cor_dataset_actor` — et non plus un
+    `INSERT ... WHERE NOT EXISTS`, qui reste sujet à une `IntegrityError` sous exécutions
+    concurrentes visant la même ligne. `rowcount` vaut 0 dans les deux cas de non-écriture,
+    la sémantique du booléen retourné est donc inchangée.
     """
     if id_dataset is None:
         raise RuntimeError(
@@ -292,11 +337,9 @@ def attacher_acteur(id_dataset: int, id_organisme: int, cd_role: str) -> bool:
     return bool(db.session.execute(
         text("""INSERT INTO gn_meta.cor_dataset_actor
                     (id_dataset, id_organism, id_nomenclature_actor_role)
-                SELECT :jdd, :org, :role
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM gn_meta.cor_dataset_actor
-                    WHERE id_dataset = :jdd AND id_organism = :org
-                      AND id_nomenclature_actor_role = :role)"""),
+                VALUES (:jdd, :org, :role)
+                ON CONFLICT (id_dataset, id_organism, id_nomenclature_actor_role)
+                    DO NOTHING"""),
         {"jdd": id_dataset, "org": id_organisme, "role": id_role_nomenclature},
     ).rowcount)
 
@@ -326,6 +369,11 @@ def attacher_territoires(jdd, cds: list[str], journal=None) -> None:
     Le formulaire de GeoNature l'exige — sans territoire, le jeu ne peut pas être
     enregistré. « METROP » convient à la France métropolitaine ; une instance
     ultramarine emploiera GLP, MTQ, REU, MYT, GUF…
+
+    ⚠ `ON CONFLICT DO NOTHING` sur `(id_dataset, id_nomenclature_territory)`, la clé
+    primaire réelle de `cor_dataset_territory` — et non plus un
+    `INSERT ... WHERE NOT EXISTS`, qui reste sujet à une `IntegrityError` sous exécutions
+    concurrentes visant la même ligne.
     """
     if getattr(jdd, "id_dataset", None) is None:
         # Sans ce contrôle, PostgreSQL rejette sur une contrainte NOT NULL et la trace
@@ -344,10 +392,8 @@ def attacher_territoires(jdd, cds: list[str], journal=None) -> None:
         db.session.execute(
             text("""INSERT INTO gn_meta.cor_dataset_territory
                         (id_dataset, id_nomenclature_territory)
-                    SELECT :jdd, :terr
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM gn_meta.cor_dataset_territory
-                        WHERE id_dataset = :jdd AND id_nomenclature_territory = :terr)"""),
+                    VALUES (:jdd, :terr)
+                    ON CONFLICT (id_dataset, id_nomenclature_territory) DO NOTHING"""),
             {"jdd": jdd.id_dataset, "terr": id_nomenclature})
 
 
@@ -389,6 +435,11 @@ def qualifier_cadre(af, territoires: list[str] | None = None,
 
     Appelé à chaque import plutôt qu'à la migration : une configuration renseignée après
     coup rattrape ainsi un cadre déjà créé, et une migration Alembic ne se rejoue pas.
+
+    ⚠ Les trois tables de liaison ci-dessous s'écrivent en `INSERT ... ON CONFLICT DO
+    NOTHING` sur leur contrainte UNIQUE/PK réelle, et non plus en
+    `INSERT ... WHERE NOT EXISTS`, qui reste sujet à une `IntegrityError` sous exécutions
+    concurrentes visant la même ligne.
     """
     if af is None or getattr(af, "id_acquisition_framework", None) is None:
         return
@@ -403,11 +454,9 @@ def qualifier_cadre(af, territoires: list[str] | None = None,
         db.session.execute(
             text("""INSERT INTO gn_meta.cor_acquisition_framework_territory
                         (id_acquisition_framework, id_nomenclature_territory)
-                    SELECT :af, :terr
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM gn_meta.cor_acquisition_framework_territory
-                        WHERE id_acquisition_framework = :af
-                          AND id_nomenclature_territory = :terr)"""),
+                    VALUES (:af, :terr)
+                    ON CONFLICT (id_acquisition_framework, id_nomenclature_territory)
+                        DO NOTHING"""),
             {"af": id_af, "terr": id_terr})
 
     # Objectifs : table de liaison, comme les territoires.
@@ -420,11 +469,9 @@ def qualifier_cadre(af, territoires: list[str] | None = None,
         db.session.execute(
             text("""INSERT INTO gn_meta.cor_acquisition_framework_objectif
                         (id_acquisition_framework, id_nomenclature_objectif)
-                    SELECT :af, :obj
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM gn_meta.cor_acquisition_framework_objectif
-                        WHERE id_acquisition_framework = :af
-                          AND id_nomenclature_objectif = :obj)"""),
+                    VALUES (:af, :obj)
+                    ON CONFLICT (id_acquisition_framework, id_nomenclature_objectif)
+                        DO NOTHING"""),
             {"af": id_af, "obj": id_obj})
 
     # Financement et niveau territorial : colonnes, prises par DEFAULT sinon.
@@ -456,9 +503,7 @@ def qualifier_cadre(af, territoires: list[str] | None = None,
     db.session.execute(
         text("""INSERT INTO gn_meta.cor_acquisition_framework_actor
                     (id_acquisition_framework, id_organism, id_nomenclature_actor_role)
-                SELECT :af, :org, :role
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM gn_meta.cor_acquisition_framework_actor
-                    WHERE id_acquisition_framework = :af AND id_organism = :org
-                      AND id_nomenclature_actor_role = :role)"""),
+                VALUES (:af, :org, :role)
+                ON CONFLICT (id_acquisition_framework, id_organism, id_nomenclature_actor_role)
+                    DO NOTHING"""),
         {"af": id_af, "org": id_org, "role": id_role})
