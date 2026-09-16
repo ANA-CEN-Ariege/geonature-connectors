@@ -1509,6 +1509,11 @@ def visionature_reanonymiser(yes):
         click.secho(f"  {bilan['inconnues']} observation(s) dont l'observateur n'est plus "
                     f"dans le référentiel — laissées en l'état, leur pseudonyme étant "
                     f"la seule information disponible.", fg="yellow")
+    if bilan["nom_manquant"]:
+        click.secho(f"  {bilan['nom_manquant']} observation(s) dont l'anonymat est levé "
+                    f"mais dont le nom réel est vide dans le référentiel — laissées en "
+                    f"l'état pour ne pas effacer le pseudonyme sans le remplacer.",
+                    fg="yellow")
     if not yes and (bilan["vers_pseudonyme"] or bilan["vers_nom"]):
         click.secho("Relancez avec --yes pour appliquer.", fg="yellow")
 

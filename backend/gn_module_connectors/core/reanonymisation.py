@@ -47,8 +47,15 @@ def appliquer(id_source: int, souhaits: dict[str, tuple[bool, str]],
 
     Ne réécrit **que** les lignes dont la valeur change : une mise à jour inutile
     déclencherait les triggers de la Synthèse et gonflerait le journal pour rien.
+
+    Si l'anonymat est levé mais que le référentiel ne renvoie aucun nom réel, la ligne
+    est laissée en l'état (comptée dans `bilan["nom_manquant"]`) plutôt que d'écraser
+    `observers` par NULL, ce qui perdrait toute attribution sans rien restaurer.
     """
-    bilan = {"vers_pseudonyme": 0, "vers_nom": 0, "inchangees": 0, "inconnues": 0}
+    bilan = {
+        "vers_pseudonyme": 0, "vers_nom": 0, "inchangees": 0, "inconnues": 0,
+        "nom_manquant": 0,
+    }
     modifications: list[dict] = []
 
     for id_synthese, pseudo, actuel, _motif in lignes_a_reevaluer(id_source):
@@ -56,7 +63,14 @@ def appliquer(id_source: int, souhaits: dict[str, tuple[bool, str]],
             bilan["inconnues"] += 1
             continue
         anonymat, nom_reel = souhaits[pseudo]
-        voulu = f"obs-{pseudo[:12]}" if anonymat else (nom_reel or None)
+        if not anonymat and not nom_reel:
+            # Anonymat levé, mais le référentiel VisioNature ne fournit aucun nom réel
+            # pour cet observateur. Écrire `observers = NULL` effacerait à la fois le
+            # pseudonyme traçable et le nom, sans rien restaurer : on laisse la ligne
+            # telle quelle plutôt que de compter une réussite qui n'en est pas une.
+            bilan["nom_manquant"] += 1
+            continue
+        voulu = f"obs-{pseudo[:12]}" if anonymat else nom_reel
         if voulu == actuel:
             bilan["inchangees"] += 1
             continue

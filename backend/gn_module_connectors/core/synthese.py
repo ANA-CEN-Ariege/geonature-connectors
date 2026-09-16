@@ -70,27 +70,86 @@ INSERT_SQL = text(
         comment_description,
         the_geom_4326, the_geom_point, the_geom_local,
         last_action
-    ) VALUES (
-        :unique_id_sinp, CAST(:unique_id_sinp_grp AS uuid), :id_source, :id_module, :id_dataset,
-        :entity_source_pk_value, :cd_nom, :nom_cite, :meta_v_taxref,
-        :date_min, :date_max, :count_min, :count_max,
-        :observers, :precision, :altitude_min, :altitude_max,
-        :digital_proof, CAST(:additional_data AS jsonb),
-        :id_nomenclature_obs_technique, :id_nomenclature_bio_condition,
-        :id_nomenclature_bio_status, :id_nomenclature_naturalness,
-        :id_nomenclature_observation_status, :id_nomenclature_source_status,
-        :id_nomenclature_life_stage, :id_nomenclature_sex,
-        :id_nomenclature_obj_count, :id_nomenclature_type_count,
-        :id_nomenclature_biogeo_status, :id_nomenclature_exist_proof,
-        :id_nomenclature_valid_status, :id_nomenclature_behaviour,
-        :id_nomenclature_diffusion_level, :id_nomenclature_geo_object_nature,
-        :id_nomenclature_info_geo_type, :id_nomenclature_blurring,
-        :id_nomenclature_grp_typ, :id_nomenclature_determination_method,
-        :comment_description,
-        ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
-        ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
-        ST_Transform(ST_SetSRID(ST_MakePoint(:lon, :lat), 4326), :local_srid),
+    )
+    -- Un SELECT depuis UNNEST plutôt qu'un unique VALUES rejoué par `executemany` :
+    -- même technique que `realigner_uuid` et `PREVALIDATION_SQL` plus bas, pour la même
+    -- raison — obtenir un vrai statement SQL physique unique par lot. Chaque paramètre
+    -- lié ci-dessous est désormais un tableau (une valeur par ligne du lot), et non plus
+    -- un scalaire répété une fois par ligne : c'est ce qui manquait pour que les deux
+    -- triggers `FOR EACH STATEMENT` de l'en-tête ne se déclenchent qu'une fois par lot.
+    SELECT
+        l.unique_id_sinp, l.unique_id_sinp_grp, l.id_source, l.id_module, l.id_dataset,
+        l.entity_source_pk_value, l.cd_nom, l.nom_cite, l.meta_v_taxref,
+        l.date_min, l.date_max, l.count_min, l.count_max,
+        l.observers, l."precision", l.altitude_min, l.altitude_max,
+        l.digital_proof, l.additional_data,
+        l.id_nomenclature_obs_technique, l.id_nomenclature_bio_condition,
+        l.id_nomenclature_bio_status, l.id_nomenclature_naturalness,
+        l.id_nomenclature_observation_status, l.id_nomenclature_source_status,
+        l.id_nomenclature_life_stage, l.id_nomenclature_sex,
+        l.id_nomenclature_obj_count, l.id_nomenclature_type_count,
+        l.id_nomenclature_biogeo_status, l.id_nomenclature_exist_proof,
+        l.id_nomenclature_valid_status, l.id_nomenclature_behaviour,
+        l.id_nomenclature_diffusion_level, l.id_nomenclature_geo_object_nature,
+        l.id_nomenclature_info_geo_type, l.id_nomenclature_blurring,
+        l.id_nomenclature_grp_typ, l.id_nomenclature_determination_method,
+        l.comment_description,
+        ST_SetSRID(ST_MakePoint(l.lon, l.lat), 4326),
+        ST_SetSRID(ST_MakePoint(l.lon, l.lat), 4326),
+        ST_Transform(ST_SetSRID(ST_MakePoint(l.lon, l.lat), 4326), l.local_srid),
         'I'
+    FROM UNNEST(
+        CAST(:unique_id_sinp AS uuid[]), CAST(:unique_id_sinp_grp AS uuid[]),
+        CAST(:id_source AS integer[]), CAST(:id_module AS integer[]),
+        CAST(:id_dataset AS integer[]), CAST(:entity_source_pk_value AS text[]),
+        CAST(:cd_nom AS integer[]), CAST(:nom_cite AS text[]),
+        CAST(:meta_v_taxref AS text[]),
+        CAST(:date_min AS timestamp without time zone[]),
+        CAST(:date_max AS timestamp without time zone[]),
+        CAST(:count_min AS integer[]), CAST(:count_max AS integer[]),
+        CAST(:observers AS text[]), CAST(:precision AS integer[]),
+        CAST(:altitude_min AS integer[]), CAST(:altitude_max AS integer[]),
+        CAST(:digital_proof AS text[]), CAST(:additional_data AS jsonb[]),
+        CAST(:id_nomenclature_obs_technique AS integer[]),
+        CAST(:id_nomenclature_bio_condition AS integer[]),
+        CAST(:id_nomenclature_bio_status AS integer[]),
+        CAST(:id_nomenclature_naturalness AS integer[]),
+        CAST(:id_nomenclature_observation_status AS integer[]),
+        CAST(:id_nomenclature_source_status AS integer[]),
+        CAST(:id_nomenclature_life_stage AS integer[]),
+        CAST(:id_nomenclature_sex AS integer[]),
+        CAST(:id_nomenclature_obj_count AS integer[]),
+        CAST(:id_nomenclature_type_count AS integer[]),
+        CAST(:id_nomenclature_biogeo_status AS integer[]),
+        CAST(:id_nomenclature_exist_proof AS integer[]),
+        CAST(:id_nomenclature_valid_status AS integer[]),
+        CAST(:id_nomenclature_behaviour AS integer[]),
+        CAST(:id_nomenclature_diffusion_level AS integer[]),
+        CAST(:id_nomenclature_geo_object_nature AS integer[]),
+        CAST(:id_nomenclature_info_geo_type AS integer[]),
+        CAST(:id_nomenclature_blurring AS integer[]),
+        CAST(:id_nomenclature_grp_typ AS integer[]),
+        CAST(:id_nomenclature_determination_method AS integer[]),
+        CAST(:comment_description AS text[]),
+        CAST(:lon AS double precision[]), CAST(:lat AS double precision[]),
+        CAST(:local_srid AS integer[])
+    ) AS l(
+        unique_id_sinp, unique_id_sinp_grp, id_source, id_module, id_dataset,
+        entity_source_pk_value, cd_nom, nom_cite, meta_v_taxref,
+        date_min, date_max, count_min, count_max,
+        observers, "precision", altitude_min, altitude_max,
+        digital_proof, additional_data,
+        id_nomenclature_obs_technique, id_nomenclature_bio_condition,
+        id_nomenclature_bio_status, id_nomenclature_naturalness,
+        id_nomenclature_observation_status, id_nomenclature_source_status,
+        id_nomenclature_life_stage, id_nomenclature_sex,
+        id_nomenclature_obj_count, id_nomenclature_type_count,
+        id_nomenclature_biogeo_status, id_nomenclature_exist_proof,
+        id_nomenclature_valid_status, id_nomenclature_behaviour,
+        id_nomenclature_diffusion_level, id_nomenclature_geo_object_nature,
+        id_nomenclature_info_geo_type, id_nomenclature_blurring,
+        id_nomenclature_grp_typ, id_nomenclature_determination_method,
+        comment_description, lon, lat, local_srid
     )
     ON CONFLICT (unique_id_sinp) DO UPDATE SET
         unique_id_sinp_grp = EXCLUDED.unique_id_sinp_grp,
@@ -166,6 +225,7 @@ INSERT_SQL = text(
                                     EXCLUDED.additional_data->>'gn_empreinte')
        OR gn_synthese.synthese.additional_data->>'gbif_modified'
           IS DISTINCT FROM EXCLUDED.additional_data->>'gbif_modified'
+    RETURNING unique_id_sinp
     """
 )
 
@@ -268,10 +328,16 @@ def get_source_id(name_source: str) -> int:
 
 
 def get_module_id(module_code: str) -> int:
-    return db.session.execute(
+    id_module = db.session.execute(
         text("SELECT id_module FROM gn_commons.t_modules WHERE module_code = :c"),
         {"c": module_code},
     ).scalar()
+    if id_module is None:
+        raise RuntimeError(
+            f"Module « {module_code} » absent de gn_commons.t_modules — "
+            f"la migration du module a-t-elle été jouée ? (geonature upgrade-modules-db)"
+        )
+    return id_module
 
 
 # Clés d'empreinte connues, dans l'ordre de priorité du COALESCE de l'INSERT.
@@ -430,51 +496,63 @@ def prevalider(lignes: list[dict], statut) -> int:
 
 
 def insert_batch(lignes: list[dict], prevalidation=None) -> tuple[int, int]:
-    """Écrit un lot. Retourne (insérées, mises à jour).
+    """Écrit un lot, en un seul statement physique. Retourne (insérées, mises à jour).
 
-    Le décompte se fait en interrogeant l'état AVANT écriture plutôt qu'en lisant
-    `rowcount` : avec un `ON CONFLICT` et un executemany, `rowcount` n'est pas fiable
-    selon le driver, et confondre « insérée », « mise à jour » et « inchangée »
-    fausserait tout le bilan — c'est précisément ce qui rend un import opaque.
+    `INSERT_SQL` alimente désormais ses colonnes depuis des tableaux — `UNNEST`, comme
+    `realigner_uuid` et `PREVALIDATION_SQL` — plutôt que depuis un `executemany` : les
+    deux triggers `FOR EACH STATEMENT` de la Synthèse (voir l'en-tête du fichier) ne se
+    déclenchent ainsi qu'une fois par lot, et non une fois par ligne.
+
+    Le décompte s'appuie sur le `RETURNING` de ce même statement plutôt que sur une
+    règle réécrite en Python : la clause WHERE de l'ON CONFLICT (COALESCE sur
+    `gbif_empreinte`, `vn_empreinte`, `dbchiro_empreinte`, `gn_empreinte`, repli sur
+    `gbif_modified`) décide déjà, ligne par ligne, si la mise à jour a lieu — une ligne
+    non touchée n'apparaît pas dans le RETURNING. Il suffit donc de savoir laquelle des
+    lignes renvoyées existait déjà avant l'écriture, ce qu'une requête préalable, plus
+    légère que l'ancienne, établit.
 
     Écrit dans **deux** tables quand `prevalidation` est fourni : la Synthèse, puis
     `gn_commons.t_validations` — voir `prevalider`. Les deux dans la même transaction,
     pour qu'une observation ne puisse pas exister sans son historique de validation.
     Le nombre de lignes d'historique écrites s'accumule dans `prevalidation.ecrites`.
+
+    Un statement unique ne peut pas affecter deux fois la même ligne pour un même
+    conflit de clé : PostgreSQL lève alors une erreur qui ferait échouer tout le lot, là
+    où l'ancien `executemany` traitait chaque ligne séparément et ne faussait qu'un
+    compteur. Les connecteurs ne garantissent pas tous l'unicité de leur lot — seul
+    GeoNature déduplique le sien — donc `insert_batch` s'en protège pour tous, en ne
+    gardant que la première occurrence d'un `unique_id_sinp` dupliqué, comme le fait
+    déjà `sources/geonature/api.py`.
     """
     if not lignes:
         return (0, 0)
 
+    vus: set[str] = set()
+    uniques = []
+    for ligne in lignes:
+        cle = str(ligne["unique_id_sinp"])
+        if cle in vus:
+            continue
+        vus.add(cle)
+        uniques.append(ligne)
+    lignes = uniques
+
     uuids = [l["unique_id_sinp"] for l in lignes]
-    # Le décompte doit refléter exactement la clause WHERE de l'ON CONFLICT, sinon le
-    # bilan annonce des mises à jour que la base n'a pas faites — ou l'inverse.
-    deja = {
-        str(u): (e, m)
-        for u, e, m in db.session.execute(
-            text("""SELECT unique_id_sinp::text,
-                           COALESCE(additional_data->>'gbif_empreinte',
-                                    additional_data->>'vn_empreinte',
-                                    additional_data->>'dbchiro_empreinte',
-                                    additional_data->>'gn_empreinte'),
-                           additional_data->>'gbif_modified'
-                    FROM gn_synthese.synthese
-                    WHERE unique_id_sinp = ANY(CAST(:u AS uuid[]))"""),
-            {"u": uuids},
-        ).all()
-    }
+    deja = set(db.session.execute(
+        text("""SELECT unique_id_sinp::text FROM gn_synthese.synthese
+                WHERE unique_id_sinp = ANY(CAST(:u AS uuid[]))"""),
+        {"u": uuids},
+    ).scalars())
 
-    import json as _json
+    # Un statement unique pour tout le lot : chaque colonne devient un tableau (une
+    # valeur par ligne), et non plus un dictionnaire rejoué une fois par ligne.
+    colonnes = list(lignes[0])
+    parametres = {colonne: [ligne[colonne] for ligne in lignes] for colonne in colonnes}
+    ecrites = [str(u) for u in db.session.execute(INSERT_SQL, parametres).scalars()]
 
-    def _change(ligne) -> bool:
-        avant = deja[str(ligne["unique_id_sinp"])]
-        apres = _json.loads(ligne["additional_data"])
-        return (avant[0] != (empreinte_de(apres) or None)
-                or avant[1] != (apres.get("gbif_modified") or None))
+    maj = sum(1 for u in ecrites if u in deja)
+    inserees = len(ecrites) - maj
 
-    maj = sum(1 for l in lignes if str(l["unique_id_sinp"]) in deja and _change(l))
-    inserees = len(lignes) - len(deja)
-
-    db.session.execute(INSERT_SQL, lignes)
     # Après l'INSERT : le trigger de `t_validations` apparie sur `unique_id_sinp`, donc
     # la ligne de Synthèse doit exister. Dans la même transaction, pour qu'une donnée ne
     # puisse jamais être écrite sans son historique de validation.

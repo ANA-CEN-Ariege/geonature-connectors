@@ -174,10 +174,7 @@ def qualifier_dataset(jdd, financement: str = "", createur: str = "",
     une nomenclature fausse serait pire que de laisser le défaut.
     """
     if financement:
-        id_nomenclature = db.session.execute(
-            text("SELECT ref_nomenclatures.get_id_nomenclature('DS_PUBLIQUE', :c)"),
-            {"c": financement},
-        ).scalar()
+        id_nomenclature = resoudre_nomenclature("DS_PUBLIQUE", financement)
         if id_nomenclature is None:
             if journal:
                 journal(f"financement « {financement} » inconnu de la nomenclature "
@@ -287,10 +284,7 @@ def attacher_acteur(id_dataset: int, id_organisme: int, cd_role: str) -> bool:
         raise RuntimeError(
             "Le jeu de données n'a pas encore d'identifiant : appelez db.session.flush() "
             "avant d'écrire dans une table de liaison.")
-    id_role_nomenclature = db.session.execute(
-        text("SELECT ref_nomenclatures.get_id_nomenclature('ROLE_ACTEUR', :c)"),
-        {"c": cd_role},
-    ).scalar()
+    id_role_nomenclature = resoudre_nomenclature("ROLE_ACTEUR", cd_role)
     if id_role_nomenclature is None:
         return False
     return bool(db.session.execute(
@@ -340,10 +334,7 @@ def attacher_territoires(jdd, cds: list[str], journal=None) -> None:
             "avant d'écrire dans une table de liaison.")
 
     for cd in cds or []:
-        id_nomenclature = db.session.execute(
-            text("SELECT ref_nomenclatures.get_id_nomenclature('TERRITOIRE', :c)"),
-            {"c": cd},
-        ).scalar()
+        id_nomenclature = resoudre_nomenclature("TERRITOIRE", cd)
         if id_nomenclature is None:
             if journal:
                 journal(f"territoire « {cd} » inconnu de la nomenclature TERRITOIRE")
@@ -415,10 +406,7 @@ def qualifier_cadre(af, territoires: list[str] | None = None,
     id_af = af.id_acquisition_framework
 
     for cd in territoires or []:
-        id_terr = db.session.execute(
-            text("SELECT ref_nomenclatures.get_id_nomenclature('TERRITOIRE', :c)"),
-            {"c": cd},
-        ).scalar()
+        id_terr = resoudre_nomenclature("TERRITOIRE", cd)
         if id_terr is None:
             if journal:
                 journal(f"territoire « {cd} » inconnu de la nomenclature TERRITOIRE")
@@ -473,10 +461,7 @@ def qualifier_cadre(af, territoires: list[str] | None = None,
             journal(f"contact principal « {contact_principal} » introuvable dans "
                     f"utilisateurs.bib_organismes : cadre laissé sans contact")
         return
-    id_role = db.session.execute(
-        text("SELECT ref_nomenclatures.get_id_nomenclature('ROLE_ACTEUR', :c)"),
-        {"c": ROLE_CONTACT_PRINCIPAL},
-    ).scalar()
+    id_role = resoudre_nomenclature("ROLE_ACTEUR", ROLE_CONTACT_PRINCIPAL)
     if id_role is None:
         return
     db.session.execute(

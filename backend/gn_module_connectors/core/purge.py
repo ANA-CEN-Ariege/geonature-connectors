@@ -129,6 +129,10 @@ def supprimer_par_identifiants_source(id_source: int, champ: str,
     `additional_data` plutôt que par `entity_source_pk_value` : un relevé VisioNature
     peut avoir donné plusieurs lignes de Synthèse — une par observateur —, et toutes
     doivent partir ensemble.
+
+    `champ` nomme une entrée de JSONB et ne peut donc pas être un paramètre lié ; il doit
+    venir du code du connecteur, jamais de la configuration ni des données. `identifiants`,
+    qui vient des données, est lié.
     """
     if not identifiants:
         return 0

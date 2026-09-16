@@ -31,7 +31,18 @@ sys.path.insert(0, str(RACINE))
 for nom in ("geonature", "geonature.utils"):
     sys.modules.setdefault(nom, types.ModuleType(nom))
 _env = types.ModuleType("geonature.utils.env")
-_env.db = None
+
+
+class _FauxDB:
+    """`db.session` est branché juste avant chaque test qui en a besoin : les tests de
+    nomenclatures n'y touchent jamais (résolveur au cache pré-rempli), et le laisser à
+    `None` par défaut fait échouer bruyamment tout accès non anticipé plutôt que de
+    heurter une vraie base."""
+
+    session = None
+
+
+_env.db = _FauxDB()
 sys.modules.setdefault("geonature.utils.env", _env)
 # ⚠ Ne remplacer `sqlalchemy` que s'il est absent, et le vérifier par un import réel :
 # `sys.modules.setdefault` seul vaudrait pour tout le processus pytest, et le jour où la
@@ -44,6 +55,7 @@ except ImportError:
     sys.modules["sqlalchemy"] = _sa
 
 from gn_module_connectors.core import nomenclatures as N  # noqa: E402
+from gn_module_connectors.core import synthese as S  # noqa: E402
 
 STATUT_VALID = {
     "0": "Non évalué",
@@ -155,11 +167,60 @@ def test_le_lot_est_dedoublonne_avant_lecriture():
     """Deux fois le même identifiant dans un lot laisserait deux lignes d'historique.
 
     Le `NOT EXISTS` s'évalue contre l'état d'AVANT le statement : les deux occurrences le
-    franchiraient. `insert_batch` fausse déjà son propre décompte dans ce cas
-    (`inserees = len(lignes) - len(deja)`), mais un compte faux se rattrape — une
-    observation portant deux validations automatiques concurrentes, non.
+    franchiraient. `insert_batch` déduplique désormais son propre lot par `unique_id_sinp`
+    avant d'écrire (voir `test_insert_batch_deduplique_son_lot_par_unique_id_sinp`) ; ce
+    `DISTINCT` reste néanmoins la seule garantie côté `t_validations` si `prevalider`
+    était un jour appelée sur un lot non passé par `insert_batch`.
     """
     assert "SELECT DISTINCT u" in SQL
+
+
+class _FauxResultat:
+    def __init__(self, valeurs):
+        self._valeurs = list(valeurs)
+
+    def scalars(self):
+        return iter(self._valeurs)
+
+
+class _FauxSession:
+    """Un doublon franchi jusqu'à l'INSERT ferait échouer PostgreSQL (`ON CONFLICT DO
+    UPDATE command cannot affect row a second time`) : ce faux n'a donc besoin de savoir
+    répondre qu'aux deux requêtes d'`insert_batch` sans prévalidation — le compte d'appels
+    suffit à les distinguer, dans l'ordre où `insert_batch` les émet."""
+
+    def __init__(self):
+        self.appels = []
+
+    def execute(self, requete, parametres=None):
+        self.appels.append(parametres)
+        if len(self.appels) == 1:
+            return _FauxResultat([])  # rien de déjà présent en base
+        return _FauxResultat(parametres["unique_id_sinp"])  # ce que l'INSERT écrit
+
+
+def test_insert_batch_deduplique_son_lot_par_unique_id_sinp():
+    """Un lot contenant deux fois le même `unique_id_sinp` ne doit plus faire échouer
+    tout le statement UNNEST — et la première occurrence doit l'emporter, comme la
+    déduplication déjà faite par `sources/geonature/api.py` avant d'atteindre
+    `insert_batch`."""
+    _env.db.session = _FauxSession()
+    lignes = [
+        {"unique_id_sinp": "11111111-1111-1111-1111-111111111111", "observers": "A"},
+        {"unique_id_sinp": "11111111-1111-1111-1111-111111111111", "observers": "B"},
+        {"unique_id_sinp": "22222222-2222-2222-2222-222222222222", "observers": "C"},
+    ]
+
+    inserees, maj = S.insert_batch(lignes)
+
+    assert (inserees, maj) == (2, 0)
+    parametres_insert = _env.db.session.appels[1]
+    assert parametres_insert["unique_id_sinp"] == [
+        "11111111-1111-1111-1111-111111111111",
+        "22222222-2222-2222-2222-222222222222",
+    ]
+    assert parametres_insert["observers"] == ["A", "C"], (
+        "la première occurrence du doublon doit l'emporter, pas la dernière")
 
 
 def test_lhistorique_partage_la_transaction_de_linsertion():

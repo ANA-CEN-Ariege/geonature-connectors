@@ -61,16 +61,63 @@ def _source_insert() -> str:
     return (RACINE / "gn_module_connectors/core/synthese.py").read_text(encoding="utf-8")
 
 
+def _bloc_unnest() -> str:
+    """Bloc `CAST(:param AS type[])` de la clause `FROM UNNEST(...)` de l'INSERT.
+
+    `realigner_uuid` porte une seconde `FROM UNNEST(`, plus loin dans le fichier, mais
+    `.split(...)[1]` retient tout le texte qui suit la première occurrence — celle
+    d'`INSERT_SQL` — et `") AS l("` n'apparaît qu'une fois dans le fichier : le bloc
+    s'arrête avant d'atteindre la seconde.
+    """
+    return _source_insert().split("FROM UNNEST(")[1].split(") AS l(")[0]
+
+
 def parametres_lies() -> set[str]:
-    """Paramètres `:nom` attendus par la clause VALUES de l'INSERT."""
-    bloc = _source_insert().split("VALUES (")[1].split("ON CONFLICT")[0]
-    return set(re.findall(r":([a-z_]+)", bloc))
+    """Paramètres `:nom` attendus par `FROM UNNEST(...)`, un tableau par colonne du lot."""
+    return set(re.findall(r":([a-z_]+)", _bloc_unnest()))
+
+
+def parametres_lies_ordre() -> list[str]:
+    """Comme `parametres_lies`, mais dans l'ordre des `CAST(...)` — l'ordre compte ici :
+    c'est lui qui doit s'aligner sur celui des alias déclarés par `AS l(...)`."""
+    return re.findall(r":([a-z_]+)", _bloc_unnest())
 
 
 def colonnes_insert() -> set[str]:
     """Colonnes énumérées par l'INSERT, hors géométries construites en SQL."""
     bloc = _source_insert().split("INSERT INTO gn_synthese.synthese (")[1].split(")")[0]
     return {c.strip().strip('"') for c in bloc.replace("\n", " ").split(",") if c.strip()}
+
+
+def _liste(bloc: str) -> list[str]:
+    """Identifiants d'une énumération SQL multiligne, dans l'ordre, guillemets retirés
+    (`"precision"` est un mot réservé, donc entre guillemets dans le SQL)."""
+    return [c.strip().strip('"') for c in bloc.replace("\n", " ").split(",") if c.strip()]
+
+
+def colonnes_insert_ordre() -> list[str]:
+    """Comme `colonnes_insert`, mais dans l'ordre du SQL."""
+    bloc = _source_insert().split("INSERT INTO gn_synthese.synthese (")[1].split(")")[0]
+    return _liste(bloc)
+
+
+def colonnes_select() -> list[str]:
+    """Colonnes `l.xxx` du SELECT, dans l'ordre — avant les géométries construites en
+    SQL (`ST_SetSRID(...)`) et le littéral `last_action`, qui ne viennent pas de `l.*`."""
+    bloc = _source_insert().split("SELECT\n")[1].split("ST_SetSRID(")[0]
+    return re.findall(r'l\."?([a-z_]+)"?', bloc)
+
+
+def alias_unnest() -> list[str]:
+    """Alias déclarés par `AS l(...)`, dans l'ordre.
+
+    `UNNEST` associe chaque tableau à son alias par position, pas par nom : un désaccord
+    d'ordre avec `parametres_lies_ordre()` ferait lire un tableau sous le nom d'un
+    autre, en silence.
+    """
+    bloc = _source_insert().split(") AS l(")[1].split("ON CONFLICT")[0].strip()
+    assert bloc.endswith(")")
+    return _liste(bloc[:-1])
 
 
 OCCURRENCE_GBIF = {
@@ -292,10 +339,30 @@ def test_toutes_les_colonnes_de_nomenclature_sont_couvertes():
 
 
 def test_les_colonnes_insert_et_les_valeurs_se_correspondent():
-    """Un décalage entre les deux listes décale silencieusement toutes les valeurs."""
-    bloc = _source_insert().split("VALUES (")[1].split("ON CONFLICT")[0]
-    valeurs = [v.strip() for v in re.split(r",(?![^()]*\))", bloc.strip().rstrip(")"))]
-    assert len(valeurs) == len(colonnes_insert())
+    """Un décalage entre les colonnes de l'INSERT, les `l.xxx` du SELECT, les
+    `CAST(:param ...)` de `FROM UNNEST(...)` et les alias d'`AS l(...)` décale
+    silencieusement toutes les valeurs : `SELECT` et `UNNEST` n'associent tableaux et
+    colonnes que par position, jamais par nom.
+    """
+    colonnes = colonnes_insert_ordre()
+    # Les 4 dernières colonnes ne viennent pas de `to_row` : les géométries sont
+    # construites en SQL depuis `lon`/`lat`/`local_srid`, et `last_action` est le
+    # littéral 'I'.
+    GEOMETRIE_ET_ACTION = ["the_geom_4326", "the_geom_point", "the_geom_local", "last_action"]
+    assert colonnes[-4:] == GEOMETRIE_ET_ACTION
+    colonnes_portees = colonnes[:-4]
+
+    assert colonnes_select() == colonnes_portees, (
+        "le SELECT ne lit pas les l.xxx dans l'ordre des colonnes de l'INSERT")
+
+    parametres = parametres_lies_ordre()
+    assert parametres[:len(colonnes_portees)] == colonnes_portees, (
+        "FROM UNNEST(...) ne fournit pas les paramètres dans l'ordre du SELECT/INSERT")
+    assert parametres[len(colonnes_portees):] == ["lon", "lat", "local_srid"]
+
+    assert alias_unnest() == parametres, (
+        "AS l(...) doit nommer les colonnes de UNNEST exactement dans l'ordre des CAST : "
+        "un désaccord ferait lire un tableau sous le nom d'un autre, en silence")
 
 
 def test_diffusion_restreinte_pour_une_observation_masquee():
