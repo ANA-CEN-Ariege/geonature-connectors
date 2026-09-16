@@ -1,4 +1,4 @@
-"""Rattrapage a posteriori du consentement des observateurs.
+"""Rattrapage a posteriori du consentement des observateurs VisioNature.
 
 Un observateur peut changer d'avis : demander l'anonymat après coup, ou l'inverse.
 Ce changement ne se voit dans **aucune** empreinte de contenu, puisqu'il porte sur
@@ -10,12 +10,20 @@ modification du jeu l'ignorera aussi.
 `fct_c_set_anonymous_status()`, qu'ils exécutent périodiquement. Même principe ici.
 
 Le rapprochement se fait sur l'identifiant pseudonymisé conservé dans
-`additional_data.observateur` : il est stable, présent sur toutes les lignes — y compris
-celles dont le nom est publié — et ne suppose donc pas d'avoir gardé le nom réel.
+`additional_data.observateur` : cette clé n'est écrite que par
+`sources/visionature/transform.py`, et le format de pseudonyme reconstitué ici
+(`obs-{pseudo[:12]}`) duplique volontairement celui de `confidentialite.py` — module
+propre à VisioNature, comme celui-ci, et non un mécanisme générique du socle commun.
+Il est stable, présent sur toutes les lignes — y compris celles dont le nom est publié —
+et ne suppose donc pas d'avoir gardé le nom réel.
 """
+
+import logging
 
 from sqlalchemy import text
 from geonature.utils.env import db
+
+logger = logging.getLogger(__name__)
 
 
 def lignes_a_reevaluer(id_source: int) -> list[tuple[int, str, str, str]]:

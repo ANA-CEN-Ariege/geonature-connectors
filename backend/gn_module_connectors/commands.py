@@ -942,7 +942,7 @@ def visionature_import(groupes, since, debut, fin, departements_demandes, batch_
     rejets = report_core.Rejects()
     for e in non_resolues:
         rejets.add("espece_non_resolue", e["id"], e["latin_name"] or e["french_name"],
-                   e["motif"])
+                   e["motif"], portee=report_core.PORTEE_REFERENTIEL)
 
     # Le référentiel des groupes est chargé dans tous les cas, pas seulement pour établir
     # la liste à moissonner : le statut de reproduction des non-oiseaux dépend du groupe,
@@ -1327,7 +1327,7 @@ def _ecrire_lot(lot, jdds, instance, af, id_source=None,
     # publie son propre UUID. Sans ce renommage, chacune serait réinsérée à côté de
     # l'ancienne — un doublon que rien ne signalerait.
     if id_source is not None:
-        renommees = syn_core.realigner_uuid(lot, id_source)
+        renommees = syn_core.realigner_uuid(lot, id_source, cle="vn_uuid_calcule")
         if renommees:
             click.echo(f"    … {renommees} ligne(s) réalignée(s) sur l'UUID du producteur")
 
@@ -1468,8 +1468,9 @@ def visionature_reanonymiser(yes):
     de modification ne le rattrapent. D'où cette commande, à passer périodiquement.
     """
     from geonature.utils.config import config as gn_config
-    from .core import reanonymisation as rea, synthese as syn_core
-    from .sources.visionature import (api as vn_api, confidentialite as vn_conf)
+    from .core import synthese as syn_core
+    from .sources.visionature import (api as vn_api, confidentialite as vn_conf,
+                                       reanonymisation as rea)
     from .migrations.e91b4c07a2d8_source_visionature import SOURCE_NAME
 
     cfg = (gn_config.get("CONNECTORS") or {}).get("visionature", {})

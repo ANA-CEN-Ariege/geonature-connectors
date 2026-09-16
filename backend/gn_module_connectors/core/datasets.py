@@ -10,6 +10,8 @@ from sqlalchemy import select, text
 from geonature.utils.env import db
 from geonature.core.gn_meta.models import TDatasets, TAcquisitionFramework
 
+from .nomenclatures import Resolver
+
 # Namespace fixe pour dériver des UUID déterministes. Le même couple (source, clé)
 # redonne toujours le même `unique_dataset_id`, ce qui rend la synchronisation
 # rejouable : on met à jour au lieu de créer un doublon à chaque exécution.
@@ -359,32 +361,19 @@ def resoudre_nomenclature(mnemonique: str, valeur: str) -> int | None:
     ⚠ Un libellé est propre à une langue et peut changer d'une version de référentiel à
     l'autre. Préférer le `cd_nomenclature` quand on le connaît.
 
-    ⚠ **Utilitaire de configuration** : une requête SQL par appel, ce qui convient à la
-    poignée de valeurs d'un fichier TOML. Pour résoudre des libellés dans la boucle de
-    transformation d'un import, employer `core/nomenclatures.Resolver.id_souple`, qui
-    charge un type entier en une requête et met le résultat en cache.
+    ⚠ **Utilitaire de configuration** : délègue à `core/nomenclatures.Resolver.id_souple`,
+    via une instance jetable limitée au seul type demandé, plutôt que de réécrire sa
+    requête SQL et sa normalisation de libellé — les deux avaient fini par diverger. Le
+    coût (une requête chargeant tout le type, au lieu d'une ne renvoyant qu'une ligne)
+    est sans effet mesurable ici : la poignée de valeurs d'un fichier TOML, résolues une
+    fois par jeu de données ou par cadre à l'import, pas par observation. Dans la boucle
+    de transformation, qui résout des libellés à chaque observation, construire un seul
+    `Resolver` en amont et appeler `id_souple` directement reste impératif.
 
     Ne rend qu'une valeur `active`, comme le `Resolver` : configurer le module sur une
     valeur que l'instance a retirée de son référentiel n'a pas de sens.
     """
-    valeur = (valeur or "").strip()
-    if not valeur:
-        return None
-    # Une seule requête, et le filtre `active` sur les deux branches. Le code était
-    # auparavant confié à `get_id_nomenclature`, qui — contrairement à ce qu'on lit
-    # souvent — ne filtre pas : une valeur que l'instance a retirée de son référentiel
-    # restait configurable ici alors que `Resolver` la refuse partout ailleurs.
-    # L'ordre préserve la priorité du code sur le libellé.
-    return db.session.execute(
-        text("""SELECT t.id_nomenclature FROM ref_nomenclatures.t_nomenclatures t
-                JOIN ref_nomenclatures.bib_nomenclatures_types b ON b.id_type = t.id_type
-                WHERE b.mnemonique = :m AND t.active
-                  AND (t.cd_nomenclature = :c
-                       OR lower(trim(t.label_default)) = lower(trim(:c)))
-                ORDER BY (t.cd_nomenclature = :c) DESC
-                LIMIT 1"""),
-        {"m": mnemonique, "c": valeur},
-    ).scalar()
+    return Resolver().id_souple(mnemonique, valeur)
 
 
 def qualifier_cadre(af, territoires: list[str] | None = None,

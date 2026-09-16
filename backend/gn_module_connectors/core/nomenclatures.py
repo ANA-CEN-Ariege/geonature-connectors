@@ -106,9 +106,12 @@ class Resolver:
         """Charge un type de nomenclature entier, en une requête.
 
         Une requête par **type** — une vingtaine pour tout un import — au lieu d'une par
-        **valeur**. `core/datasets.resoudre_nomenclature` fait l'inverse : c'est acceptable
-        pour la poignée de valeurs d'un fichier de configuration, pas dans la boucle qui
-        transforme quinze colonnes de chaque observation.
+        **valeur**. `core/datasets.resoudre_nomenclature` s'en sert aussi, via une
+        instance jetable de `Resolver` : un appel de configuration recharge donc tout le
+        type au lieu de ne récupérer qu'une valeur, mais l'appelant n'y revient qu'une
+        poignée de fois par import (un jeu de données ou un cadre, pas une observation) —
+        sans commune mesure avec la boucle qui transforme quinze colonnes de chaque
+        observation, où réutiliser un seul `Resolver` reste impératif.
 
         ⚠ Le filtre `active` ne reproduit **pas** `ref_nomenclatures.get_id_nomenclature`,
         contrairement à ce qui a longtemps été écrit ici : cette fonction ne filtre pas

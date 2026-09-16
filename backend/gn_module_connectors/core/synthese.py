@@ -250,8 +250,7 @@ def version_taxref() -> str | None:
     ).scalar()
 
 
-def realigner_uuid(lignes: list[dict], id_source: int,
-                   cle: str = "vn_uuid_calcule") -> int:
+def realigner_uuid(lignes: list[dict], id_source: int, cle: str) -> int:
     """Renomme les lignes déjà en base qui portent un UUID désormais supplanté.
 
     Raison d'être : le module a longtemps calculé lui-même l'`unique_id_sinp` (uuid5).

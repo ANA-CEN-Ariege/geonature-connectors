@@ -14,7 +14,7 @@ import csv
 from collections import Counter
 from pathlib import Path
 
-FIELDS = ["reason", "record_id", "label", "detail"]
+FIELDS = ["reason", "record_id", "label", "detail", "portee"]
 
 # Libellés lisibles, pour le résumé de fin d'import.
 REASONS = {
@@ -48,13 +48,9 @@ REASONS = {
 }
 
 
-# Motifs qui ne concernent PAS une observation, mais un référentiel chargé au démarrage.
-# Les compter parmi les rejets d'observations fausse le bilan de façon spectaculaire :
-# un import de 472 observations a affiché « 30191 rejetée(s) », ce qui laissait croire à
-# un échec massif de résolution taxonomique alors qu'il s'agissait des espèces du
-# référentiel VisioNature absentes de TAXREF — dont l'immense majorité ne sera jamais
-# observée sur le territoire moissonné.
-MOTIFS_REFERENTIEL = frozenset({"espece_non_resolue"})
+# Portées possibles d'un rejet — voir `Rejects.add()`.
+PORTEE_OBSERVATION = "observation"
+PORTEE_REFERENTIEL = "referentiel"
 
 class Rejects:
     """Collecte les rejets d'un import, avec leur cause.
@@ -66,38 +62,45 @@ class Rejects:
     def __init__(self):
         self.rows: list[dict] = []
 
-    def add(self, reason: str, record_id: str = "", label: str = "", detail: str = "") -> None:
+    def add(self, reason: str, record_id: str = "", label: str = "", detail: str = "",
+            portee: str = PORTEE_OBSERVATION) -> None:
+        """Enregistre un rejet.
+
+        `portee` distingue un rejet qui porte sur UNE observation (le cas courant) d'un
+        rejet qui porte sur un référentiel chargé une fois au démarrage — typiquement le
+        catalogue d'espèces d'une source, dont les entrées sans correspondance TAXREF ne
+        sont pas des observations écartées. Se fier au seul nom du motif (`reason`) pour
+        cette distinction est un piège : deux connecteurs peuvent réutiliser le même motif
+        avec des portées différentes (dbChiro range sous `espece_non_resolue` un code
+        espèce vide sur UNE observation, sans rapport avec le sens que VisioNature donne
+        au même motif pour son référentiel). D'où ce paramètre explicite, à la charge de
+        l'appelant qui sait dans quelle boucle il se trouve.
+        """
         self.rows.append({
             "reason": reason,
             "record_id": str(record_id or ""),
             "label": str(label or ""),
             "detail": str(detail or ""),
+            "portee": portee,
         })
-
-    def add_many(self, reason: str, records: list[dict], id_key: str, label_key: str,
-                 detail: str = "") -> None:
-        """Enregistre en lot des dictionnaires bruts issus d'une API."""
-        for r in records:
-            self.add(reason, r.get(id_key, ""), r.get(label_key, ""), detail)
-
 
     def __len__(self) -> int:
         return len(self.rows)
 
     def nombre_observations(self) -> int:
         """Rejets portant réellement sur des observations."""
-        return sum(1 for r in self.rows if r["reason"] not in MOTIFS_REFERENTIEL)
+        return sum(1 for r in self.rows if r["portee"] != PORTEE_REFERENTIEL)
 
     def nombre_referentiel(self) -> int:
         """Rejets portant sur un référentiel chargé au démarrage."""
-        return sum(1 for r in self.rows if r["reason"] in MOTIFS_REFERENTIEL)
+        return sum(1 for r in self.rows if r["portee"] == PORTEE_REFERENTIEL)
 
     def summary_lines_observations(self) -> list[str]:
         """Résumé des seuls rejets d'observations."""
+        raisons = Counter(r["reason"] for r in self.rows if r["portee"] != PORTEE_REFERENTIEL)
         return [
             f"  {n:>7}  {REASONS.get(reason, reason)}"
-            for reason, n in self.counts().most_common()
-            if reason not in MOTIFS_REFERENTIEL
+            for reason, n in raisons.most_common()
         ]
 
     def counts(self) -> Counter:
