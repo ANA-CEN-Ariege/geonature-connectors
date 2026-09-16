@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime
 
 from . import nomenclatures as gn_nomen
+from .util import _entier
 
 # Namespace fixe pour dériver des UUID déterministes, distinct de ceux des trois autres
 # connecteurs : deux sources ne doivent jamais dériver le même UUID d'identifiants qui
@@ -44,13 +45,6 @@ _POINT = re.compile(r"^\s*POINT\s*\(\s*([-\d.eE+]+)\s+([-\d.eE+]+)\s*\)\s*$", re
 def _flottant(valeur):
     try:
         return float(str(valeur).strip())
-    except (TypeError, ValueError):
-        return None
-
-
-def _entier(valeur):
-    try:
-        return int(str(valeur).strip())
     except (TypeError, ValueError):
         return None
 

@@ -2483,9 +2483,15 @@ def _verifier_export(items, meta, filtres, cfg, journal) -> None:
     """Refuse un export incompatible avant tout traitement, et signale ce qui manquera."""
     from .sources.geonature import api as gn_api
 
+    # `premiere_page`, pas `items` : `diagnostiquer_page` documente un diagnostic tiré de
+    # la page 0, avant tout traitement. Lui passer le corpus déjà entièrement moissonné
+    # (potentiellement des dizaines de pages) rendrait absurde son message « aucun rendu
+    # sur la première page », et masquerait un total_filtered/total suspect noyé dans un
+    # corpus par ailleurs bien rempli.
     for message in gn_api.diagnostiquer_page(
             {"total": meta.get("total"), "total_filtered": meta.get("total_filtered"),
-             "items": items, "license": meta.get("license") or {}}, filtres):
+             "items": meta.get("premiere_page") or [],
+             "license": meta.get("license") or {}}, filtres):
         click.secho(f"  ⚠ {message}", fg="yellow")
 
     if not items:

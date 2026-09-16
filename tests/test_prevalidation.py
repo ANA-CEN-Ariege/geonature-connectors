@@ -44,6 +44,10 @@ class _FauxDB:
 
 _env.db = _FauxDB()
 sys.modules.setdefault("geonature.utils.env", _env)
+# Un autre fichier de test peut avoir gagné la course et déjà enregistré son propre
+# module : re-pointer `_env` dessus, sinon `_env.db.session = ...` plus bas mute une
+# instance orpheline pendant que `core.synthese` importe l'autre `db`.
+_env = sys.modules["geonature.utils.env"]
 # ⚠ Ne remplacer `sqlalchemy` que s'il est absent, et le vérifier par un import réel :
 # `sys.modules.setdefault` seul vaudrait pour tout le processus pytest, et le jour où la
 # bibliothèque serait installée, l'ordre de collecte des fichiers déciderait qui gagne.

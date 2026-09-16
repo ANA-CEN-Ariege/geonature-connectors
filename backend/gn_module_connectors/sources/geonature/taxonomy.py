@@ -11,12 +11,7 @@ serait alors faux, et rien ne le signalerait. D'où la résolution contre le ré
 **local**, et non la confiance faite au code distant.
 """
 
-
-def _entier(valeur):
-    try:
-        return int(str(valeur).strip())
-    except (TypeError, ValueError):
-        return None
+from .util import _entier
 
 
 def codes_a_verifier(items: list[dict]) -> set[int]:

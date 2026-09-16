@@ -32,9 +32,12 @@ demi-largeur d'une cellule.
 """
 
 import json
+import logging
 import urllib.parse
 import urllib.request
 from collections import Counter
+
+logger = logging.getLogger(__name__)
 
 API = "https://api.gbif.org/v1"
 
@@ -60,7 +63,11 @@ def machine_tag(dataset_key: str) -> dict | None:
     try:
         with urllib.request.urlopen(f"{API}/dataset/{dataset_key}", timeout=30) as r:
             tags = json.load(r).get("machineTags", [])
-    except Exception:
+    except (OSError, ValueError, AttributeError) as e:
+        # OSError : réseau (timeout, DNS, HTTPError...) ; ValueError : JSON malformé ;
+        # AttributeError : réponse JSON qui n'est pas l'objet attendu (pas de .get).
+        logger.warning("Impossible de lire les machine tags du dataset GBIF %s : %s",
+                        dataset_key, e)
         return None
     for t in tags:
         if t.get("namespace") == TAG_NAMESPACE and t.get("name") == TAG_NAME:
@@ -99,7 +106,11 @@ def _echantillon(dataset_key: str, filtres: dict, taille: int, tranches: int) ->
         try:
             with urllib.request.urlopen(url, timeout=60) as r:
                 lot = json.load(r).get("results", [])
-        except Exception:
+        except (OSError, ValueError, AttributeError) as e:
+            # Résilience voulue : un échantillon partiel vaut mieux qu'un import qui
+            # échoue sur un simple aléa réseau — mais l'échec ne doit plus être muet.
+            logger.warning("Échantillonnage du dataset GBIF %s interrompu à l'offset %s : %s",
+                            dataset_key, i * pas, e)
             break
         if not lot:
             break

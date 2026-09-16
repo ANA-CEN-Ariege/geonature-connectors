@@ -7,8 +7,11 @@ CC BY-NC, et la porter dans `dataset_desc` satisfait l'obligation par la métado
 elle-même, sans dépendre d'un champ JSON qu'aucune interface n'affiche.
 """
 
+import logging
 import time
 import requests
+
+logger = logging.getLogger(__name__)
 
 API = "https://api.gbif.org/v1"
 
@@ -72,7 +75,10 @@ def fetch_organization(org_key: str) -> str:
         return ""
     try:
         return (_get(f"organization/{org_key}").get("title") or "").strip()
-    except Exception:
+    except (requests.exceptions.RequestException, AttributeError) as e:
+        # Résilience voulue : une organisation introuvable ne doit pas interrompre
+        # l'import — mais jusqu'ici l'échec ne laissait aucune trace.
+        logger.warning("Organisation GBIF %s introuvable : %s", org_key, e)
         return ""
 
 

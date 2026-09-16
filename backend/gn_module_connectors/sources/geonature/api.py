@@ -22,7 +22,11 @@ soit `gn_exports.v_synthese_sinp` : ce peut être une vue floutée, ou une vue m
 d'écrire des milliers de lignes vides.
 """
 
+import logging
+
 import requests
+
+logger = logging.getLogger(__name__)
 
 CHEMIN_EXPORT = "/api/exports/api/{id_export}"
 
@@ -141,11 +145,24 @@ def _aplatir(items):
     l'une des colonnes `x_centroid_4326` / `y_centroid_4326` / `wkt_4326`, et c'est
     d'elles que `transform` tire le point. Reprendre en plus le GeoJSON ajouterait une
     seconde source de vérité géographique sans rien résoudre.
+
+    ⚠ Un dict sans `features` exploitable (absente, ou pas une liste) rend `[]` comme une
+    page vide légitime — la pagination doit continuer, `moissonner` n'a pas à en faire un
+    cas particulier. Mais les deux n'ont rien à voir : l'un est la fin normale du corpus,
+    l'autre une forme de réponse que ce module ne sait pas lire. Le second est donc
+    journalisé distinctement, pour qu'un corpus qui s'arrête bien plus tôt que prévu ne se
+    confonde pas silencieusement avec une fin de pagination ordinaire.
     """
     if isinstance(items, dict):
         traits = items.get("features")
         if isinstance(traits, list):
             return [(t or {}).get("properties") or {} for t in traits]
+        logger.warning(
+            "forme GeoJSON inattendue reçue de l'export : un dict sans « features » "
+            "exploitable (clés reçues : %s, « features » est %s). Traité comme une page "
+            "vide pour ne pas interrompre la moisson, mais ce n'est probablement pas une "
+            "page vide légitime.",
+            sorted(items), "absente" if traits is None else f"de type {type(traits).__name__}")
         return []
     return items or []
 
@@ -235,9 +252,11 @@ def moissonner(cfg, filtres: dict, journal=None,
                max_results: int = 0) -> tuple[list[dict], dict]:
     """Tout le corpus correspondant aux filtres. Retourne (items, méta).
 
-    `méta` porte `total`, `total_filtered`, `license`, la limite effectivement appliquée
-    et surtout `complet` : la réconciliation des suppressions n'a le droit de s'exécuter
-    que sur une moisson complète, et c'est ce drapeau qui l'autorise.
+    `méta` porte `total`, `total_filtered`, `license`, la limite effectivement appliquée,
+    `premiere_page` (les enregistrements de la page 0, seuls — pour `diagnostiquer_page`,
+    qui a besoin de la page telle que le serveur l'a rendue et non du corpus complet) et
+    surtout `complet` : la réconciliation des suppressions n'a le droit de s'exécuter que
+    sur une moisson complète, et c'est ce drapeau qui l'autorise.
 
     Quatre pièges de pagination, tous rencontrés sur des API de ce genre :
 
@@ -293,7 +312,7 @@ def moissonner(cfg, filtres: dict, journal=None,
     items: list[dict] = []
     meta: dict = {"complet": True, "limite": limite, "total": None,
                   "total_filtered": None, "license": {}, "doublons": 0,
-                  "geojson": False}
+                  "geojson": False, "premiere_page": []}
     vus: set[str] = set()
     numero, precedent = 0, None
     while True:
@@ -304,6 +323,10 @@ def moissonner(cfg, filtres: dict, journal=None,
             meta["total"] = charge.get("total")
             meta["total_filtered"] = charge.get("total_filtered")
             meta["license"] = charge.get("license") or {}
+            # Conservée telle quelle pour `diagnostiquer_page` : sur un corpus
+            # multi-pages, `items` finit par porter tout le corpus moissonné, et un
+            # diagnostic qui s'y fierait perdrait son sens de « avant tout traitement ».
+            meta["premiere_page"] = list(lot)
             # La limite effective, telle que le serveur la rend — pas celle demandée.
             echue = charge.get("limit")
             if isinstance(echue, int) and 0 < echue < limite:

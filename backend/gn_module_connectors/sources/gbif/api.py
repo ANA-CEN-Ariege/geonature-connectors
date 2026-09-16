@@ -1,7 +1,10 @@
 import copy
+import logging
 import time
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 GBIF_SEARCH_URL = "https://api.gbif.org/v1/occurrence/search"
 
@@ -352,8 +355,10 @@ def list_datasets(cfg, filter_cfg=None, with_titles: bool = False) -> list[dict]
             try:
                 rd = requests.get(f"https://api.gbif.org/v1/dataset/{ds['key']}", timeout=10)
                 ds["title"] = rd.json().get("title", "") if rd.status_code == 200 else ""
-            except Exception:
-                pass
+            except (requests.exceptions.RequestException, ValueError, AttributeError) as e:
+                # Résilience voulue : un titre manquant ne doit pas faire échouer la liste
+                # complète — mais jusqu'ici la perte était totalement invisible.
+                logger.warning("Titre introuvable pour le dataset GBIF %s : %s", ds["key"], e)
             time.sleep(0.05)
     return results
 
