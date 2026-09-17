@@ -732,9 +732,11 @@ Le déficit résiduel — les lignes que le serveur refuse de rendre — laisse 
 marquée incomplète, et c'est voulu : ces observations *existent* à la source, leur absence
 ici ne prouve donc aucune suppression, et `geonature-reconcilier` les effacerait à tort.
 
-⚠ Tout ceci est établi en lisant le code du serveur, **pas en interrogeant une instance**.
-Voir la réserve en fin de fichier : le connecteur GeoNature n'a toujours pas été confronté
-à un distant réel.
+⚠ Ce mécanisme de pagination est établi en lisant le code du serveur, et n'a pas été
+observé en plein sur donnée réelle : le connecteur a depuis été confronté à une instance
+distante (voir `docs/audit-nomenclatures.md#vérifié-sur-donnée-réelle-depuis`), mais sur
+une tranche qui n'a pas rencontré de page GeoJSON vide en plein milieu du corpus — le
+cas précis que ce paragraphe décrit reste donc à confirmer en conditions réelles.
 
 ### Ce que le connecteur reprend du producteur
 

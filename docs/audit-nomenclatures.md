@@ -208,9 +208,18 @@ chacun contre le référentiel versionné.
 Les `○` restants sont documentés dans le code, source par source : ils tiennent à ce que
 la source n'exprime pas, ou à une correspondance qu'on refuse d'inventer.
 
-## Ce qui reste à vérifier sur donnée réelle
+## Vérifié sur donnée réelle depuis
 
-Le connecteur GeoNature n'a toujours pas été confronté à une instance distante. La
-fixture est maintenant conforme au référentiel, ce qui est une garantie de plus, mais
-pas celle-là : rien ne dit encore comment se distribuent les valeurs réelles, ni ce
-qu'une vue maison — que rien n'oblige à être `v_synthese_sinp` — peut livrer.
+Le connecteur GeoNature a depuis été confronté à une instance distante réelle
+(`testgeonat.ariegenature.fr`, export 4, `v_synthese_sinp`, 411 318 observations) : un
+essai en écriture de 100 observations neuves (hors incrémental, `--tout
+--max-resultats`) a produit 0 rejet, et rempli les 21 colonnes `id_nomenclature_*` sans
+NULL inattendu — chaque valeur résolue vérifiée **active** par jointure contre
+`ref_nomenclatures.t_nomenclatures`. Seule `diffusion_level` reste NULL sur l'essentiel
+du lot (97/100), comportement voulu et déjà documenté dans `niveau_diffusion()` : ces
+observations n'ont simplement pas de `precision_diffusion` côté producteur.
+
+Ce que cet essai ne couvre pas : le cas d'une page GeoJSON entièrement vide en plein
+milieu du corpus (un bloc d'observations sans géométrie contiguës) — la tranche testée
+(les 1 100 premiers enregistrements) ne l'a pas rencontré. Ce cas reste établi en
+lisant le code du serveur d'export, pas observé sur donnée réelle.
