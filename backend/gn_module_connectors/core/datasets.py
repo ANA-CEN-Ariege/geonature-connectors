@@ -248,12 +248,21 @@ def dernier_moissonnage(id_dataset: int, id_source: int):
     dernier passage. Le gain est décisif : sur les 60 plus gros jeux d'un périmètre
     départemental, aucun n'avait été modifié dans les sept derniers jours — un
     moissonnage hebdomadaire n'a donc, la plupart du temps, rien à lire.
+
+    ⚠ `meta_create_date`/`meta_update_date` sont des `timestamp without time zone` :
+    PostgreSQL y stocke l'heure murale du **fuseau de session**, pas nécessairement UTC.
+    L'appelant compare cette date à un `modified` GBIF en UTC ; un simple `.replace` côté
+    Python supposant UTC serait faux sur une instance en Europe/Paris. `AT TIME ZONE`
+    convertit ici explicitement depuis le fuseau de session (`current_setting('TimeZone')`)
+    vers un `timestamptz`, que SQLAlchemy renvoie déjà "aware" — l'appelant n'a donc plus
+    besoin de deviner.
     """
     return db.session.execute(
         text(
             """
-            SELECT max(GREATEST(meta_create_date,
-                                COALESCE(meta_update_date, meta_create_date)))
+            SELECT (max(GREATEST(meta_create_date,
+                                 COALESCE(meta_update_date, meta_create_date)))
+                    AT TIME ZONE current_setting('TimeZone'))
             FROM gn_synthese.synthese
             WHERE id_source = :s AND id_dataset = :d
             """

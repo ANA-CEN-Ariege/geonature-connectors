@@ -195,16 +195,9 @@ def gbif_synchroniser_jeux(gadm_gid, country, dataset_keys, licenses, limit,
             orgs[meta["publishing_org_key"]] = gbif_meta.fetch_organization(meta["publishing_org_key"])
         producteur = orgs[meta["publishing_org_key"]]
 
-        # La citation officielle GBIF EST la chaîne d'attribution exigée par la licence :
-        # la porter dans dataset_desc satisfait l'obligation par la métadonnée elle-même.
-        desc = "\n\n".join(x for x in (
-            meta["citation"],
-            f"Producteur : {producteur}" if producteur else "",
-            f"Licence : {lic}",
-            f"DOI du jeu : https://doi.org/{meta['doi']}" if meta["doi"] else "",
-            f"Source : {meta['url']}",
-            meta["description"],
-        ) if x)
+        # Même construction que `creer_jdd` : déléguée à `_description_jdd` plutôt que
+        # répétée ici, pour ne pas laisser les deux diverger silencieusement.
+        desc = _description_jdd(meta, producteur)
 
         if dry_run:
             click.echo(f"  [{i}/{len(cles)}] → {meta['title'][:56]} ({lic})")
@@ -462,9 +455,19 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
             rejets.add("metadonnees_illisibles", cle, "", str(e)[:200])
             continue
         lic = meta["license"]
+        # ⚠ Ne PAS écarter tout le jeu sur cette seule licence déclarée : c'est la licence
+        # PAR DÉFAUT du jeu, pas celle de chaque occurrence. Sur iNaturalist (le seul jeu à
+        # licence mixte du corpus ariégeois, cf. docs/gbif-ariege.md), elle varie
+        # observation par observation — un jeu enregistré en CC BY-NC peut contenir des
+        # occurrences individuellement en CC BY ou CC0, que ce court-circuit privait de
+        # tout accès au filtre par occurrence (`filter_by_license`, plus bas) conçu
+        # exactement pour ce cas. Le filtre `license=` déjà poussé à l'API GBIF (cf.
+        # `build_filters`) fait le tri par occurrence, sans coût : un jeu réellement
+        # homogène et hors périmètre ne renvoie alors simplement aucune occurrence.
         if lic not in {l.upper() for l in licenses}:
-            click.secho(f"✗ {meta['title'][:50]} — licence {lic or 'inconnue'}, ignoré", fg="yellow")
-            continue
+            click.secho(f"? {meta['title'][:50]} — licence déclarée du jeu ({lic or 'inconnue'}) "
+                        f"hors périmètre : lu quand même, le filtre par occurrence tranchera",
+                        fg="yellow")
         titre_bas = (meta["title"] or "").lower()
         terme = next((t for t in exclus_termes if t in titre_bas), None)
         if terme:
@@ -477,7 +480,8 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
         if skip_gridded:
             verdict = gbif_grid.inspect(
                 cle, {"gadmGid": gadm_gid, "occurrenceStatus": statut} if gadm_gid
-                else {"country": country, "occurrenceStatus": statut})
+                else {"country": country, "occurrenceStatus": statut},
+                seuil_maille_m=cfg_gbif.get("gridded_threshold_m", gbif_grid.SEUIL_MAILLE_M))
             if verdict["verdict"] == "maille":
                 click.secho(f"– {meta['title'][:52]} — {gbif_grid.explique(verdict)}", fg="yellow")
                 rejets.add("jeu_maille", cle, meta["title"], gbif_grid.explique(verdict))
@@ -568,7 +572,12 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
                                    statut_validation=statut_validation,
                                    version_taxref=v_taxref)
             if ligne is None:
-                rejets.add("no_coordinates" if occ.get("decimalLatitude") is None else "no_date",
+                # `to_row` rejette sur une coordonnée manquante — longitude OU latitude —
+                # avant même de regarder la date : se fier à la seule latitude pour
+                # distinguer les deux motifs mentait sur la cause d'un rejet.
+                sans_coord = (occ.get("decimalLongitude") is None
+                             or occ.get("decimalLatitude") is None)
+                rejets.add("no_coordinates" if sans_coord else "no_date",
                            occ.get("gbifID"), occ.get("scientificName"),
                            f"eventDate={occ.get('eventDate')!r}")
                 continue

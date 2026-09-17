@@ -11,16 +11,11 @@ import logging
 import time
 import requests
 
+from .api import normalize_license
+
 logger = logging.getLogger(__name__)
 
 API = "https://api.gbif.org/v1"
-
-# Licences que GBIF accepte pour les jeux d'occurrences (l'énumération est figée depuis 2017).
-_LICENCE_MARQUEURS = (
-    ("/publicdomain/zero/", "CC0_1_0"),
-    ("/licenses/by-nc/", "CC_BY_NC_4_0"),  # avant by/ : "/licenses/by-nc/" contient "/licenses/by"
-    ("/licenses/by/", "CC_BY_4_0"),
-)
 
 
 def _get(chemin: str, params: dict | None = None, timeout: int = 25, retries: int = 3):
@@ -35,19 +30,6 @@ def _get(chemin: str, params: dict | None = None, timeout: int = 25, retries: in
             if tentative < retries:
                 time.sleep(2 * (tentative + 1))
     raise derniere
-
-
-def normalize_license(valeur: str | None) -> str:
-    if not valeur:
-        return ""
-    v = str(valeur).strip()
-    if v.upper() in ("CC0_1_0", "CC_BY_4_0", "CC_BY_NC_4_0"):
-        return v.upper()
-    bas = v.lower()
-    for marqueur, enum in _LICENCE_MARQUEURS:
-        if marqueur in bas:
-            return enum
-    return ""
 
 
 def fetch_dataset(dataset_key: str) -> dict:

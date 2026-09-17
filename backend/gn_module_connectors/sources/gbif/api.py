@@ -459,6 +459,11 @@ def filter_by_uncertainty(occurrences: list[dict], max_uncertainty: int | None, 
     pire que le seuil rejeté ; les écarter, c'est perdre beaucoup de données par ailleurs
     exploitables. Le choix appartient à l'utilisateur, mais il doit être conscient : c'est
     pourquoi il est explicite et non implicite.
+
+    ⚠ Seuil **inclus** — « dépasse le seuil » exclut le seuil lui-même — pour rester
+    cohérent avec `build_filters`, qui pousse à GBIF un intervalle `0,{max}` inclusif
+    quand ce filtre est reporté côté API : une occurrence exactement au seuil ne doit
+    pas être acceptée par l'un et rejetée par l'autre selon où elle est filtrée.
     """
     if not max_uncertainty:
         return occurrences
@@ -467,7 +472,7 @@ def filter_by_uncertainty(occurrences: list[dict], max_uncertainty: int | None, 
         u = o.get("coordinateUncertaintyInMeters")
         if u is None:
             return keep_unknown
-        return float(u or 0) < max_uncertainty
+        return float(u or 0) <= max_uncertainty
 
     filtered = [o for o in occurrences if _ok(o)]
     excluded = len(occurrences) - len(filtered)
@@ -478,7 +483,7 @@ def filter_by_uncertainty(occurrences: list[dict], max_uncertainty: int | None, 
                 rejects.add("uncertainty_too_high", o.get("gbifID"), o.get("scientificName"),
                             f"{u} m" if u is not None else "incertitude non déclarée")
     if excluded:
-        print(f"  Filtre incertitude GPS (<{max_uncertainty}m) : {excluded} exclue(s), reste {len(filtered)}.")
+        print(f"  Filtre incertitude GPS (≤{max_uncertainty}m) : {excluded} exclue(s), reste {len(filtered)}.")
     return filtered
 
 

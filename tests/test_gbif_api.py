@@ -48,6 +48,7 @@ except ImportError:
     sys.modules["sqlalchemy"] = _sa
 
 from gn_module_connectors.sources.gbif import taxonomy as TX  # noqa: E402
+from gn_module_connectors.sources.gbif import griddedness as GR  # noqa: E402
 
 
 def cfg(**over):
@@ -439,6 +440,56 @@ def test_existe_dans_taxref_faux_si_absent_du_referentiel(monkeypatch):
     assert TX.existe_dans_taxref(999_999) is False
 
 
+# ── taxonomy.resolve ──────────────────────────────────────────────────────────
+# `resolve()` est la fonction composée réellement appelée par `gbif_import` pour chaque
+# occurrence ; ses briques (`resolve_via_gbif`, `existe_dans_taxref`) étaient testées,
+# pas elle — une régression dans l'ordre de repli ou dans l'écriture en cache aurait pu
+# passer inaperçue.
+
+def test_resolve_privilegie_taxonkey():
+    occ = _occ(1, taxonKey=10, acceptedTaxonKey=20, speciesKey=30)
+    assert TX.resolve(occ, {"10": 111, "20": 222, "30": 333}) == 111
+
+
+def test_resolve_replie_sur_acceptedtaxonkey_si_taxonkey_absent_de_lindex():
+    occ = _occ(1, taxonKey=10, acceptedTaxonKey=20, speciesKey=30)
+    assert TX.resolve(occ, {"20": 222, "30": 333}) == 222
+
+
+def test_resolve_replie_sur_specieskey_en_dernier_recours():
+    occ = _occ(1, taxonKey=10, acceptedTaxonKey=20, speciesKey=30)
+    assert TX.resolve(occ, {"30": 333}) == 333
+
+
+def test_resolve_rend_none_sans_cache_gbif_ni_correspondance():
+    occ = _occ(1, taxonKey=10)
+    assert TX.resolve(occ, {}) is None
+
+
+def test_resolve_replie_sur_gbif_et_memorise_dans_lindex(monkeypatch):
+    """Le repli GBIF n'est tenté que si l'index local échoue, et son résultat doit être
+    écrit dans `index` pour que le lot suivant du même import ne refasse pas l'appel
+    réseau."""
+    occ = _occ(1, taxonKey=10)
+    monkeypatch.setattr(TX, "resolve_via_gbif", lambda cle, cache, journal=None: 999)
+    monkeypatch.setattr(TX, "existe_dans_taxref", lambda cd_nom: True)
+    index = {}
+    assert TX.resolve(occ, index, cache_gbif={}) == 999
+    assert index["10"] == 999
+
+
+def test_resolve_ignore_un_cd_nom_gbif_absent_du_taxref_local(monkeypatch):
+    """TAXREF de GBIF peut différer de version : un cd_nom qu'il propose mais que le
+    référentiel local ne connaît pas violerait la clé étrangère de `synthese` — il ne
+    doit ni être retenu, ni être mémorisé dans l'index."""
+    occ = _occ(1, taxonKey=10)
+    monkeypatch.setattr(TX, "resolve_via_gbif", lambda cle, cache, journal=None: 999)
+    monkeypatch.setattr(TX, "existe_dans_taxref", lambda cd_nom: False)
+    index = {}
+    assert TX.resolve(occ, index, cache_gbif={}) is None
+    assert "10" not in index
+
+
 # ── taxonomy.resolve_via_gbif ────────────────────────────────────────────────
 
 def test_resolve_via_gbif_journalise_et_compte_un_echec_reseau(monkeypatch):
@@ -471,3 +522,166 @@ def test_resolve_via_gbif_ne_masque_pas_un_bug_de_programmation(monkeypatch):
     monkeypatch.setattr(TX.json, "load", json_load_casse)
     with pytest.raises(TypeError):
         TX.resolve_via_gbif(999, {})
+
+
+# ── griddedness.inspect / machine_tag ─────────────────────────────────────────
+# Avant cet ajout, toute l'heuristique de détection des jeux maillés (six branches de
+# verdict dans inspect(), plus machine_tag()) n'avait aucun test : une régression sur
+# l'une des comparaisons aurait pu laisser passer un jeu grillé, ou en écarter un valide,
+# sans qu'aucun test ne le voie.
+
+class _FauxReponseJSON:
+    def __init__(self, payload):
+        self._brut = __import__("json").dumps(payload).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return self._brut
+
+
+def _occ_grid(incertitude=None, lon=1.0, lat=43.0):
+    return {"decimalLongitude": lon, "decimalLatitude": lat,
+            "coordinateUncertaintyInMeters": incertitude}
+
+
+def _faux_urlopen_grid(tag=None, page=None, echecs_dataset=0, echecs_page=0):
+    """`tag` : payload de `/dataset/{key}` (par défaut, aucun machine tag).
+    `page` : liste d'occurrences resservie identique à chaque tranche d'échantillonnage
+    (la proportion voulue n'a pas besoin d'offsets distincts pour être mesurée)."""
+    appels = {"dataset": 0, "page": 0}
+
+    def urlopen(url, timeout=None):
+        if "/dataset/" in url:
+            appels["dataset"] += 1
+            if appels["dataset"] <= echecs_dataset:
+                raise OSError("panne réseau")
+            return _FauxReponseJSON(tag if tag is not None else {"machineTags": []})
+        appels["page"] += 1
+        if appels["page"] <= echecs_page:
+            raise OSError("panne réseau")
+        return _FauxReponseJSON({"results": page if page is not None else []})
+
+    return urlopen
+
+
+def _tag_gbif(percent_nn=0.9, count_nn=100, distance_nn=0.09, created="2020-01-01"):
+    import json as _json
+    return {"machineTags": [{
+        "namespace": GR.TAG_NAMESPACE, "name": GR.TAG_NAME,
+        "value": _json.dumps({"percentNN": percent_nn, "countNN": count_nn,
+                              "distanceNN": distance_nn}),
+        "created": created,
+    }]}
+
+
+def test_machine_tag_lit_le_tag_grille(monkeypatch):
+    monkeypatch.setattr(GR.urllib.request, "urlopen",
+                        _faux_urlopen_grid(tag=_tag_gbif(percent_nn=0.75, count_nn=50,
+                                                         distance_nn=0.09)))
+    tag = GR.machine_tag("clé")
+    assert tag == {"percent_nn": 0.75, "count_nn": 50, "distance_nn": 0.09,
+                   "created": "2020-01-01"}
+
+
+def test_machine_tag_absent_rend_none(monkeypatch):
+    monkeypatch.setattr(GR.urllib.request, "urlopen",
+                        _faux_urlopen_grid(tag={"machineTags": []}))
+    assert GR.machine_tag("clé") is None
+
+
+def test_machine_tag_valeur_json_malformee_est_ignoree(monkeypatch):
+    tag = {"machineTags": [{"namespace": GR.TAG_NAMESPACE, "name": GR.TAG_NAME,
+                            "value": "{pas du json", "created": "2020-01-01"}]}
+    monkeypatch.setattr(GR.urllib.request, "urlopen", _faux_urlopen_grid(tag=tag))
+    assert GR.machine_tag("clé") is None
+
+
+def test_machine_tag_reprend_apres_une_panne_transitoire(monkeypatch):
+    monkeypatch.setattr(GR.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(GR.urllib.request, "urlopen",
+                        _faux_urlopen_grid(tag=_tag_gbif(), echecs_dataset=GR.RETRIES))
+    assert GR.machine_tag("clé") is not None
+
+
+def test_machine_tag_abandonne_apres_epuisement_des_reprises(monkeypatch):
+    monkeypatch.setattr(GR.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(GR.urllib.request, "urlopen",
+                        _faux_urlopen_grid(tag=_tag_gbif(), echecs_dataset=GR.RETRIES + 1))
+    assert GR.machine_tag("clé") is None
+
+
+def test_inspect_sans_occurrence_rend_vide(monkeypatch):
+    monkeypatch.setattr(GR.urllib.request, "urlopen", _faux_urlopen_grid(page=[]))
+    res = GR.inspect("clé", {})
+    assert res["verdict"] == "vide"
+
+
+def test_inspect_tag_et_echantillon_concordants_rendent_maille(monkeypatch):
+    """Tag GBIF au-delà du seuil ET incertitude uniforme au-delà du seuil : verdict
+    tranché, sans arbitrage humain."""
+    page = [_occ_grid(5000) for _ in range(10)]
+    monkeypatch.setattr(GR.urllib.request, "urlopen",
+                        _faux_urlopen_grid(tag=_tag_gbif(percent_nn=0.9), page=page))
+    res = GR.inspect("clé", {})
+    assert res["verdict"] == "maille"
+    assert res["origine"] == "machine_tag"
+    assert "grillé" in GR.explique(res)
+
+
+def test_inspect_tag_grille_contredit_par_une_precision_fine_rend_suspect(monkeypatch):
+    """Cas mesuré sur l'OFB (cf. docstring du module) : le tag ment, l'échantillon ne
+    doit pas être écarté sans arbitrage."""
+    page = [_occ_grid(15) for _ in range(10)]
+    monkeypatch.setattr(GR.urllib.request, "urlopen",
+                        _faux_urlopen_grid(tag=_tag_gbif(percent_nn=0.9), page=page))
+    res = GR.inspect("clé", {})
+    assert res["verdict"] == "suspect"
+    assert res["origine"] == "tag_contredit"
+
+
+def test_inspect_tag_seul_sans_confirmation_de_lechantillon_rend_suspect(monkeypatch):
+    page = [_occ_grid(v) for v in (10, 20, 30, 40, 50)]
+    monkeypatch.setattr(GR.urllib.request, "urlopen",
+                        _faux_urlopen_grid(tag=_tag_gbif(percent_nn=0.9), page=page))
+    res = GR.inspect("clé", {})
+    assert res["verdict"] == "suspect"
+    assert res["origine"] == "tag_seul"
+
+
+def test_inspect_echantillon_maille_sans_tag_rend_suspect(monkeypatch):
+    page = [_occ_grid(5000) for _ in range(10)]
+    monkeypatch.setattr(GR.urllib.request, "urlopen",
+                        _faux_urlopen_grid(tag={"machineTags": []}, page=page))
+    res = GR.inspect("clé", {})
+    assert res["verdict"] == "suspect"
+    assert res["origine"] == "echantillon_seul"
+
+
+def test_inspect_peu_dincertitudes_declarees_rend_inconnu(monkeypatch):
+    page = [_occ_grid(None) for _ in range(8)] + [_occ_grid(10) for _ in range(2)]
+    monkeypatch.setattr(GR.urllib.request, "urlopen",
+                        _faux_urlopen_grid(tag={"machineTags": []}, page=page))
+    res = GR.inspect("clé", {})
+    assert res["verdict"] == "inconnu"
+
+
+def test_inspect_incertitude_variee_sans_tag_rend_ok(monkeypatch):
+    page = [_occ_grid(v) for v in (10, 20, 30, 40, 50)]
+    monkeypatch.setattr(GR.urllib.request, "urlopen",
+                        _faux_urlopen_grid(tag={"machineTags": []}, page=page))
+    res = GR.inspect("clé", {})
+    assert res["verdict"] == "ok"
+
+
+def test_inspect_seuil_maille_configurable(monkeypatch):
+    """`seuil_maille_m` doit réellement piloter le verdict — pas la constante figée."""
+    page = [_occ_grid(800) for _ in range(10)]
+    monkeypatch.setattr(GR.urllib.request, "urlopen",
+                        _faux_urlopen_grid(tag={"machineTags": []}, page=page))
+    assert GR.inspect("clé", {}, seuil_maille_m=GR.SEUIL_MAILLE_M)["verdict"] == "ok"
+    assert GR.inspect("clé", {}, seuil_maille_m=500)["verdict"] == "suspect"

@@ -142,7 +142,7 @@ def _echantillon(dataset_key: str, filtres: dict, taille: int, tranches: int) ->
 
 
 def inspect(dataset_key: str, filtres: dict, taille: int = 1000,
-            tranches: int = 5) -> dict:
+            tranches: int = 5, seuil_maille_m: int = SEUIL_MAILLE_M) -> dict:
     """Verdict de précision d'un jeu de données.
 
     Recalculé à chaque appel, volontairement : un jeu n'est inspecté qu'une fois par
@@ -197,7 +197,7 @@ def inspect(dataset_key: str, filtres: dict, taille: int = 1000,
     precision_fine_uniforme = (
         res["part_declaree"] >= PART_DECLAREE_MIN
         and part is not None and part >= PART_UNIFORME
-        and dominante is not None and dominante < SEUIL_MAILLE_M
+        and dominante is not None and dominante < seuil_maille_m
         and dominante not in INCERTITUDES_SUSPECTES
     )
     tag_formel = bool(tag) and tag["percent_nn"] >= PERCENT_NN_REJET
@@ -213,7 +213,7 @@ def inspect(dataset_key: str, filtres: dict, taille: int = 1000,
         res["part_declaree"] >= PART_DECLAREE_MIN
         and part is not None and part >= PART_UNIFORME
         and dominante is not None
-        and (dominante >= SEUIL_MAILLE_M or dominante in INCERTITUDES_SUSPECTES)
+        and (dominante >= seuil_maille_m or dominante in INCERTITUDES_SUSPECTES)
     )
 
     if tag_formel and precision_fine_uniforme:
