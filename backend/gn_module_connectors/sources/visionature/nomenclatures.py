@@ -199,9 +199,11 @@ def est_absence(observation: dict, code_absence: int = None) -> bool:
     """
     if code_atlas(observation) == (ATLAS_ABSENCE if code_absence is None else code_absence):
         return True
-    effectif = str(observation.get("count") or "").strip()
+    # `_entier` distingue un effectif exact de zéro (int ou chaîne "0") d'un effectif
+    # absent : `str(... or "").strip()` perdrait le premier, `0 or ""` s'évaluant à "".
+    effectif = _entier(observation.get("count"))
     estimation = str(observation.get("estimation_code") or "").upper()
-    return effectif == "0" and "EXACT_VALUE" in estimation
+    return effectif == 0 and "EXACT_VALUE" in estimation
 
 
 def valeur_simple(brut) -> str | None:

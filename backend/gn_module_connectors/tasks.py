@@ -96,9 +96,10 @@ def moissonner_gbif(self):
         runner = CliRunner()
         ok = erreurs = 0
         for cle in cles:
-            resultat = runner.invoke(gbif_import, ["--dataset-key", cle])
+            resultat = runner.invoke(gbif_import, ["--jeu", cle])
             if resultat.exit_code == 0:
                 ok += 1
+                logger.info("CONNECTORS : %s — %s", cle, resultat.output.strip())
             else:
                 erreurs += 1
                 logger.error("CONNECTORS : échec sur %s — %s", cle, resultat.output[-500:])

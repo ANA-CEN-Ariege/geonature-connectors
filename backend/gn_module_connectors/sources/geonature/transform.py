@@ -23,6 +23,9 @@ GEONATURE_NAMESPACE = uuid.UUID("9d4e1c7a-3b58-5f26-8e04-6a2f9c15d3b7")
 # réécrire tout le corpus à chaque campagne de validation chez le producteur. La date est
 # conservée dans `additional_data`, pour la traçabilité, mais elle n'est pas le critère.
 CHAMPS_SUIVIS = (
+    # ⚠ `empreinte()` ne hache pas ce `cd_nom` brut : elle hache la valeur RÉSOLUE (voir
+    # sa docstring), `choisir` pouvant retenir `cd_ref` en repli sans que le `cd_nom` brut
+    # ne change.
     "cd_nom", "nom_cite", "date_debut", "date_fin", "nombre_min", "nombre_max",
     "altitude_min", "altitude_max", "observateurs", "determinateur", "precision",
     "comment_occurrence", "comment_releve", "preuve_numerique", "nom_lieu",
@@ -50,7 +53,16 @@ def _flottant(valeur):
 
 
 def _texte(valeur, longueur: int | None = None) -> str | None:
-    brut = str(valeur or "").strip()
+    """Chaîne nettoyée, ou None si `valeur` est vide.
+
+    ⚠ `valeur or ""` traiterait `0` comme vide (0 est faux en Python) : `profondeur_min` /
+    `profondeur_max` valent légitimement 0 pour une observation de surface, et perdraient
+    silencieusement cette information — contrairement à `altitude_min`/`altitude_max`, qui
+    passent par `_entier()` et n'ont pas ce défaut. D'où le test explicite sur `None`.
+    """
+    if valeur is None:
+        return None
+    brut = str(valeur).strip()
     if not brut:
         return None
     return brut[:longueur] if longueur else brut
@@ -192,15 +204,29 @@ def uuid_groupe(item: dict) -> str | None:
     return _uuid_ou_none(item.get("id_perm_grp_sinp"))
 
 
-def empreinte(item: dict) -> str:
+def empreinte(item: dict, cd_nom: int | None = None) -> str:
     """Empreinte du contenu exploité, pour ne réécrire que ce qui a changé.
 
     Sans elle, la relecture complète — imposée par la réconciliation des suppressions, le
     distant ne publiant aucun journal — repasserait tout le corpus dans l'`ON CONFLICT` à
     chaque campagne : WAL, tuples morts, et recalcul du rattachement aux zonages sur
     l'intégralité des lignes.
+
+    ⚠ `cd_nom` doit être la valeur RÉSOLUE — celle que `to_row` écrit réellement dans la
+    colonne `cd_nom` de la ligne, calculée par `taxonomy.choisir` — et non le `cd_nom` brut
+    de l'enregistrement source. `choisir` peut retenir `cd_ref` en repli quand le `cd_nom`
+    brut n'est pas dans le référentiel local (TAXREF pouvant différer de version entre les
+    deux instances) : hacher le brut laisserait un rattachement taxonomique devenu faux se
+    geler silencieusement en base si seul `cd_ref` change d'un import à l'autre, le `cd_nom`
+    brut restant lui inchangé. Non fourni, on retombe sur le brut — pour rester utilisable
+    hors du pipeline complet de `to_row`. La valeur ne remplace le brut que dans le calcul
+    du hachage, jamais dans `item` : ainsi une ligne dont le repli ne change pas garde
+    exactement la même empreinte qu'avant ce correctif, sans réécriture de masse au premier
+    import qui le suit.
     """
-    brut = "|".join(f"{c}={item.get(c)!r}" for c in CHAMPS_SUIVIS)
+    valeurs = {c: (cd_nom if c == "cd_nom" and cd_nom is not None else item.get(c))
+              for c in CHAMPS_SUIVIS}
+    brut = "|".join(f"{c}={valeurs[c]!r}" for c in CHAMPS_SUIVIS)
     lon, lat = coordonnees(item)
     brut += f"|lon={lon!r}|lat={lat!r}"
     brut += "|" + "|".join(
@@ -244,8 +270,9 @@ def observateurs(item: dict, *, pseudonymiser: bool = False,
     return pseudonyme(brut, secret)[:12]
 
 
-def provenance(item: dict, *, instance: str, id_export: str, licence: str = "",
-               licence_url: str = "", uuid_supplante: str | None = None) -> dict:
+def provenance(item: dict, *, instance: str, id_export: str, cd_nom: int | None = None,
+               licence: str = "", licence_url: str = "",
+               uuid_supplante: str | None = None) -> dict:
     """Ce qu'on conserve d'une observation et qui n'est pas redérivable localement.
 
     Règle appliquée : `regne`, `classe`, `ordre`, `famille`, `cd_ref`, `nom_valide` et les
@@ -286,7 +313,7 @@ def provenance(item: dict, *, instance: str, id_export: str, licence: str = "",
         "gn_preuve_non_numerique": _texte(item.get("preuve_non_numerique")) or "",
         "gn_profondeur_min": _texte(item.get("profondeur_min")) or "",
         "gn_profondeur_max": _texte(item.get("profondeur_max")) or "",
-        "gn_empreinte": empreinte(item),
+        "gn_empreinte": empreinte(item, cd_nom),
     }
     for colonne, cle in gn_nomen.HORS_INSERT.items():
         donnees[cle] = _texte(item.get(colonne)) or ""
@@ -358,8 +385,9 @@ def to_row(item: dict, *, cd_nom: int, id_dataset: int | None, id_source: int,
         "comment_description": _texte(item.get("comment_occurrence")),
         "additional_data": json.dumps(
             {k: v for k, v in provenance(
-                item, instance=instance, id_export=id_export, licence=licence,
-                licence_url=licence_url, uuid_supplante=uuid_supplante).items()
+                item, instance=instance, id_export=id_export, cd_nom=cd_nom,
+                licence=licence, licence_url=licence_url,
+                uuid_supplante=uuid_supplante).items()
              if v not in (None, "")},
             ensure_ascii=False),
         "lon": lon,

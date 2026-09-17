@@ -104,6 +104,12 @@ def test_effectif_renseigne_implique_denombrement_compte():
     assert cd({"individualCount": None}, "OBJ_DENBR") is None
 
 
+def test_effectif_zero_nest_pas_une_absence_de_denombrement():
+    """0 est un effectif déclaré (ex. occurrence ABSENT), pas une absence de donnée."""
+    assert cd({"individualCount": 0}, "OBJ_DENBR") == "IND"
+    assert cd({"individualCount": 0}, "TYP_DENBR") == "Co"
+
+
 # ── Périmètre ────────────────────────────────────────────────────────────────
 
 def test_collections_ex_situ_hors_perimetre():

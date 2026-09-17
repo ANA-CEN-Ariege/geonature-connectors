@@ -35,6 +35,7 @@ REASONS = {
                                  "(spécimen de collection ou fossile)",
     "no_date": "date indéterminable",
     "metadonnees_illisibles": "métadonnées GBIF du jeu illisibles",
+    "echec_reseau_gbif": "échec réseau GBIF, jeu ignoré",
     "jeu_maille": "jeu de données publié à la maille",
     "taxon_exclu": "taxon exclu par la configuration",
     "confidentielle": "observation confidentielle à la source",

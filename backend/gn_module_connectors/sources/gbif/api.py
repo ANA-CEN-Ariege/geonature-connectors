@@ -196,7 +196,10 @@ def fetch(cfg, filter_cfg=None) -> list[dict]:
         data = r.json()
         results.extend(data["results"])
         print(f"  GBIF : {len(results)}/{data['count']} occurrences récupérées")
-        if data["endOfRecords"]:
+        if data["endOfRecords"] or not data["results"]:
+            # Le second cas est un garde-fou : une page vide sans `endOfRecords` à True
+            # (réponse GBIF inattendue) ne doit pas boucler indéfiniment quand
+            # `cfg.max_results` n'est pas fixé.
             break
         if cfg.max_results and len(results) >= cfg.max_results:
             results = results[:cfg.max_results]
@@ -213,14 +216,30 @@ OFFSET_LIMITE = 10_000
 
 
 def facette(cfg, filter_cfg, champ: str, limite: int = 300) -> list[tuple[str, int]]:
-    """Répartition des occurrences selon un champ, sans les rapatrier."""
+    """Répartition des occurrences selon un champ, sans les rapatrier.
+
+    Pagine au-delà de `limite` via `facetOffset` : GBIF trie les valeurs par effectif
+    décroissant, donc s'arrêter au premier lot couperait silencieusement les valeurs les
+    moins fournies (années isolées d'un jeu couvrant plusieurs siècles, par exemple).
+    """
     filtres = build_filters(cfg, filter_cfg)
-    filtres.update({"limit": 0, "facet": champ, "facetLimit": limite})
-    r = _get(GBIF_SEARCH_URL, filtres)
-    facettes = r.json().get("facets") or []
-    if not facettes:
-        return []
-    return [(c["name"], c["count"]) for c in facettes[0].get("counts", [])]
+    resultat: list[tuple[str, int]] = []
+    offset = 0
+    while True:
+        filtres_page = {**filtres, "limit": 0, "facet": champ, "facetLimit": limite,
+                        "facetOffset": offset}
+        r = _get(GBIF_SEARCH_URL, filtres_page)
+        facettes = r.json().get("facets") or []
+        if not facettes:
+            break
+        counts = facettes[0].get("counts", [])
+        if not counts:
+            break
+        resultat.extend((c["name"], c["count"]) for c in counts)
+        if len(counts) < limite:
+            break
+        offset += limite
+    return resultat
 
 
 def _regroupe(valeurs: list[tuple[int, int]], plafond: int) -> list[tuple[int, int, int]]:
@@ -304,7 +323,12 @@ def fetch_par_tranches(cfg, filter_cfg=None, journal=None) -> list[dict]:
     """
     total = count(cfg, filter_cfg)
     if total <= OFFSET_LIMITE:
-        return fetch(cfg, filter_cfg)
+        resultats = fetch(cfg, filter_cfg)
+        if journal and not cfg.max_results and len(resultats) < total:
+            journal(f"  ⚠ {len(resultats)}/{total} occurrences récupérées : "
+                    f"{total - len(resultats)} manquante(s) (l'index GBIF a pu changer "
+                    f"pendant la lecture).")
+        return resultats
 
     decoupe = tranches(cfg, filter_cfg)
     if not decoupe:
@@ -332,6 +356,13 @@ def fetch_par_tranches(cfg, filter_cfg=None, journal=None) -> list[dict]:
             journal(f"    {libelle} : {len(lot)} occurrence(s)")
         if cfg.max_results and len(resultats) >= cfg.max_results:
             return resultats[: cfg.max_results]
+    if journal and len(resultats) < total:
+        # Le découpage par année ne couvre que ce que la facette `year` sait décrire :
+        # les occurrences sans année exploitable par GBIF n'apparaissent dans aucune
+        # tranche et ne sont donc jamais lues ici. Contrairement au cas `decoupe` vide
+        # ci-dessus, ce manque ne peut être comblé — on se contente de le signaler.
+        journal(f"  ⚠ {total - len(resultats)} occurrence(s) sur {total} non récupérée(s) "
+                f"par le découpage par année (probablement sans année exploitable).")
     return resultats
 
 

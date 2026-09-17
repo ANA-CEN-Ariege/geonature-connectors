@@ -18,14 +18,22 @@ a été effacé, ce que GBIF ne sait pas faire — le connecteur GBIF ne peut qu
 l'absence d'une occurrence, jamais sa suppression.
 """
 
+import time
+
 from .biolovision import api as bio
 
 
-class GroupeInaccessible(Exception):
+class GroupeInaccessible(bio.BiolovisionApiException):
     """Un groupe taxonomique dont l'API refuse systématiquement les données.
 
     Distincte d'une erreur ponctuelle : elle signale qu'insister est inutile, et porte
     les identifiants qui n'ont pas même été demandés.
+
+    Hérite de `bio.BiolovisionApiException`, comme toutes les autres erreurs VisioNature
+    de ce module : un `except vn_api.bio.BiolovisionApiException` — le patron employé
+    partout ailleurs pour absorber un refus de l'API et poursuivre le moissonnage des
+    autres groupes — doit aussi l'attraper, sans quoi un `Exception` nu ferait planter
+    l'appelant au lieu de sauter le seul groupe concerné.
     """
 
 
@@ -52,6 +60,13 @@ def _controleur(classe, cfg):
         # entre deux tentatives et n'abandonne qu'au-delà de `max_retry` ; cinq essais
         # coûtent quelques secondes et évitent de perdre un moissonnage sur un incident.
         max_retry=cfg.get("max_retry", 5),
+        # ⚠ Divergence assumée avec l'intuition de ce réglage : dans le client vendorisé,
+        # `max_requests` est accepté et rangé dans `self._limits`, mais aucune méthode ne
+        # le relit jamais. Le transmettre ici ne plafonne donc pas la cadence des appels —
+        # un exploitant qui le configure pour limiter le risque de 403/429 n'obtient aucun
+        # effet. On le transmet quand même, sans mentir sur son utilité : le corriger
+        # demanderait d'éditer le client vendorisé, ce que ce module s'interdit (cf.
+        # README, « Ne pas éditer ces fichiers »).
         max_requests=cfg.get("max_requests", 0),
         max_chunks=cfg.get("max_chunks", 100),
         timeout=cfg.get("timeout", 120),
@@ -222,6 +237,12 @@ TRANCHE_JOURS_MAX = 365
 # indéfiniment une plage qui ne sera jamais servie.
 ESSAIS_403 = 2
 
+# Nombre de tentatives face à un 429 (limite de débit) avant d'abandonner. La remédiation
+# n'est pas de rétrécir la fenêtre — le volume demandé n'est pas en cause, contrairement
+# au 403 — mais de temporiser : un rate limiting est par nature transitoire.
+ESSAIS_429 = 3
+DELAI_429 = 5
+
 
 def _ajuster(tranche: int, obtenus: int) -> int:
     """Nouvelle taille de tranche, d'après le volume qu'a rendu la précédente.
@@ -268,12 +289,23 @@ def moissonner_recherche(cfg, id_taxo_group: str, date_debut, date_fin,
         fin = date_fin
         tranche = tranche_jours
         essais = 0
+        essais_429 = 0
         while fin > date_debut:
             debut = max(date_debut, fin - timedelta(days=tranche))
             try:
                 releves = observations_recherche(cfg, id_taxo_group, debut, fin,
                                                  [territoire], type_date)
-            except bio.HTTPError as erreur:
+            except (bio.HTTPError, bio.MaxChunksError) as erreur:
+                code = erreur.args[0] if erreur.args else None
+                # Un 429 est par nature transitoire : temporiser et réessayer la MÊME
+                # fenêtre, plutôt que la rétrécir comme pour un 403 — le volume demandé
+                # n'est pas en cause, seule la cadence des requêtes l'est.
+                if code == 429 and essais_429 < ESSAIS_429:
+                    essais_429 += 1
+                    if journal:
+                        journal(territoire, debut, fin, -1)
+                    time.sleep(DELAI_429)
+                    continue
                 # ⚠ Un 403 sur `search` n'est PAS un défaut de droit : c'est un refus de
                 # VOLUME. Mesuré sur faune-occitanie.org avec les mêmes identifiants et
                 # le même territoire : 223 reptiles sur soixante jours passent, sept
@@ -283,7 +315,11 @@ def moissonner_recherche(cfg, id_taxo_group: str, date_debut, date_fin,
                 # C'est ce que régule le PID de `transfer_vn` : il ne cherche pas
                 # l'efficacité, il évite ce refus. On rétrécit donc et on réessaie, au
                 # lieu d'abandonner le groupe comme s'il était interdit.
-                code = erreur.args[0] if erreur.args else None
+                #
+                # `MaxChunksError` (client vendorisé : trop de pages de pagination pour
+                # une seule requête) est la même famille de refus que le 403 par volume —
+                # trop de données pour la fenêtre demandée — et reçoit le même remède.
+                refus_de_volume = code == 403 or isinstance(erreur, bio.MaxChunksError)
                 # Rétrécir ne sert que si la FENÊTRE en dépend. `debut` étant plafonné à
                 # `date_debut`, une tranche plus courte peut rejouer exactement la même
                 # requête — mesuré : trois requêtes identiques sur une plage de deux
@@ -291,7 +327,7 @@ def moissonner_recherche(cfg, id_taxo_group: str, date_debut, date_fin,
                 # et non la tranche ni la position de `debut`.
                 reduite = max(TRANCHE_JOURS_MIN, tranche // 4)
                 nouveau_debut = max(date_debut, fin - timedelta(days=reduite))
-                if (code == 403 and nouveau_debut != debut
+                if (refus_de_volume and nouveau_debut != debut
                         and tranche > TRANCHE_JOURS_MIN and essais < ESSAIS_403):
                     essais += 1
                     tranche = reduite
@@ -303,6 +339,7 @@ def moissonner_recherche(cfg, id_taxo_group: str, date_debut, date_fin,
                 journal(territoire, debut, fin, len(releves))
             yield (debut, fin, territoire, releves)
             essais = 0
+            essais_429 = 0
             tranche = _ajuster(tranche, len(releves))
             fin = debut - timedelta(days=1)
 
@@ -414,8 +451,19 @@ def observations_par_identifiants(cfg, id_taxo_group: str, identifiants: list[st
             reponse = controleur.api_list(id_taxo_group,
                                           id_sightings_list=",".join(lot),
                                           short_version=SHORT_VERSION)
-            releves.extend(_extraire(reponse))
+            nouveaux = _extraire(reponse)
+            releves.extend(nouveaux)
             echecs = 0
+            # Un lot répondu 200 peut être incomplet — des observations supprimées ou
+            # masquées entre le `diff` qui a produit `identifiants` et cet appel — sans
+            # qu'aucune exception ne le signale. Sans ce contrôle, les identifiants
+            # manquants disparaissaient du bilan au lieu d'être journalisés.
+            obtenus = {identifiant(r) for r in nouveaux}
+            manquants = [cle for cle in lot if cle not in obtenus]
+            if manquants:
+                inaccessibles.extend(
+                    (cle, "absent de la réponse du lot (supprimé ou masqué entre-temps)")
+                    for cle in manquants)
         except bio.BiolovisionApiException as erreur:
             echecs += 1
             inaccessibles.extend((cle, f"lot : {erreur!r}") for cle in lot)

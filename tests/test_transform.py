@@ -92,3 +92,37 @@ def test_empreinte_ignore_les_champs_non_importes():
     a = {"scientificName": "Bufo bufo", "lastInterpreted": "2026-01-01"}
     b = {"scientificName": "Bufo bufo", "lastInterpreted": "2026-09-01"}
     assert transform.empreinte(a) == transform.empreinte(b)
+
+
+# ── Ligne de synthèse : effectif et incertitude déclarés à zéro ────────────────
+
+class ResolverFactice:
+    def id(self, mnemonique, cd):
+        return f"{mnemonique}={cd}" if cd is not None else self.defaut(mnemonique)
+
+    def defaut(self, mnemonique):
+        return f"{mnemonique}=defaut"
+
+
+def test_effectif_et_incertitude_nuls_ne_sont_pas_des_absences():
+    """`individualCount`/`coordinateUncertaintyInMeters` à 0 sont des valeurs déclarées
+    par le producteur (ex. occurrence ABSENT, position jugée exacte) : elles doivent
+    rester 0 en base, pas devenir NULL comme une donnée non renseignée."""
+    occ = {"occurrenceID": "OBS0", "datasetKey": "test", "gbifID": "1",
+           "decimalLongitude": 1.5, "decimalLatitude": 43.0,
+           "eventDate": "2026-01-01",
+           "individualCount": 0, "coordinateUncertaintyInMeters": 0}
+    ligne = transform.to_row(occ, cd_nom=1, id_dataset=1, id_source=1, id_module=1,
+                             srid=2154, resolver=ResolverFactice())
+    assert ligne["count_min"] == 0 and ligne["count_max"] == 0
+    assert ligne["precision"] == 0
+
+
+def test_effectif_et_incertitude_absents_restent_null():
+    occ = {"occurrenceID": "OBS1", "datasetKey": "test", "gbifID": "2",
+           "decimalLongitude": 1.5, "decimalLatitude": 43.0,
+           "eventDate": "2026-01-01"}
+    ligne = transform.to_row(occ, cd_nom=1, id_dataset=1, id_source=1, id_module=1,
+                             srid=2154, resolver=ResolverFactice())
+    assert ligne["count_min"] is None and ligne["count_max"] is None
+    assert ligne["precision"] is None

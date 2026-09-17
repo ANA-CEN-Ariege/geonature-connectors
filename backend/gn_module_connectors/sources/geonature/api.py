@@ -23,8 +23,10 @@ d'écrire des milliers de lignes vides.
 """
 
 import logging
+import time
 
 import requests
+from requests.exceptions import RequestException
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,16 @@ CHEMIN_EXPORT = "/api/exports/api/{id_export}"
 # demande supérieure. On aligne le défaut dessus, et `moissonner` adopte de toute façon la
 # valeur que la première page annonce.
 LIMITE_DEFAUT = 1000
+
+# Nombre de tentatives supplémentaires sur une erreur réseau (coupure, DNS, dépassement du
+# `timeout` configuré) ou un code HTTP transitoire (429 : limitation de débit ; 500/502/503/
+# 504 : instance distante momentanément indisponible ou surchargée), avant d'abandonner.
+# `moissonner` accumule tout le corpus en mémoire avant de le retourner : sans reprise, un
+# incident passager sur une page tardive ferait perdre tout ce qui a déjà été téléchargé.
+# Mêmes ordres de grandeur que `sources/gbif/api.py::_get`.
+RETRIES = 3
+DELAI_RETRY = 3.0
+CODES_TRANSITOIRES = (429, 500, 502, 503, 504)
 
 # Colonnes sans lesquelles l'import n'a pas de sens : leur absence signale que l'export
 # n'est pas une vue de type `v_synthese_sinp`, et le connecteur refuse de continuer.
@@ -233,15 +245,34 @@ def diagnostiquer_page(charge: dict, filtres: dict) -> list[str]:
 
 
 def page(cfg, numero: int, limite: int, filtres: dict) -> dict:
-    """Une page de résultats, brute."""
+    """Une page de résultats, brute.
+
+    ⚠ Une erreur réseau ou un code HTTP transitoire (`CODES_TRANSITOIRES`) n'est pas
+    immédiatement fatal : on retente quelques fois, avec un délai croissant, avant de
+    remonter une `ErreurGeoNature` plutôt qu'une trace Python brute — ce module consacre
+    par ailleurs des dizaines de lignes à transformer chaque échec en message actionnable,
+    une panne transitoire mérite le même soin — ou un abandon définitif sur un incident qui
+    se serait résolu quelques secondes plus tard.
+    """
     base = _base(cfg)
     if not base:
         raise ErreurGeoNature("[geonature] url manquante.")
     url = base + CHEMIN_EXPORT.format(id_export=cfg.get("id_export"))
     parametres = {**filtres, "limit": limite, "offset": numero}
-    reponse = requests.get(url, params=parametres, headers=_entetes(cfg),
-                           timeout=int(cfg.get("timeout", 120)))
-    return _verifier_json(reponse, url)
+    timeout = int(cfg.get("timeout", 120))
+    for tentative in range(RETRIES + 1):
+        try:
+            reponse = requests.get(url, params=parametres, headers=_entetes(cfg),
+                                   timeout=timeout)
+        except RequestException as exc:
+            if tentative >= RETRIES:
+                raise ErreurGeoNature(
+                    f"{url} injoignable après {RETRIES + 1} tentative(s) "
+                    f"({type(exc).__name__} : {exc}).") from exc
+        else:
+            if reponse.status_code not in CODES_TRANSITOIRES or tentative >= RETRIES:
+                return _verifier_json(reponse, url)
+        time.sleep(DELAI_RETRY * (tentative + 1))
 
 
 def _premier_identifiant(items: list[dict]) -> str | None:
@@ -271,13 +302,18 @@ def moissonner(cfg, filtres: dict, journal=None,
     - **un `offset` ignoré boucle indéfiniment.** Si la page N commence par la même ligne
       que la page N-1, on s'arrête net : sans ce contrôle, la moisson gonfle en mémoire
       jusqu'à ce que le processus meure, sans qu'aucun message ne désigne la cause.
-    - **une page courte ne prouve la fin du corpus que sur la forme plate.** Quand l'export
-      déclare une géométrie, `as_geofeature` retire de sa FeatureCollection les lignes dont
-      la géométrie est nulle — que le `LIMIT` SQL avait pourtant consommées, et que
-      `total_filtered` compte toujours. Or `the_geom_4326` est *nullable* dans
-      `gn_synthese`. Une seule observation sans géométrie rendait donc une page plus courte
-      que la limite en plein milieu du corpus, et la moisson s'arrêtait là en abandonnant
-      tout le reste. Sur cette forme, la seule fin lisible est une page vide.
+    - **une page courte, voire entièrement vide, ne prouve la fin du corpus que sur la
+      forme plate.** Quand l'export déclare une géométrie, `as_geofeature` retire de sa
+      FeatureCollection les lignes dont la géométrie est nulle — que le `LIMIT` SQL avait
+      pourtant consommées, et que `total_filtered` compte toujours. Or `the_geom_4326` est
+      *nullable* dans `gn_synthese`. Une seule observation sans géométrie rendait donc une
+      page plus courte que la limite en plein milieu du corpus ; un lot entier d'`id_synthese`
+      contigus tous dépourvus de géométrie (un import historique en bloc, par exemple)
+      rendait même une page entièrement vide. Dans les deux cas, la moisson s'arrêtait là en
+      abandonnant tout le reste. Sur cette forme, la seule fin sûre est donc le nombre de
+      pages qu'annonce `total_filtered`, qui compte les lignes AVANT ce filtrage
+      géographique et n'a donc rien à voir avec lui ; une page vide n'y prouve rien par
+      elle-même.
 
     ⚠ S'y ajoute un dédoublonnage sur `id_synthese`, qui n'est pas une précaution de
     confort. Le raisonnement « le tri ascendant interdit les répétitions » suppose que le
@@ -362,12 +398,19 @@ def moissonner(cfg, filtres: dict, journal=None,
             meta["complet"] = False
             return (items, meta)
 
-        # ⚠ Une page plus courte que la limite ne signe la dernière page que sur la forme
-        # plate. Sur la forme GeoJSON, le serveur a pu retirer les lignes sans géométrie
-        # d'une page par ailleurs pleine : s'arrêter là abandonnerait le reste du corpus.
-        # On y paie une requête de plus — celle qui rend la page vide — contre la garantie
-        # de ne pas tronquer un import sur une donnée que le serveur a filtrée lui-même.
-        if not lot or (not meta["geojson"] and len(lot) < limite):
+        # ⚠ Sur la forme GeoJSON, une page courte OU entièrement vide ne signe pas la fin du
+        # corpus : le serveur a pu en retirer une partie, ou même la totalité, des lignes
+        # sans géométrie — que le `LIMIT` SQL avait pourtant consommées. `not lot` seul ne
+        # peut donc pas servir de condition d'arrêt ici, sans quoi un lot d'`id_synthese`
+        # contigus tous dépourvus de géométrie ferait abandonner tout le reste du corpus
+        # comme si la pagination était terminée. La seule fin sûre, sur cette forme, est le
+        # nombre de pages que `total_filtered` annonce — lui n'est pas affecté par ce
+        # filtrage géographique. Faute de `total_filtered`, on retombe sur l'ancien repère
+        # (page vide), moins fiable mais le seul disponible.
+        if meta["geojson"] and meta["total_filtered"] is not None:
+            if (numero + 1) * limite >= meta["total_filtered"]:
+                break
+        elif not lot or (not meta["geojson"] and len(lot) < limite):
             break
         numero += 1
 
@@ -383,15 +426,31 @@ def moissonner(cfg, filtres: dict, journal=None,
             raise ErreurGeoNature(message)
 
     annonce = meta["total_filtered"]
-    if annonce is not None and len(items) + meta["doublons"] != annonce:
+    if annonce is None:
+        # Le filet de sécurité qui suit ne peut rien vérifier sans `total_filtered` — la
+        # docstring promet qu'il est toujours présent, mais un export qui ne l'exposerait
+        # pas (une vue maison, par exemple) désactiverait sinon ce contrôle sans que
+        # personne ne le sache, et `complet` resterait à `True` sur une simple absence
+        # d'information plutôt que sur une preuve. On ne peut pas prouver la complétude :
+        # on ne laisse donc pas `complet` à `True` par défaut.
+        meta["complet"] = False
+        message = (
+            "l'export ne renvoie pas `total_filtered` : impossible de vérifier que la "
+            "moisson est complète. La réconciliation des suppressions s'interdira de "
+            "tourner sur cette moisson, faute de preuve.")
+        if journal:
+            journal(f"  ⚠ {message}")
+        else:
+            raise ErreurGeoNature(message)
+    elif len(items) + meta["doublons"] != annonce:
         meta["complet"] = False
         manquants = annonce - len(items) - meta["doublons"]
         if meta["geojson"] and manquants > 0:
-            # La moisson a bien été menée jusqu'à la page vide : ces lignes ne sont pas
-            # des lignes sautées, ce sont des lignes que le serveur refuse de rendre. La
-            # distinction change le message, pas le verdict — `complet` reste faux, car
-            # ces observations existent à la source et leur absence ici ne prouve donc
-            # aucune suppression.
+            # La moisson a bien été menée jusqu'au bout des pages qu'annonce
+            # `total_filtered` : ces lignes ne sont pas des lignes sautées, ce sont des
+            # lignes que le serveur refuse de rendre. La distinction change le message, pas
+            # le verdict — `complet` reste faux, car ces observations existent à la source
+            # et leur absence ici ne prouve donc aucune suppression.
             message = (f"{manquants} enregistrement(s) annoncé(s) que le serveur n'a pas "
                        f"rendus. L'export est géographique, et `as_geofeature` retire de "
                        f"sa FeatureCollection toute ligne dont la géométrie est nulle — "

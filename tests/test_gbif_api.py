@@ -284,6 +284,17 @@ def test_fetch_sarrete_a_max_results_avant_la_fin_du_corpus(monkeypatch):
     assert len(faux.appels) == 1
 
 
+def test_fetch_sarrete_si_page_vide_sans_endofrecords(monkeypatch):
+    """Garde-fou : une page vide avec `endOfRecords=False` (réponse GBIF inattendue) ne
+    doit pas boucler indéfiniment quand `cfg.max_results` n'est pas fixé."""
+    faux = FauxRequestsGBIF([{"results": [], "count": 10, "endOfRecords": False}])
+    monkeypatch.setattr(A, "requests", faux)
+    monkeypatch.setattr(A.time, "sleep", lambda *_a, **_k: None)
+    resultats = A.fetch(cfg())
+    assert resultats == []
+    assert len(faux.appels) == 1
+
+
 def test_fetch_propage_lerreur_reseau_apres_epuisement_des_reprises(monkeypatch):
     """`_get` reprend sur erreur transitoire, mais ne doit jamais avaler l'échec au bout
     du compte : `fetch()` doit le laisser remonter tel quel à l'appelant."""
@@ -305,6 +316,33 @@ def test_fetch_propage_lerreur_reseau_apres_epuisement_des_reprises(monkeypatch)
     assert faux.appels == 5  # 1 essai + 4 reprises, valeurs par défaut de `_get`
 
 
+# ── facette() : répartition par valeur ────────────────────────────────────────
+
+def test_facette_pagine_au_dela_de_la_limite(monkeypatch):
+    """GBIF trie la facette par effectif décroissant : s'arrêter au premier `facetLimit`
+    couperait silencieusement les valeurs les moins fournies (années isolées d'un jeu
+    couvrant plusieurs siècles, par exemple)."""
+    pages = [
+        {"facets": [{"counts": [{"name": "2020", "count": 5}, {"name": "2019", "count": 3}]}]},
+        {"facets": [{"counts": [{"name": "2018", "count": 1}]}]},
+    ]
+    faux = FauxRequestsGBIF(pages)
+    monkeypatch.setattr(A, "requests", faux)
+    resultat = A.facette(cfg(), fcfg(), "year", limite=2)
+    assert resultat == [("2020", 5), ("2019", 3), ("2018", 1)]
+    assert len(faux.appels) == 2
+    assert faux.appels[0]["facetOffset"] == 0
+    assert faux.appels[1]["facetOffset"] == 2
+
+
+def test_facette_sarrete_des_que_le_lot_est_plus_court_que_la_limite(monkeypatch):
+    faux = FauxRequestsGBIF([{"facets": [{"counts": [{"name": "2020", "count": 5}]}]}])
+    monkeypatch.setattr(A, "requests", faux)
+    resultat = A.facette(cfg(), fcfg(), "year", limite=300)
+    assert resultat == [("2020", 5)]
+    assert len(faux.appels) == 1
+
+
 # ── fetch_par_tranches() : délégation et découpage ────────────────────────────
 
 def test_fetch_par_tranches_delegue_directement_sous_le_plafond(monkeypatch):
@@ -314,6 +352,39 @@ def test_fetch_par_tranches_delegue_directement_sous_le_plafond(monkeypatch):
     resultat = A.fetch_par_tranches(cfg(), fcfg())
     assert resultat == ["occ"]
     assert len(appels) == 1
+
+
+def test_fetch_par_tranches_signale_lecart_sous_le_plafond(monkeypatch):
+    """Sous le plafond, `fetch()` peut aussi rendre moins que le total annoncé par
+    `count()` (réindexation GBIF en cours de lecture) : ça doit être signalé."""
+    monkeypatch.setattr(A, "count", lambda c, f=None: 50)
+    monkeypatch.setattr(A, "fetch", lambda c, f=None: ["a"] * 40)
+    messages = []
+    resultat = A.fetch_par_tranches(cfg(), fcfg(), journal=messages.append)
+    assert resultat == ["a"] * 40
+    assert any("manquante" in m for m in messages)
+
+
+def test_fetch_par_tranches_signale_les_occurrences_hors_decoupage(monkeypatch):
+    """Le découpage par année ne couvre que les occurrences dotées d'une année
+    exploitable par GBIF : l'écart avec le total annoncé doit être signalé, pas passé
+    sous silence comme c'était le cas jusqu'ici."""
+    monkeypatch.setattr(A, "count", lambda c, f=None: A.OFFSET_LIMITE + 101)
+    monkeypatch.setattr(A, "tranches",
+                        lambda c, f, plafond=A.OFFSET_LIMITE: [{"year": "2020"}])
+    monkeypatch.setattr(A, "fetch", lambda c, f=None: ["a"] * A.OFFSET_LIMITE)
+    messages = []
+    resultat = A.fetch_par_tranches(cfg(), fcfg(), journal=messages.append)
+    assert len(resultat) == A.OFFSET_LIMITE
+    assert any("non récupérée" in m for m in messages)
+
+
+def test_fetch_par_tranches_ne_signale_rien_quand_le_compte_correspond(monkeypatch):
+    monkeypatch.setattr(A, "count", lambda c, f=None: 3)
+    monkeypatch.setattr(A, "fetch", lambda c, f=None: ["a", "b", "c"])
+    messages = []
+    A.fetch_par_tranches(cfg(), fcfg(), journal=messages.append)
+    assert messages == []
 
 
 def test_fetch_par_tranches_decoupe_et_agrege_au_dela_du_plafond(monkeypatch):
@@ -366,3 +437,37 @@ def test_existe_dans_taxref_vrai_si_une_ligne_est_trouvee(monkeypatch):
 def test_existe_dans_taxref_faux_si_absent_du_referentiel(monkeypatch):
     monkeypatch.setattr(TX.db, "session", _FauxSessionTaxref(None))
     assert TX.existe_dans_taxref(999_999) is False
+
+
+# ── taxonomy.resolve_via_gbif ────────────────────────────────────────────────
+
+def test_resolve_via_gbif_journalise_et_compte_un_echec_reseau(monkeypatch):
+    """Une panne réseau ordinaire ne doit ni planter, ni rester muette."""
+    def urlopen_en_panne(*a, **k):
+        raise OSError("panne réseau")
+
+    monkeypatch.setattr(TX.urllib.request, "urlopen", urlopen_en_panne)
+    cache = {}
+    resultat = TX.resolve_via_gbif(12345, cache)
+    assert resultat is None
+    assert cache["__echecs__"] == 1
+
+
+def test_resolve_via_gbif_ne_masque_pas_un_bug_de_programmation(monkeypatch):
+    """Contrairement à l'ancien `except Exception` générique, un défaut de programmation
+    (ici un TypeError sur une réponse de forme inattendue) doit remonter tel quel plutôt
+    que d'être compté anonymement parmi les échecs réseau GBIF."""
+    class _FauxReponseOK:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def json_load_casse(_r):
+        raise TypeError("forme de réponse inattendue")
+
+    monkeypatch.setattr(TX.urllib.request, "urlopen", lambda *a, **k: _FauxReponseOK())
+    monkeypatch.setattr(TX.json, "load", json_load_casse)
+    with pytest.raises(TypeError):
+        TX.resolve_via_gbif(999, {})

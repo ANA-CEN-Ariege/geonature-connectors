@@ -39,6 +39,17 @@ def test_effectif_nul_exact_est_une_absence():
         {}, obs(count="0", estimation_code="EXACT_VALUE"))["STATUT_OBS"] == "No"
 
 
+def test_effectif_nul_exact_en_entier_est_une_absence():
+    """`count` arrive parfois en entier JSON, pas en chaîne (cf. `test_altitude_lue_en_chaine`).
+
+    `0 or ""` s'évalue à `""` en Python (0 est faux) : un effectif exact à zéro transmis
+    en entier plutôt qu'en chaîne perdait son absence, `est_absence()` retombant sur
+    `effectif == "0"` face à une chaîne vide.
+    """
+    assert N.cd_nomenclatures(
+        {}, obs(count=0, estimation_code="EXACT_VALUE"))["STATUT_OBS"] == "No"
+
+
 def test_effectif_nul_estime_ne_prouve_rien():
     """Un zéro non déclaré exact est une donnée incomplète, pas une absence."""
     assert N.cd_nomenclatures(
@@ -337,6 +348,20 @@ def test_notime_absent_on_se_fie_a_lheure_lue():
     un défaut de saisie ; une heure quelconque, une vraie heure."""
     assert T.heure_significative({"@ISO8601": "2024-06-04T10:53:58+02:00"}) is True
     assert T.heure_significative({"@ISO8601": "2024-06-04T00:00:00+02:00"}) is False
+
+
+def test_notime_entier_zero_reste_une_heure_significative():
+    """`@notime` arrive parfois en entier JSON (0 ou 1), pas en chaîne — comme `count`
+    ou `altitude` ailleurs dans ce connecteur (cf. `test_altitude_lue_en_chaine`).
+
+    `0 or ""` s'évalue à `""` en Python (0 est faux) : un `@notime = 0` entier retombait
+    sur l'heuristique de minuit au lieu de dire explicitement que l'heure est
+    significative — l'ambiguïté entre « minuit réel » et « heure inconnue » que ce champ
+    sert justement à lever.
+    """
+    bloc = {"@timestamp": "1717452000", "@offset": "7200", "@notime": 0}
+    assert T.heure_significative(bloc) is True
+    assert T.heure_significative({**bloc, "@notime": "0"}) is True
 
 
 # ── Altitude ─────────────────────────────────────────────────────────────────
@@ -705,6 +730,26 @@ def test_un_lot_refuse_ninterrompt_pas_les_suivants(monkeypatch):
     assert all("403" in motif for _cle, motif in inaccessibles)
 
 
+def test_un_lot_reussi_mais_incomplet_signale_les_manquants(monkeypatch):
+    """Un lot répondu 200 peut ne pas porter tous les identifiants demandés.
+
+    Par exemple trois observations supprimées ou masquées entre le `diff` qui a produit
+    la liste et cet appel. Sans contrôle, ces identifiants disparaissaient du bilan sans
+    être ni dans `releves`, ni dans `inaccessibles`, ni journalisés nulle part.
+    """
+    class ControleurFactice:
+        def api_list(self, groupe, id_sightings_list=None, **_k):
+            cles = id_sightings_list.split(",")[:-1]  # le dernier identifiant "disparaît"
+            return {"data": {"sightings": [{"@id": c} for c in cles]}}
+
+    monkeypatch.setattr(A, "_controleur", lambda *_a, **_k: ControleurFactice())
+    releves, inaccessibles = A.observations_par_identifiants(
+        {}, "1", [str(i) for i in range(5)])
+
+    assert len(releves) == 4
+    assert [cle for cle, _motif in inaccessibles] == ["4"]
+
+
 def test_un_releve_deja_complet_nest_pas_recharge():
     """Économie de requêtes : si le diff livre la donnée, ne pas la redemander."""
     assert A.est_releve_complet({"@id": "1", "observers": [{"@id": "9"}]})
@@ -914,6 +959,59 @@ def test_un_refus_de_volume_retrecit_la_tranche_au_lieu_dabandonner(monkeypatch)
     assert all(len(r) for _d, _f, _t, r in tranches)
 
 
+def test_un_maxchunkserror_retrecit_la_tranche_comme_un_refus_de_volume(monkeypatch):
+    """`MaxChunksError` (trop de pages de pagination pour la requête) est la même famille
+    de refus qu'un 403 persistant par volume : sans ce traitement, l'exception — une
+    sœur de `HTTPError`, non attrapée par `except bio.HTTPError` — sortait du générateur
+    et coupait aussi tous les territoires suivants de la boucle, pas seulement la
+    fenêtre en échec.
+    """
+    from datetime import date
+    from gn_module_connectors.sources.visionature.biolovision import api as bio
+
+    demandes = []
+
+    def faux_recherche(cfg, groupe, debut, fin, territoires, type_date=None):
+        jours = (fin - debut).days
+        demandes.append(jours)
+        if jours > 4:
+            raise bio.MaxChunksError
+        return [{"@id": str(len(demandes)), "observers": [{"@uid": "1"}]}]
+
+    monkeypatch.setattr(A, "observations_recherche", faux_recherche)
+    tranches = list(A.moissonner_recherche(
+        {}, "1", date(2026, 1, 1), date(2026, 1, 20), ["109"], tranche_jours=16))
+
+    assert any(j > 4 for j in demandes), "la première tentative doit être large"
+    assert tranches, "le moissonnage doit aboutir après rétrécissement"
+
+
+def test_un_429_temporise_et_reessaie_la_meme_fenetre(monkeypatch):
+    """Un 429 est transitoire : il faut attendre et réessayer la MÊME fenêtre, pas la
+    rétrécir comme pour un 403 — le volume demandé n'est pas en cause — ni abandonner le
+    groupe en cours pour tous les territoires restants.
+    """
+    from datetime import date
+    from gn_module_connectors.sources.visionature.biolovision import api as bio
+
+    appels = []
+
+    def faux_recherche(cfg, groupe, debut, fin, territoires, type_date=None):
+        appels.append((debut, fin))
+        if len(appels) == 1:
+            raise bio.HTTPError(429)
+        return [{"@id": "1", "observers": [{"@uid": "1"}]}]
+
+    monkeypatch.setattr(A, "observations_recherche", faux_recherche)
+    monkeypatch.setattr(A.time, "sleep", lambda *_a, **_k: None)
+    tranches = list(A.moissonner_recherche(
+        {}, "1", date(2026, 1, 1), date(2026, 1, 5), ["109"], tranche_jours=4))
+
+    assert len(appels) == 2, "il faut avoir réessayé une fois après le 429"
+    assert appels[0] == appels[1], "la même fenêtre doit être rejouée, pas rétrécie"
+    assert tranches
+
+
 def test_un_refus_qui_persiste_au_plancher_remonte(monkeypatch):
     """Rétrécir indéfiniment masquerait un vrai refus derrière une boucle sans fin."""
     from datetime import date
@@ -947,6 +1045,17 @@ def test_trois_lots_refuses_daffilee_abandonnent_le_groupe(monkeypatch):
         A.observations_par_identifiants({}, "1", [str(i) for i in range(2000)])
 
     assert len(appels) == A.ECHECS_AVANT_ABANDON, "il ne faut pas émettre les vingt lots"
+
+
+def test_groupe_inaccessible_est_une_biolovisionapiexception():
+    """Comme toutes les autres erreurs VisioNature du module, pour rester attrapable par
+    le patron `except vn_api.bio.BiolovisionApiException` employé partout ailleurs (ex.
+    `observations_supprimees` côté appelant) pour absorber un refus de l'API et
+    poursuivre le moissonnage des autres groupes plutôt que de tout interrompre.
+    """
+    from gn_module_connectors.sources.visionature.biolovision import api as bio
+
+    assert issubclass(A.GroupeInaccessible, bio.BiolovisionApiException)
 
 
 def test_un_echec_isole_ninterrompt_pas(monkeypatch):
@@ -1133,3 +1242,35 @@ def test_labsence_de_ces_champs_nalourdit_pas_la_provenance():
     provenance = _ligne()
     for champ in ("details", "behaviours", "juridical_person"):
         assert champ not in provenance
+
+
+# ── Cohérence STATUT_OBS / effectif sous surcharge d'absence ─────────────────
+
+def test_leffectif_suit_le_statut_avec_une_surcharge_dabsence():
+    """`surcharges_atlas={'absence': ...}` doit accorder STATUT_OBS et l'effectif écrit.
+
+    `cd_nomenclatures()` respecte la surcharge `[visionature.atlas] absence` (une
+    instance qui n'utilise pas 99). `to_row()` doit s'accorder avec elle : sans quoi une
+    observation reconnue absente (STATUT_OBS='No') via le code configuré pouvait garder
+    son effectif brut non nul, une absence avec un effectif positif étant une
+    contradiction interne à la ligne insérée.
+    """
+    class ResolverEcho:
+        def id(self, mnemonique, cd):
+            return cd if mnemonique == "STATUT_OBS" else 1
+
+    ligne = T.to_row(
+        {"date": {"@ISO8601": "2026-09-01"}, "species": {"@id": "1", "name": "X"},
+         "place": {"county": "09"}},
+        {"@id": "1", "@uid": "7", "name": "Untel", "anonymous": "0",
+         "anonymous_in_export": "export",
+         "coord_lat": "42.8", "coord_lon": "1.9",
+         "atlas_code": {"@id": "88"}, "count": "1", "estimation_code": ""},
+        cd_nom=1, id_dataset=1, id_source=1, id_module=1, srid=2154,
+        resolver=ResolverEcho(), instance="i",
+        surcharges_atlas={"absence": 88},
+        index_anonymat={"7": False}, secret_pseudo="cle")
+
+    assert ligne["id_nomenclature_observation_status"] == "No"
+    assert ligne["count_min"] == 0
+    assert ligne["count_max"] == 0

@@ -77,6 +77,19 @@ class GbifSchemaConf(Schema):
     # indicateur : la détection est heuristique, sur échantillon (voir griddedness.py).
     skip_gridded_datasets = fields.Boolean(load_default=True)
     gridded_threshold_m = fields.Integer(load_default=1000)
+
+    # ── Métadonnées SINP du cadre et des jeux de données créés ───────────────
+    # Le cadre d'acquisition est créé par la migration du module, qui ne peut pas
+    # connaître ces valeurs : elles dépendent de l'instance et de la structure qui
+    # l'exploite. Sans elles, ni le cadre ni les jeux de données créés ne peuvent être
+    # enregistrés depuis le module Métadonnées de GeoNature — même défaut que pour
+    # [visionature] et [geonature], mêmes réglages.
+    territoires = fields.List(fields.String(), load_default=list)
+    organisme_contact_principal = fields.String(load_default="")
+    objectifs_cadre = fields.List(fields.String(), load_default=list)
+    financement_cadre = fields.String(load_default="")
+    niveau_territorial = fields.String(load_default="")
+
     schedule = fields.Nested(ScheduleSchemaConf, load_default=lambda: ScheduleSchemaConf().load({}))
 
 

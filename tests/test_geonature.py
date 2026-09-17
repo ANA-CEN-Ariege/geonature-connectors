@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import requests
 
 RACINE = Path(__file__).resolve().parents[1] / "backend"
 sys.path.insert(0, str(RACINE))
@@ -213,6 +214,16 @@ def test_une_observation_sensible_peut_etre_restreinte():
     assert N.niveau_diffusion(sensible, resolver, si_sensible="2") == 22
     # « Non sensible » ne déclenche pas la restriction.
     assert N.niveau_diffusion(item(), resolver, si_sensible="2") == 55
+
+
+def test_aucune_est_reconnu_comme_un_libelle_non_sensible():
+    """Le docstring de `niveau_diffusion` cite « Aucune » comme variante légitime du « non
+    sensible » — mais seul le préfixe « non » était reconnu : une observation explicitement
+    déclarée non sensible se retrouvait restreinte, l'inverse de ce que documente la
+    fonction."""
+    resolver = ResolverStrict({("NIV_PRECIS", "2"): 22, ("NIV_PRECIS", "Précise"): 55})
+    assert N.niveau_diffusion(item(niveau_sensibilite="Aucune"), resolver,
+                              si_sensible="2") == 55
 
 
 def test_la_sensibilite_locale_reste_calculee_par_le_trigger():
@@ -484,6 +495,15 @@ def test_des_donnees_additionnelles_illisibles_sont_conservees_telles_quelles():
     assert provenance["gn_donnees_additionnelles"] == "pas du json"
 
 
+def test_une_profondeur_de_zero_nest_pas_perdue():
+    """`0 or ""` s'évalue à `""` en Python : une observation de surface (profondeur 0,
+    parfaitement légitime) se ferait sinon effacer de `additional_data`, indiscernable
+    d'une profondeur jamais renseignée par le producteur."""
+    provenance = json.loads(ligne(profondeur_min=0, profondeur_max=0)["additional_data"])
+    assert provenance["gn_profondeur_min"] == "0"
+    assert provenance["gn_profondeur_max"] == "0"
+
+
 def test_les_champs_redérivables_du_cd_nom_ne_sont_pas_stockes():
     """Les conserver gonflerait le JSONB sans rien apporter : ils se relisent dans
     taxonomie.taxref."""
@@ -712,6 +732,24 @@ def test_lempreinte_suit_le_regroupement_et_la_version_de_taxref():
         assert X.empreinte(item(**{colonne: "autre chose"})) != base, colonne
 
 
+def test_lempreinte_suit_le_cd_nom_resolu_pas_le_cd_nom_brut():
+    """`choisir` peut retenir `cd_ref` en repli quand le `cd_nom` brut n'est pas dans le
+    référentiel local (TAXREF pouvant différer de version entre les deux instances). Si
+    l'empreinte hachait le `cd_nom` brut — inchangé — plutôt que la valeur résolue
+    réellement écrite en base, un rattachement taxonomique devenu faux gèlerait
+    silencieusement : l'ON CONFLICT jugerait la ligne identique et n'écrirait rien."""
+    assert X.empreinte(item(), cd_nom=1958) != X.empreinte(item(), cd_nom=2000)
+    # Le `cd_nom` brut de l'enregistrement source ne bouge pas d'un import à l'autre : seul
+    # le repli résolu change, exactement le scénario du rattachement gelé en base.
+    inchange = item(cd_nom=999999)
+    avant = X.to_row(inchange, cd_nom=1958, id_dataset=1, id_source=1, id_module=1,
+                     srid=2154, resolver=ResolverFactice())
+    apres = X.to_row(inchange, cd_nom=2000, id_dataset=1, id_source=1, id_module=1,
+                     srid=2154, resolver=ResolverFactice())
+    assert (json.loads(avant["additional_data"])["gn_empreinte"]
+            != json.loads(apres["additional_data"])["gn_empreinte"])
+
+
 def test_une_moisson_sans_doublon_reste_complete(monkeypatch):
     faux = RequestsFactice([_lot(1, 3), _lot(4, 1)])
     monkeypatch.setattr(A, "requests", faux)
@@ -745,6 +783,27 @@ def test_une_pagination_incomplete_est_signalee(monkeypatch):
     assert any("incomplète" in m for m in messages)
 
 
+def test_labsence_de_total_filtered_ne_desactive_pas_silencieusement_le_controle(
+        monkeypatch):
+    """Le filet anti-troncature ne peut rien vérifier sans `total_filtered`. Le laisser
+    filer sans rien dire laisserait `complet` à `True` sur une simple absence
+    d'information plutôt que sur une preuve — `geonature-reconcilier` pourrait alors
+    tourner sur une moisson dont personne n'a pu vérifier qu'elle était complète."""
+    class SansTotalFiltre(RequestsFactice):
+        def get(self, url, params=None, headers=None, timeout=None):
+            self.appels.append(dict(params or {}))
+            numero = int((params or {}).get("offset", 0))
+            items = self.pages[numero] if numero < len(self.pages) else []
+            return ReponseFactice({"total": None, "total_filtered": None, "items": items,
+                                   "limit": 3, "license": {}})
+
+    monkeypatch.setattr(A, "requests", SansTotalFiltre([_lot(1, 3)]))
+    messages = []
+    items, meta = A.moissonner({**CFG, "page_size": 3}, {}, journal=messages.append)
+    assert meta["complet"] is False
+    assert any("total_filtered" in m for m in messages)
+
+
 def test_le_jeton_passe_par_len_tete_et_jamais_par_lurl():
     """Une chaîne de requête est journalisée par le serveur distant et par tout proxy :
     le jeton s'y retrouverait en clair dans des fichiers que personne ne surveille."""
@@ -769,6 +828,61 @@ def test_une_page_de_connexion_html_est_reconnue():
 def test_une_reponse_sans_items_nest_pas_une_api_dexport():
     with pytest.raises(A.ErreurGeoNature, match="items"):
         A._verifier_json(ReponseFactice({"results": []}), "https://x/api")
+
+
+# ── Résilience réseau ────────────────────────────────────────────────────────
+
+def test_une_panne_reseau_est_retentee_puis_convertie(monkeypatch):
+    """Une coupure réseau ne doit pas remonter comme une trace Python brute : ce fichier
+    consacre par ailleurs des dizaines de lignes à transformer chaque échec HTTP en
+    message actionnable, une panne de connexion mérite le même soin."""
+    appels = []
+
+    class Coupure:
+        def get(self, url, params=None, headers=None, timeout=None):
+            appels.append(1)
+            raise requests.exceptions.ConnectionError("boom")
+
+    monkeypatch.setattr(A, "requests", Coupure())
+    monkeypatch.setattr(A.time, "sleep", lambda s: None)
+    with pytest.raises(A.ErreurGeoNature, match="injoignable"):
+        A.page(CFG, 0, 100, {})
+    assert len(appels) == A.RETRIES + 1
+
+
+def test_un_code_http_transitoire_est_retente_puis_reussit(monkeypatch):
+    """429/502/503/504 signalent une limitation ou une surcharge passagère : les traiter
+    comme une erreur définitive ferait échouer tout un import pour un incident qui se
+    serait résolu quelques secondes plus tard."""
+    reponses = [ReponseFactice({}, status_code=503), ReponseFactice({}, status_code=503),
+               ReponseFactice({"items": [item(id_synthese=1)]})]
+
+    class Instable:
+        def __init__(self):
+            self.appels = 0
+
+        def get(self, url, params=None, headers=None, timeout=None):
+            reponse = reponses[self.appels]
+            self.appels += 1
+            return reponse
+
+    faux = Instable()
+    monkeypatch.setattr(A, "requests", faux)
+    monkeypatch.setattr(A.time, "sleep", lambda s: None)
+    charge = A.page(CFG, 0, 100, {})
+    assert faux.appels == 3
+    assert [e["id_synthese"] for e in charge["items"]] == [1]
+
+
+def test_un_code_http_transitoire_persistant_finit_par_echouer(monkeypatch):
+    class Indisponible:
+        def get(self, url, params=None, headers=None, timeout=None):
+            return ReponseFactice({}, status_code=503)
+
+    monkeypatch.setattr(A, "requests", Indisponible())
+    monkeypatch.setattr(A.time, "sleep", lambda s: None)
+    with pytest.raises(A.ErreurGeoNature, match="HTTP 503"):
+        A.page(CFG, 0, 100, {})
 
 
 def _feature(**surcharges):
@@ -844,13 +958,34 @@ def test_le_deficit_dune_moisson_geojson_est_impute_a_sa_vraie_cause(monkeypatch
     assert not any("pagination incomplète" in m for m in messages)
 
 
-def test_en_geojson_la_fin_du_corpus_ne_se_lit_que_sur_une_page_vide(monkeypatch):
-    """La contrepartie assumée : une requête de plus par moisson."""
+def test_en_geojson_la_fin_du_corpus_se_lit_sur_total_filtered(monkeypatch):
+    """La fin de la pagination se déduit du nombre de pages qu'annonce `total_filtered`,
+    pas d'une page vide de plus : aucune requête n'est gaspillée quand le compte y est
+    déjà à l'issue de la dernière page pleine."""
     faux = RequestsGeoJSON([_lot(1, 3), _lot(4, 3)])
     monkeypatch.setattr(A, "requests", faux)
     items, meta = A.moissonner({**CFG, "page_size": 3}, {})
-    assert [a["offset"] for a in faux.appels] == [0, 1, 2]
+    assert [a["offset"] for a in faux.appels] == [0, 1]
     assert meta["complet"] and len(items) == 6
+
+
+def test_une_page_entierement_sans_geometrie_ninterrompt_pas_la_moisson(monkeypatch):
+    """Le défaut le plus grave, et le plus discret : quand TOUS les enregistrements d'une
+    page (des `id_synthese` contigus, typiquement un lot historique importé en bloc) sont
+    dépourvus de géométrie, `as_geofeature` rend une page ENTIÈREMENT vide — indiscernable
+    d'une vraie fin de corpus si l'on s'arrête sur `not lot`. Ici, sans le correctif, la
+    moisson s'arrêterait à la page 0 avec 0 enregistrement, abandonnant silencieusement la
+    page 1 et ses observations pourtant géolocalisées."""
+    faux = RequestsGeoJSON([_lot(1, 3), _lot(4, 3)], sans_geometrie={1, 2, 3})
+    monkeypatch.setattr(A, "requests", faux)
+    messages = []
+    items, meta = A.moissonner({**CFG, "page_size": 3}, {}, journal=messages.append)
+    assert [e["id_synthese"] for e in items] == [4, 5, 6]
+    assert [a["offset"] for a in faux.appels] == [0, 1]
+    # Les trois manquantes sont bien celles sans géométrie — pas une pagination arrêtée
+    # trop tôt : le déficit est imputé à sa vraie cause, jamais à une pagination incomplète.
+    assert any("géométrie est nulle" in m for m in messages)
+    assert not any("pagination incomplète" in m for m in messages)
 
 
 def test_en_forme_plate_une_page_courte_reste_la_derniere(monkeypatch):

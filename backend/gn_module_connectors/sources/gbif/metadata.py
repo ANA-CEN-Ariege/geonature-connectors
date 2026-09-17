@@ -23,11 +23,11 @@ _LICENCE_MARQUEURS = (
 )
 
 
-def _get(chemin: str, timeout: int = 25, retries: int = 3):
+def _get(chemin: str, params: dict | None = None, timeout: int = 25, retries: int = 3):
     derniere = None
     for tentative in range(retries + 1):
         try:
-            r = requests.get(f"{API}/{chemin.lstrip('/')}", timeout=timeout)
+            r = requests.get(f"{API}/{chemin.lstrip('/')}", params=params, timeout=timeout)
             r.raise_for_status()
             return r.json()
         except requests.exceptions.RequestException as e:
@@ -85,15 +85,27 @@ def fetch_organization(org_key: str) -> str:
 def list_dataset_keys(filtres: dict, facet_limit: int = 200) -> list[dict]:
     """Jeux de données présents dans un périmètre, par la facette `datasetKey`.
 
+    Pagine au-delà de `facet_limit` via `facetOffset` : sans quoi les producteurs les
+    moins volumineux (GBIF trie la facette par effectif décroissant) sortiraient de la
+    liste dès que le périmètre compte plus de `facet_limit` jeux distincts — silencieux,
+    et durable puisque ces jeux ne seraient alors ni importés, ni synchronisés.
+
     Retourne [{"key": ..., "count": ...}] trié par volume décroissant.
     """
-    params = {**filtres, "limit": 0, "facet": "datasetKey", "facetLimit": facet_limit}
-    r = requests.get(f"{API}/occurrence/search", params=params, timeout=60)
-    r.raise_for_status()
-    facettes = r.json().get("facets") or []
-    if not facettes:
-        return []
-    return sorted(
-        ({"key": f["name"], "count": f["count"]} for f in facettes[0].get("counts", [])),
-        key=lambda x: -x["count"],
-    )
+    resultats: list[dict] = []
+    offset = 0
+    while True:
+        params = {**filtres, "limit": 0, "facet": "datasetKey", "facetLimit": facet_limit,
+                  "facetOffset": offset}
+        data = _get("occurrence/search", params=params, timeout=60)
+        facettes = data.get("facets") or []
+        if not facettes:
+            break
+        counts = facettes[0].get("counts", [])
+        if not counts:
+            break
+        resultats.extend({"key": f["name"], "count": f["count"]} for f in counts)
+        if len(counts) < facet_limit:
+            break
+        offset += facet_limit
+    return sorted(resultats, key=lambda x: -x["count"])

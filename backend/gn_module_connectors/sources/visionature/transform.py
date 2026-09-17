@@ -258,9 +258,13 @@ def heure_significative(bloc) -> bool:
     """
     if not isinstance(bloc, dict):
         return False
-    brut = str(bloc.get("@notime") or "").strip()
-    if brut:
-        return brut not in ("1", "true", "yes")
+    notime = bloc.get("@notime")
+    # `notime or ""` perdrait un `@notime` entier valant 0 (0 est faux en Python) : il
+    # faut tester la présence de la clé, pas la vérité de sa valeur.
+    if notime is not None:
+        brut = str(notime).strip()
+        if brut:
+            return brut not in ("1", "true", "yes")
     horodatage = _horodatage(bloc)
     return horodatage is not None and horodatage.time() != datetime.min.time()
 
@@ -472,7 +476,10 @@ def to_row(sighting: dict, observation: dict, *, cd_nom: int, id_dataset: int | 
     effectif = _entier(observation.get("count"))
     # Une absence porte un effectif de zéro, non NULL : l'ambiguïté entre « aucun
     # individu » et « effectif non renseigné » fausserait toute analyse quantitative.
-    if vn_nomen.est_absence(observation):
+    # `cds["STATUT_OBS"]` fait foi plutôt qu'un nouvel appel à `est_absence()` : il a été
+    # calculé ci-dessus par `cd_nomenclatures` avec la surcharge `[visionature.atlas]
+    # absence`, et le recalculer sans elle désaccorderait STATUT_OBS et l'effectif écrit.
+    if cds["STATUT_OBS"] == "No":
         effectif = 0
 
     provenance = {

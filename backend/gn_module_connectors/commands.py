@@ -1,5 +1,7 @@
 """Commandes CLI du module, exposées sous `geonature connectors ...`."""
 
+import os
+
 import click
 from sqlalchemy import func, select
 
@@ -131,6 +133,17 @@ def gbif_synchroniser_jeux(gadm_gid, country, dataset_keys, licenses, limit,
             "`gadm_gid` dans la configuration, ou passez --gadm-gid.", fg="yellow")
 
     af = ds_core.get_acquisition_framework(CA_UUID)
+    # Le cadre est créé par la migration, qui ne peut connaître ni le territoire ni la
+    # structure exploitante. Sans eux, le formulaire de GeoNature refuse de
+    # l'enregistrer. Qualifié à chaque passage plutôt qu'à la migration : une
+    # configuration renseignée après coup rattrape ainsi un cadre déjà créé.
+    ds_core.qualifier_cadre(
+        af, territoires=list(cfg_gbif.get("territoires") or []),
+        contact_principal=cfg_gbif.get("organisme_contact_principal", ""),
+        objectifs=list(cfg_gbif.get("objectifs_cadre") or []),
+        financement=cfg_gbif.get("financement_cadre", ""),
+        niveau_territorial=cfg_gbif.get("niveau_territorial", ""),
+        journal=lambda m: click.secho(f"  ⚠ {m}", fg="yellow"))
     click.secho(f"Cadre d'acquisition : {af.acquisition_framework_name} "
                 f"(id={af.id_acquisition_framework})", fg="green")
 
@@ -203,6 +216,12 @@ def gbif_synchroniser_jeux(gadm_gid, country, dataset_keys, licenses, limit,
             id_acquisition_framework=af.id_acquisition_framework,
             validable=_jdd_validable(),
         )
+        # Sans territoire, le formulaire de GeoNature refuse d'enregistrer le jeu — comme
+        # pour le cadre ci-dessus. Posé à chaque passage, pas seulement à la création :
+        # une configuration corrigée après coup doit pouvoir rattraper un jeu déjà créé.
+        ds_core.attacher_territoires(
+            jdd, cfg_gbif.get("territoires"),
+            journal=lambda m: click.secho(f"    ⚠ {m}", fg="yellow"))
         cree += est_nouveau
         maj += (not est_nouveau)
         click.echo(f"  [{i}/{len(cles)}] {'+' if est_nouveau else '~'} {meta['title'][:56]} ({lic})")
@@ -243,9 +262,11 @@ def creer_jdd(meta, licence, uid, af, orgs_cache):
     Appelée seulement quand des occurrences ont survécu aux filtres : un jeu maillé ou
     entièrement écarté ne doit pas laisser de JDD vide dans le module Métadonnées.
     """
+    from geonature.utils.config import config as gn_config
     from .core import datasets as ds_core
     from .sources.gbif import metadata as gbif_meta
 
+    cfg_gbif = (gn_config.get("CONNECTORS") or {}).get("gbif", {})
     org = meta.get("publishing_org_key") or ""
     if org not in orgs_cache:
         orgs_cache[org] = gbif_meta.fetch_organization(org)
@@ -258,6 +279,12 @@ def creer_jdd(meta, licence, uid, af, orgs_cache):
     db.session.flush()
     if cree:
         click.secho(f"  + JDD créé : {jdd.id_dataset}", fg="green")
+    # Sans territoire, le formulaire de GeoNature refuse d'enregistrer le jeu — comme
+    # pour le cadre. Posé à chaque passage, pas seulement à la création : une
+    # configuration corrigée après coup doit pouvoir rattraper un jeu déjà créé.
+    ds_core.attacher_territoires(
+        jdd, cfg_gbif.get("territoires"),
+        journal=lambda m: click.secho(f"    ⚠ {m}", fg="yellow"))
     return jdd
 
 
@@ -346,6 +373,17 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
     id_module = syn_core.get_module_id("CONNECTORS")
     srid = syn_core.local_srid()
     af = ds_core.get_acquisition_framework(CA_UUID)
+    # Le cadre est créé par la migration, qui ne peut connaître ni le territoire ni la
+    # structure exploitante. Sans eux, le formulaire de GeoNature refuse de
+    # l'enregistrer. Qualifié à chaque import plutôt qu'à la migration : une
+    # configuration renseignée après coup rattrape ainsi un cadre déjà créé.
+    ds_core.qualifier_cadre(
+        af, territoires=list(cfg_gbif.get("territoires") or []),
+        contact_principal=cfg_gbif.get("organisme_contact_principal", ""),
+        objectifs=list(cfg_gbif.get("objectifs_cadre") or []),
+        financement=cfg_gbif.get("financement_cadre", ""),
+        niveau_territorial=cfg_gbif.get("niveau_territorial", ""),
+        journal=lambda m: click.secho(f"  ⚠ {m}", fg="yellow"))
     # Version du référentiel sous lequel `cd_nom` est résolu : la même pour les deux
     # connecteurs, puisque c'est celle de l'instance qui reçoit la donnée.
     v_taxref = syn_core.version_taxref()
@@ -381,6 +419,34 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
         click.echo(f"Recherche des jeux du périmètre {filtres_perimetre}...")
         dataset_keys = [d["key"] for d in gbif_meta.list_dataset_keys(filtres_perimetre)]
         click.echo(f"  {len(dataset_keys)} jeu(x) trouvé(s).")
+
+    def _sans_conflit_gbif(lignes):
+        """Écarte du lot ce que GBIF republie d'une observation déjà moissonnée par un
+        autre connecteur.
+
+        `sources/gbif/transform.sinp_uuid` reprend l'UUID SINP publié par le producteur
+        quand `occurrenceID` en contient un — le cas de 100 % des jeux PatriNat/INPN.
+        Sans ce contrôle, `insert_batch` écraserait sans le dire le contenu d'une ligne
+        déjà importée par ce même producteur via un autre chemin, la copie GBIF n'étant
+        jamais la meilleure (voir `sources/geonature/conflits.py`, qui traite le cas
+        symétrique). Même politique que son défaut « ignorer » : la ligne concurrente est
+        laissée intacte et tracée, jamais remplacée.
+        """
+        if not lignes:
+            return lignes
+        syn_core.verrouiller_conflits_potentiels(lignes)
+        concurrents = syn_core.conflits_autre_source(lignes, id_source)
+        if not concurrents:
+            return lignes
+        for ligne in lignes:
+            cle_uuid = str(ligne["unique_id_sinp"])
+            if cle_uuid in concurrents:
+                _, nom_source = concurrents[cle_uuid]
+                rejets.add("deja_presente_autre_source",
+                           ligne["entity_source_pk_value"],
+                           ligne.get("nom_cite") or "",
+                           f"déjà en base sous « {nom_source} »")
+        return [l for l in lignes if str(l["unique_id_sinp"]) not in concurrents]
 
     for cle in dataset_keys:
         if cle in exclus_cles:
@@ -471,7 +537,17 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
         if taxons_exclus:
             click.echo(f"  taxons exclus : {sorted(taxons_exclus)}")
 
-        occurrences = gbif_api.fetch_par_tranches(cfg, fcfg, journal=click.echo)
+        # Une panne réseau persistante (au-delà des reprises de `_get()`) ne doit pas
+        # interrompre l'examen des jeux suivants, pas plus qu'une erreur de métadonnées
+        # ci-dessus : la pagination dure ici des heures sur un corpus entier, c'est
+        # l'étape la plus exposée à un incident transitoire.
+        try:
+            occurrences = gbif_api.fetch_par_tranches(cfg, fcfg, journal=click.echo)
+        except Exception as e:
+            click.secho(f"✗ {meta['title'][:50]} — échec réseau GBIF "
+                        f"({type(e).__name__}), jeu ignoré", fg="red")
+            rejets.add("echec_reseau_gbif", cle, meta["title"], str(e)[:200])
+            continue
         occurrences = gbif_api.apply_local_filters(occurrences, fcfg, rejets)
         total_lus += len(occurrences)
 
@@ -501,6 +577,7 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
                 jdd = jdd or creer_jdd(meta, lic, uid, af, orgs_cache)
                 for l in lot:
                     l["id_dataset"] = jdd.id_dataset
+                lot = _sans_conflit_gbif(lot)
                 i, u = syn_core.insert_batch(lot, prevalidation)
                 ecrits += i; maj += u
                 db.session.commit(); lot = []
@@ -509,6 +586,7 @@ def gbif_import(dataset_keys, gadm_gid, country, licenses, max_results,
             jdd = jdd or creer_jdd(meta, lic, uid, af, orgs_cache)
             for l in lot:
                 l["id_dataset"] = jdd.id_dataset
+            lot = _sans_conflit_gbif(lot)
             i, u = syn_core.insert_batch(lot, prevalidation)
             ecrits += i; maj += u
             db.session.commit()
@@ -1779,7 +1857,12 @@ def dbchiro_import(area, departements, importer_absences, max_results, batch_siz
     _manques_nomenclature(resolver)
     for ligne in rejets.summary_lines():
         click.echo(ligne)
-    chemin = rejets.write_csv(Path("dbchiro_rejets.csv"))
+    # Nom propre au processus : deux exécutions qui se chevauchent (cron en double,
+    # lancement manuel pendant qu'un cron tourne) ne doivent pas écrire dans le même
+    # fichier temporaire, sous peine d'un CSV entrelacé. `dbchiro-import` n'ayant pas
+    # d'incrémental, chaque passage relit tout le corpus et dure d'autant plus
+    # longtemps que la fenêtre de chevauchement est large.
+    chemin = rejets.write_csv(Path(f"dbchiro_rejets.{os.getpid()}.csv"))
     if chemin:
         click.echo(f"  Journal détaillé : {chemin}")
 

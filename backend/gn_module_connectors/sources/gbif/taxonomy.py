@@ -13,10 +13,13 @@ filtre taxonomique existe — un défaut différé, sans lien apparent avec sa c
 """
 
 import json
+import logging
 import urllib.request
 
 from sqlalchemy import text
 from geonature.utils.env import db
+
+logger = logging.getLogger(__name__)
 
 # TAXREF est lui-même publié comme référentiel sur GBIF. Interroger ses « related »
 # rattrape des taxons absents de taxonomie.taxref_liens : mesuré sur un échantillon de
@@ -83,7 +86,14 @@ def resolve_via_gbif(taxon_key, cache: dict, journal=None) -> int | None:
                 if taxon_id.isdigit():
                     resultat = int(taxon_id)
                     break
-    except Exception:
+    except (OSError, ValueError, AttributeError) as e:
+        # Même politique que griddedness.py::machine_tag()/metadata.py::fetch_organization :
+        # OSError (réseau), ValueError (JSON malformé), AttributeError (réponse d'une forme
+        # inattendue) sont des échecs GBIF plausibles ; tout autre type d'exception (bug de
+        # programmation) doit continuer à remonter plutôt que d'être compté anonymement
+        # parmi les échecs réseau.
+        logger.warning("Résolution TAXREF via GBIF impossible pour le taxon %s : %s",
+                        taxon_key, e)
         echec = True
 
     if echec:

@@ -242,15 +242,15 @@ def to_row(occ: dict, *, cd_nom: int, id_dataset: int, id_source: int,
         "nom_cite": (occ.get("scientificName") or occ.get("verbatimScientificName") or "?")[:1000],
         "date_min": d_min,
         "date_max": d_max,
-        "count_min": int(effectif) if effectif else None,
-        "count_max": int(effectif) if effectif else None,
+        "count_min": int(effectif) if effectif is not None else None,
+        "count_max": int(effectif) if effectif is not None else None,
         "observers": (occ.get("recordedBy") or "")[:1000] or None,
         "comment_description": (occ.get("occurrenceRemarks") or "").strip() or None,
         # GBIF ne publie que ce qui est déjà diffusable : une occurrence sensible est
         # floutée ou retenue en amont par le producteur. Rien à restreindre ici, et NULL
         # est la bonne façon de ne pas se prononcer.
         "id_nomenclature_diffusion_level": None,
-        "precision": int(incertitude) if incertitude else None,
+        "precision": int(incertitude) if incertitude is not None else None,
         "altitude_min": altitude(occ),
         "altitude_max": altitude(occ),
         # GBIF expose bien un tableau `media`, mais l'API `search` ne le renvoie pas de

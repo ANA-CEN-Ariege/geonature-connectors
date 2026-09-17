@@ -191,8 +191,9 @@ def niveau_diffusion(item: dict, resolver, *, force: str = "",
     if si_sensible:
         sensibilite = str(item.get("niveau_sensibilite") or "").strip()
         # Le libellé exact du « non sensible » varie (« Non sensible », « Aucune »…) : on
-        # traite comme sensible tout ce qui est renseigné sans commencer par « non ».
-        if sensibilite and not sensibilite.lower().startswith("non"):
+        # traite comme sensible tout ce qui est renseigné sans commencer par l'un de ces
+        # préfixes.
+        if sensibilite and not sensibilite.lower().startswith(("non", "aucune")):
             return _exige("niveau_diffusion_si_sensible", si_sensible, resolver)
 
     brut = str(item.get("precision_diffusion") or "").strip()

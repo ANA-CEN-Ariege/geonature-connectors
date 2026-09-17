@@ -48,12 +48,17 @@ COLONNES_NOMENCLATURE = {
     "id_nomenclature_determination_method": "METH_DETERMIN",
 }
 
-# Champs dont un changement justifie de réécrire l'observation.
+# Champs racine de `properties` dont un changement justifie de réécrire l'observation.
 #
-# La liste couvre exactement ce que le connecteur exploite. `timestamp_update` en serait
-# le critère naturel, mais le serializer de dbChiro ne l'expose pas : l'empreinte de
-# contenu est ici le **seul** moyen de détecter une correction à la source.
-CHAMPS_SUIVIS = ("codesp", "total_count", "breed_colo", "period", "is_doubtful",
+# Cette liste ne couvre que les champs scalaires directement à la racine de `properties` :
+# `codesp` n'y figure pas, parce que le code espèce n'est jamais un champ racine (il vit
+# sous `specie_data`) et y ajouter la clé ne ferait qu'évaluer un `None` constant — le
+# suivi réel du codesp, comme celui des observateurs, du lieu et des zonages, est assuré
+# séparément dans `empreinte()`, aux côtés de lon/lat/date/contact. Ensemble, ils couvrent
+# exactement ce que `to_row()` exploite. `timestamp_update` en serait le critère naturel,
+# mais le serializer de dbChiro ne l'expose pas : l'empreinte de contenu est ici le
+# **seul** moyen de détecter une correction à la source.
+CHAMPS_SUIVIS = ("total_count", "breed_colo", "period", "is_doubtful",
                  "comment", "updated_by")
 
 
@@ -65,10 +70,19 @@ def _flottant(valeur):
 
 
 def _entier(valeur):
+    """Entier de `valeur`, y compris sous forme décimale (`\"12.0\"`, `12.0`).
+
+    Un `total_count` annoté par une agrégation numérique (`Sum(...)`) ou sérialisé par un
+    `DecimalField` DRF (`coerce_to_string=True`) arrive sous cette forme plutôt qu'en
+    entier strict. `int()` seul lève sur `\"12.0\"`, ce qui ferait disparaître l'effectif
+    au lieu de le lire.
+    """
     try:
         return int(str(valeur).strip())
     except (TypeError, ValueError):
-        return None
+        pass
+    brut = _flottant(valeur)
+    return None if brut is None else int(brut)
 
 
 def coordonnees(feature: dict) -> tuple[float | None, float | None]:
@@ -137,8 +151,15 @@ def departement(properties: dict) -> str | None:
 
 
 def commune_insee(properties: dict) -> str | None:
+    """Code INSEE de la commune, d'après les zonages du lieu.
+
+    Même correctif que `departement()`, et pour la même raison mesurée sur l'instance :
+    l'API rend parfois ce code de zonage numérique sans ses zéros de tête (`9029` plutôt
+    que `09029`).
+    """
     zone = _zonage(properties, "mun")
-    return str((zone or {}).get("code") or "").strip() or None
+    code = str((zone or {}).get("code") or "").strip()
+    return code.zfill(5) if code.isdigit() else (code or None)
 
 
 def dans_perimetre(properties: dict, codes: set[str]) -> bool:
@@ -210,12 +231,23 @@ def observateurs(properties: dict, *, pseudonymiser: bool = False,
 def empreinte(feature: dict) -> str:
     """Empreinte du contenu exploité, pour ne réécrire que ce qui a changé."""
     properties = feature.get("properties") or {}
+    session = properties.get("session_data") or {}
+    lieu = session.get("place_data") or {}
     brut = "|".join(f"{c}={properties.get(c)!r}" for c in CHAMPS_SUIVIS)
     lon, lat = coordonnees(feature)
     brut += f"|lon={lon!r}|lat={lat!r}"
     brut += f"|date={date_observation(properties)!r}"
     brut += f"|contact={db_nomen.contact(properties)!r}"
+    brut += f"|contact_libelle={db_nomen.libelle_contact(properties)!r}"
     brut += f"|codesp={db_taxo.codesp(properties)!r}"
+    # `to_row()` écrit aussi ces valeurs (observers, additional_data.*) : sans elles ici,
+    # une correction de nom d'observateur, de lieu ou de rattachement commune/département
+    # ne changerait pas l'empreinte, et `core.synthese` ne réécrirait jamais la ligne.
+    brut += f"|observers={observateurs(properties)!r}"
+    brut += f"|session_name={session.get('name')!r}"
+    brut += f"|place_name={lieu.get('name')!r}"
+    brut += f"|commune_insee={commune_insee(properties)!r}"
+    brut += f"|departement={departement(properties)!r}"
     return hashlib.sha256(brut.encode("utf-8")).hexdigest()[:32]
 
 
@@ -257,6 +289,11 @@ def to_row(feature: dict, *, cd_nom: int, id_dataset: int | None, id_source: int
            code_diffusion: str = "", version_taxref: str | None = None) -> dict | None:
     """Ligne prête pour l'insertion, ou None si l'observation est inexploitable."""
     properties = feature.get("properties") or {}
+    # Sans id, `identifiant_sinp` dériverait le même `unique_id_sinp` pour toute
+    # observation dans le même cas : plusieurs se substitueraient silencieusement l'une à
+    # l'autre plutôt que de coexister ou d'être rejetées distinctement.
+    if feature.get("id") is None:
+        return None
     lon, lat = coordonnees(feature)
     if lon is None or lat is None:
         return None

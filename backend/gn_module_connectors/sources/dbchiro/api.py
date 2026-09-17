@@ -26,6 +26,7 @@ d'un ordre de grandeur, exposer `timestamp_update` en amont deviendrait la prior
 """
 
 import re
+import time
 
 import requests
 
@@ -43,6 +44,26 @@ MOTIF_CSRF = re.compile(r'name="csrfmiddlewaretoken"\s+value="([^"]+)"')
 
 class ErreurDbChiro(RuntimeError):
     """Échec d'accès à l'API dbChiro, avec un message exploitable."""
+
+
+def _requete(fonction, *args, retries: int = 3, backoff: float = 3.0, **kwargs):
+    """Appelle `fonction(*args, **kwargs)` avec reprise sur erreur réseau transitoire.
+
+    Même convention que `sources/gbif/api._get` : dbChiro a déjà connu une panne serveur
+    passagère (le 500 que diagnostique `verifier_reponse_login`), et un simple timeout ou
+    un reset TCP en page 2 ne doit pas jeter les pages déjà récupérées ni obliger à tout
+    relancer depuis l'authentification.
+    """
+    for tentative in range(retries + 1):
+        try:
+            return fonction(*args, **kwargs)
+        except requests.exceptions.RequestException as exc:
+            if tentative >= retries:
+                raise
+            attente = backoff * (tentative + 1)
+            print(f"    ⚠ erreur réseau dbChiro ({type(exc).__name__}) — nouvelle "
+                 f"tentative dans {attente:.0f}s ({tentative + 1}/{retries})")
+            time.sleep(attente)
 
 
 def _base(cfg) -> str:
@@ -80,6 +101,17 @@ def _verifier_json(reponse, url: str):
             f"L'instance est protégée par un filtre anti-robot (Anubis) sur {url}. "
             f"Un connecteur ne peut pas le franchir : il faut demander à l'exploitant "
             f"une exemption sur le chemin {CHEMIN_RECHERCHE}."
+        )
+    if reponse.status_code == 429:
+        raise ErreurDbChiro(
+            f"L'instance a répondu 429 (limite de débit) sur {url}. Espacez les "
+            f"exécutions du connecteur."
+        )
+    if reponse.status_code == 403:
+        raise ErreurDbChiro(
+            f"Connexion refusée avec un 403 sur {url} : jeton CSRF rejeté, ou compte "
+            f"bloqué après des tentatives répétées. Ce n'est pas un problème de droits "
+            f"applicatifs sur cette page précise."
         )
     reponse.raise_for_status()
     try:
@@ -146,7 +178,7 @@ def connecter(cfg) -> requests.Session:
     timeout = int(cfg.get("timeout", 120))
 
     url_login = base + CHEMIN_LOGIN
-    page = session.get(url_login, timeout=timeout)
+    page = _requete(session.get, url_login, timeout=timeout)
     if "within.website" in (page.text or "").lower():
         raise ErreurDbChiro(
             f"{base} est protégée par un filtre anti-robot (Anubis) : la connexion "
@@ -159,7 +191,8 @@ def connecter(cfg) -> requests.Session:
             f"forme attendue (instance dbChiro trop ancienne ou URL erronée)."
         )
 
-    reponse = session.post(
+    reponse = _requete(
+        session.post,
         url_login,
         data={
             "csrfmiddlewaretoken": jeton.group(1),
@@ -185,8 +218,8 @@ def _page(session, cfg, numero: int, taille: int, filtres: dict) -> dict:
     """
     url = _base(cfg) + CHEMIN_RECHERCHE
     parametres = {**filtres, "page": numero, "page_size": taille}
-    reponse = session.get(url, params=parametres,
-                          timeout=int(cfg.get("timeout", 120)))
+    reponse = _requete(session.get, url, params=parametres,
+                       timeout=int(cfg.get("timeout", 120)))
     return _verifier_json(reponse, url)
 
 
@@ -217,8 +250,10 @@ def observations(session, cfg, journal=None, max_results: int = 0) -> list[dict]
     """Toutes les observations du périmètre configuré, en features GeoJSON.
 
     Le nombre total annoncé par la première page sert de garde-fou : si la pagination
-    s'arrête avant de l'atteindre, on le signale plutôt que de rendre un corpus tronqué
-    qu'un bilan présenterait comme complet.
+    s'arrête avant de l'atteindre, ou si ce total change en cours de route (la base a
+    bougé sous la pagination, cf. ⚠ ci-dessous), le moissonnage est interrompu plutôt que
+    de rendre un corpus tronqué qu'un bilan présenterait comme complet — y compris quand
+    un `journal` est fourni : un simple message que rien ne surveille ne protège personne.
 
     `max_results` borne volontairement la moisson — pour un premier essai d'écriture sur
     une instance de travail, plutôt que de verser 8 000 observations d'un coup. La
@@ -228,7 +263,9 @@ def observations(session, cfg, journal=None, max_results: int = 0) -> list[dict]
     ⚠ Le tri de l'API étant `-timestamp_update`, une moisson bornée ramène les
     observations **les plus récemment modifiées**, pas un échantillon représentatif.
     C'est sans importance pour éprouver une écriture, mais il ne faut pas en tirer de
-    conclusion sur le corpus.
+    conclusion sur le corpus. Pour la même raison, une modification pendant une moisson
+    complète peut décaler la frontière entre deux pages déjà lues : le total annoncé
+    changerait alors d'une page à l'autre, ce que la comparaison ci-dessous détecte.
     """
     taille = min(int(cfg.get("page_size", TAILLE_PAGE_MAX)), TAILLE_PAGE_MAX)
     if max_results:
@@ -239,11 +276,19 @@ def observations(session, cfg, journal=None, max_results: int = 0) -> list[dict]
     numero = 1
     while True:
         charge = _page(session, cfg, numero, taille, filtres)
+        compte = charge.get("count")
         if annonce is None:
-            annonce = charge.get("count")
+            annonce = compte
             if journal:
                 journal(f"  {annonce} observation(s) annoncée(s) par l'instance"
                         + (f" (filtres {filtres})" if filtres else ""))
+        elif not max_results and compte != annonce:
+            message = (f"le total annoncé a changé en cours de pagination ({annonce} "
+                       f"puis {compte}) : la base a été modifiée pendant le "
+                       f"moissonnage, le corpus serait incomplet")
+            if journal:
+                journal(f"  ⚠ {message}")
+            raise ErreurDbChiro(message)
         lot = ((charge.get("results") or {}).get("features")) or []
         features.extend(lot)
         if max_results and len(features) >= max_results:
@@ -261,8 +306,7 @@ def observations(session, cfg, journal=None, max_results: int = 0) -> list[dict]
                    f"pour {annonce} annoncée(s)")
         if journal:
             journal(f"  ⚠ {message}")
-        else:
-            raise ErreurDbChiro(message)
+        raise ErreurDbChiro(message)
     return features
 
 
@@ -274,7 +318,7 @@ def zonages(session, cfg, recherche: str = "") -> list[dict]:
     ZNIEFF, parcs.
     """
     url = _base(cfg) + "/api/areas-autocomplete/"
-    reponse = session.get(url, params={"q": recherche} if recherche else {},
-                          timeout=int(cfg.get("timeout", 120)))
+    reponse = _requete(session.get, url, params={"q": recherche} if recherche else {},
+                       timeout=int(cfg.get("timeout", 120)))
     charge = _verifier_json(reponse, url)
     return charge.get("results") or []

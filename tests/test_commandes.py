@@ -339,6 +339,56 @@ def test_lenregistrement_de_la_source_est_commite_avant_la_moisson():
     assert commits, "`_enregistrer_url_source` doit commiter l'écriture qu'elle fait"
 
 
+def test_le_journal_des_rejets_dbchiro_est_unique_par_execution():
+    """Deux `dbchiro-import` qui se chevauchent (cron en double, lancement manuel
+    pendant qu'un cron tourne) ne doivent pas viser le même fichier temporaire : dbChiro
+    n'a pas d'incrémental, chaque passage relit tout le corpus, ce qui allonge d'autant
+    la fenêtre de chevauchement possible et le risque d'un CSV entrelacé.
+    """
+    fonction = _fonction("dbchiro_import")
+    appels = [n for n in ast.walk(fonction)
+              if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "write_csv"]
+    assert len(appels) == 1, f"{len(appels)} appel(s) à write_csv dans dbchiro_import"
+    chemin = appels[0].args[0]
+    attributs = {n.attr for n in ast.walk(chemin) if isinstance(n, ast.Attribute)}
+    assert "getpid" in attributs, (
+        "le chemin passé à write_csv doit inclure os.getpid() (ou équivalent unique par "
+        "processus), sans quoi deux exécutions concurrentes écrivent dans le même "
+        "fichier temporaire avant le remplacement atomique")
+
+
+def test_la_tache_planifiee_invoque_gbif_import_avec_une_option_reelle():
+    """`moissonner_gbif` invoque `gbif_import` via `CliRunner` : un drapeau qui n'existe
+    pas sur la commande fait échouer l'import à chaque exécution planifiée, en silence
+    — Click renvoie un simple exit_code non nul, absorbé par le compteur d'erreurs.
+
+    Le cas est statique, comme le reste de ce fichier : `tasks.py` importe
+    `geonature.utils.celery`, indisponible hors instance.
+    """
+    source_tasks = (RACINE / "gn_module_connectors/tasks.py").read_text(encoding="utf-8")
+    arbre_tasks = ast.parse(source_tasks)
+
+    appels = [n for n in ast.walk(arbre_tasks)
+              if isinstance(n, ast.Call)
+              and getattr(n.func, "attr", "") == "invoke"
+              and any(getattr(a, "id", "") == "gbif_import" for a in n.args)]
+    assert appels, "aucun appel CliRunner.invoke(gbif_import, …) trouvé"
+
+    drapeaux_gbif_import = next(drapeaux for nom, _, drapeaux, _, _ in TOUTES
+                                if nom == "gbif-import")
+
+    for appel in appels:
+        liste = next((a for a in appel.args if isinstance(a, ast.List)), None)
+        assert liste is not None, f"ligne {appel.lineno} : arguments non littéraux"
+        options = [e.value for e in liste.elts
+                   if isinstance(e, ast.Constant) and isinstance(e.value, str)
+                   and e.value.startswith("-")]
+        inconnues = [o for o in options if o not in drapeaux_gbif_import]
+        assert not inconnues, (
+            f"ligne {appel.lineno} : {inconnues} absent(s) des options de gbif-import "
+            f"({sorted(drapeaux_gbif_import)})")
+
+
 def test_la_commande_de_diagnostic_ne_prend_aucun_verrou():
     """`geonature-couverture` annonce « sans rien écrire » dès sa première ligne d'aide.
 

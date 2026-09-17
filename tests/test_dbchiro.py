@@ -73,6 +73,23 @@ def test_les_absences_activees_portent_lordre_et_non_observe(code):
     assert N.cd_nomenclatures(props(codesp=code), absence=True)["STATUT_OBS"] == "No"
 
 
+@pytest.mark.parametrize("brut, attendu", [
+    (12, 12), ("12", 12), (12.0, 12), ("12.0", 12), ("12.00", 12),
+    (None, None), ("", None), ("abc", None),
+])
+def test_lentier_accepte_une_representation_decimale(brut, attendu):
+    """Un `total_count` annoté par une agrégation numérique (`Sum(...)`) ou sérialisé par
+    un `DecimalField` DRF arrive sous forme décimale plutôt qu'entière stricte : `int()`
+    seul lèverait sur `\"12.0\"` et ferait disparaître l'effectif."""
+    assert X._entier(brut) == attendu
+
+
+def test_un_total_count_decimal_nest_plus_perdu_dans_leffectif():
+    ligne = X.to_row(feature(total_count="12.0"), cd_nom=T.ORDRE_CHIROPTERA, id_dataset=1,
+                     id_source=1, id_module=1, srid=2154, resolver=ResolverFactice())
+    assert ligne["count_min"] == 12 and ligne["count_max"] == 12
+
+
 def test_une_absence_porte_un_effectif_nul_et_non_inconnu():
     """L'ambiguïté entre « aucun individu » et « effectif non renseigné » fausserait
     toute analyse quantitative."""
@@ -259,6 +276,15 @@ def test_le_departement_est_lu_dans_les_zonages():
     assert X.departement(props()) == "09"
 
 
+def test_la_commune_insee_recompose_le_zero_de_tete():
+    """Même défaut mesuré que sur le département : l'API rend parfois ce code de zonage
+    numérique sans ses zéros de tête (Bélesta, 09029, ressortirait `9029`)."""
+    p = props(session_data={"date_start": "2026-07-29", "contact": {"code": "vv"},
+                            "place_data": {"areas": [
+                                {"area_type": {"code": "mun"}, "code": "9029"}]}})
+    assert X.commune_insee(p) == "09029"
+
+
 def test_hors_perimetre_quand_le_departement_ne_correspond_pas():
     p = props(session_data={"date_start": "2026-07-29", "contact": {"code": "vv"},
                             "place_data": {"areas": [{"area_type": {"code": "dep"},
@@ -331,6 +357,16 @@ def test_une_geometrie_absente_est_inexploitable():
                     resolver=ResolverFactice()) is None
 
 
+def test_une_observation_sans_identifiant_est_inexploitable():
+    """Sans id, `identifiant_sinp` dériverait le même `unique_id_sinp` pour toute
+    observation dans ce cas : plusieurs s'écraseraient silencieusement l'une l'autre au
+    lieu de coexister ou d'être rejetées distinctement."""
+    f = feature()
+    f["id"] = None
+    assert X.to_row(f, cd_nom=60468, id_dataset=1, id_source=1, id_module=1, srid=2154,
+                    resolver=ResolverFactice()) is None
+
+
 # ── Diffusion ────────────────────────────────────────────────────────────────
 
 def test_pas_de_niveau_de_diffusion_par_defaut():
@@ -372,6 +408,41 @@ def test_lempreinte_suit_la_determination():
             != X.empreinte(feature(codesp="nyclei")))
 
 
+def test_codesp_nest_plus_un_faux_membre_de_champs_suivis():
+    """`properties.get(\"codesp\")` vaut toujours None à la racine : le code espèce vit
+    sous `specie_data`, et son suivi réel passe par la ligne dédiée de `empreinte()`."""
+    assert "codesp" not in X.CHAMPS_SUIVIS
+
+
+def test_lempreinte_suit_le_nom_dun_observateur():
+    """Une correction de nom d'observateur à la source (faute de frappe, réattribution)
+    doit réécrire la ligne : sans cela, `synthese.observers` garderait indéfiniment la
+    valeur fautive."""
+    a = feature(creator={"id": 4, "full_name": "Jean Dupont"})
+    b = feature(creator={"id": 4, "full_name": "Jean Dupond"})
+    assert X.empreinte(a) != X.empreinte(b)
+
+
+def test_lempreinte_suit_le_nom_du_lieu():
+    defaut = props()["session_data"]
+    modifie = feature(session_data={**defaut,
+                                    "place_data": {**defaut["place_data"],
+                                                  "name": "Autre gîte"}})
+    assert X.empreinte(feature()) != X.empreinte(modifie)
+
+
+def test_lempreinte_suit_la_commune_et_le_departement():
+    defaut = props()["session_data"]
+    modifie = feature(session_data={**defaut,
+                                    "place_data": {**defaut["place_data"],
+                                                  "areas": [
+                                                      {"area_type": {"code": "dep"},
+                                                       "code": "09"},
+                                                      {"area_type": {"code": "mun"},
+                                                       "code": "09029"}]}})
+    assert X.empreinte(feature()) != X.empreinte(modifie)
+
+
 # ── Cohérence de la table ────────────────────────────────────────────────────
 
 def test_aucun_code_nest_a_la_fois_taxon_et_absence():
@@ -394,6 +465,8 @@ def test_tous_les_cd_nom_sont_des_entiers_positifs():
 # un 500 sur le POST de connexion alors que le GET répondait normalement. Le connecteur
 # annonçait « identifiants invalides », ce qui envoyait vérifier un mot de passe
 # parfaitement valide. Un diagnostic faux coûte plus cher qu'une absence de diagnostic.
+
+import requests  # noqa: E402
 
 from gn_module_connectors.sources.dbchiro import api as A  # noqa: E402
 
@@ -471,6 +544,21 @@ def test_un_filtre_anti_robot_est_nomme_explicitement():
             "https://demo.dbchiro.org/api/v1/search")
 
 
+def test_un_429_en_pagination_nest_plus_une_httperror_brute():
+    """`_verifier_json` valide chaque page de la moisson : un rate-limit en cours de
+    pagination doit produire le même diagnostic actionnable que sur le formulaire de
+    connexion, pas une `HTTPError` brute non rattrapée par `dbchiro-import`."""
+    with pytest.raises(A.ErreurDbChiro, match="débit"):
+        A._verifier_json(ReponseFactice(429, "https://dbchiroc.org/api/v1/search"),
+                         "https://dbchiroc.org/api/v1/search")
+
+
+def test_un_403_en_pagination_nest_plus_une_httperror_brute():
+    with pytest.raises(A.ErreurDbChiro, match="CSRF"):
+        A._verifier_json(ReponseFactice(403, "https://dbchiroc.org/api/v1/search"),
+                         "https://dbchiroc.org/api/v1/search")
+
+
 # ── Moisson bornée ───────────────────────────────────────────────────────────
 
 class SessionFactice:
@@ -531,7 +619,10 @@ def test_une_moisson_complete_verifie_toujours_le_total():
 
 
 def test_une_pagination_qui_sarrete_trop_tot_est_signalee():
-    """L'instance annonce 8 008 mais n'en rend que 50 : le bilan ne doit pas le taire."""
+    """L'instance annonce 8 008 mais n'en rend que 50 : le bilan ne doit pas le taire, y
+    compris avec un `journal` fourni — c'est le seul chemin réellement emprunté par
+    `dbchiro-import` en production. Un simple message que rien ne surveille ne protège
+    personne : il faut que ça échoue, avec un code de sortie non nul à la clé."""
     session = SessionFactice(8008, taille_reelle=50)
 
     class Menteuse(SessionFactice):
@@ -542,5 +633,94 @@ def test_une_pagination_qui_sarrete_trop_tot_est_signalee():
                                          "results": {"features": [{"id": 1}] * 50}})
 
     messages = []
-    A.observations(Menteuse(8008), {"url": "https://x"}, journal=messages.append)
+    with pytest.raises(A.ErreurDbChiro, match="pagination incomplète"):
+        A.observations(Menteuse(8008), {"url": "https://x"}, journal=messages.append)
     assert any("pagination incomplète" in m for m in messages)
+
+
+def test_un_total_qui_change_en_cours_de_pagination_interrompt_la_moisson():
+    """Une observation modifiée pendant le moissonnage (le tri `-timestamp_update` étant
+    mutable) peut décaler la frontière entre deux pages déjà lues sans que le nombre
+    final de features n'en trahisse rien. Le total annoncé, lui, change d'une page à
+    l'autre : c'est le seul signal fiable de cette instabilité."""
+    class BaseInstable(SessionFactice):
+        def get(self, url, params=None, timeout=None):
+            params = params or {}
+            self.appels.append(params)
+            page = int(params.get("page", 1))
+            if page == 1:
+                lot = [{"id": i, "type": "Feature"} for i in range(5)]
+                return ReponseFactice(200, url,
+                                      json_={"count": 10, "next": "http://x/?page=2",
+                                             "results": {"features": lot}})
+            lot = [{"id": i, "type": "Feature"} for i in range(5, 10)]
+            return ReponseFactice(200, url,
+                                  json_={"count": 11, "next": None,
+                                         "results": {"features": lot}})
+
+    with pytest.raises(A.ErreurDbChiro, match="total annoncé a changé"):
+        A.observations(BaseInstable(10), {"url": "https://x", "page_size": 5})
+
+
+def test_une_moisson_bornee_tolere_une_base_instable():
+    """La troncature volontaire (`max_results`) ne prétend déjà pas à un corpus complet
+    ou représentatif : elle ne doit pas non plus se mettre à échouer sur une instabilité
+    qu'elle a toujours ignorée."""
+    class BaseInstable(SessionFactice):
+        def get(self, url, params=None, timeout=None):
+            params = params or {}
+            self.appels.append(params)
+            page = int(params.get("page", 1))
+            compte = 10 if page == 1 else 11
+            lot = [{"id": i, "type": "Feature"} for i in range(5)]
+            return ReponseFactice(200, url,
+                                  json_={"count": compte, "next": "http://x/?page=2",
+                                         "results": {"features": lot}})
+
+    features = A.observations(BaseInstable(10), {"url": "https://x", "page_size": 5},
+                              max_results=8)
+    assert len(features) == 8
+
+
+# ── Reprise sur erreur réseau transitoire ────────────────────────────────────
+# Même convention que `sources/gbif/api._get` : un simple timeout ou un reset TCP en
+# page 2 ne doit pas jeter les pages déjà récupérées ni obliger à tout relancer depuis
+# l'authentification.
+
+def test_une_erreur_reseau_transitoire_est_retentee_avant_dabandonner(monkeypatch):
+    class SessionInstable:
+        def __init__(self):
+            self.appels = 0
+
+        def get(self, url, params=None, timeout=None):
+            self.appels += 1
+            if self.appels < 3:
+                raise requests.exceptions.ConnectionError("panne réseau")
+            return ReponseFactice(200, url,
+                                  json_={"count": 1, "next": None,
+                                         "results": {"features": [{"id": 1}]}})
+
+    session = SessionInstable()
+    monkeypatch.setattr(A.time, "sleep", lambda *_a, **_k: None)
+    features = A.observations(session, {"url": "https://x"})
+    assert len(features) == 1
+    assert session.appels == 3
+
+
+def test_une_erreur_reseau_persistante_est_remontee_apres_epuisement_des_reprises(
+        monkeypatch):
+    """`_requete` reprend sur erreur transitoire, mais ne doit jamais avaler l'échec au
+    bout du compte."""
+    class SessionEnPanne:
+        def __init__(self):
+            self.appels = 0
+
+        def get(self, url, params=None, timeout=None):
+            self.appels += 1
+            raise requests.exceptions.ConnectionError("panne réseau")
+
+    session = SessionEnPanne()
+    monkeypatch.setattr(A.time, "sleep", lambda *_a, **_k: None)
+    with pytest.raises(requests.exceptions.ConnectionError):
+        A.observations(session, {"url": "https://x"})
+    assert session.appels == 4  # 1 essai + 3 reprises, valeurs par défaut de `_requete`

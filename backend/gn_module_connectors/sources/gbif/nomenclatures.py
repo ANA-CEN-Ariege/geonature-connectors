@@ -197,7 +197,7 @@ def cd_nomenclatures(occ: dict) -> dict[str, str | None]:
         naturalite = DEGREE_OF_ESTABLISHMENT_PLANTES.get(de)
 
     effectif = occ.get("individualCount")
-    obj_denbr, typ_denbr = ("IND", "Co") if effectif else (None, None)
+    obj_denbr, typ_denbr = ("IND", "Co") if effectif is not None else (None, None)
 
     medias = occ.get("mediaType") or []
     preuve = "1" if (basis in BASIS_AVEC_SPECIMEN

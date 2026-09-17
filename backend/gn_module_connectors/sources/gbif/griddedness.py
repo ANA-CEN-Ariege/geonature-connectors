@@ -33,6 +33,7 @@ demi-largeur d'une cellule.
 
 import json
 import logging
+import time
 import urllib.parse
 import urllib.request
 from collections import Counter
@@ -57,17 +58,31 @@ PART_DECLAREE_MIN = 0.50
 # Valeurs par défaut connues des géocodeurs, à traiter comme suspectes (guide GBIF).
 INCERTITUDES_SUSPECTES = {301.0, 999.0, 3036.0, 9999.0}
 
+# Même politique de reprise que api.py::_get() : un verdict « maille » exige le tag ET
+# l'échantillon, une simple coupure transitoire ne doit pas dégrader silencieusement le
+# verdict en « suspect » alors qu'une nouvelle tentative aurait abouti.
+RETRIES = 3
+BACKOFF = 2.0
+
 
 def machine_tag(dataset_key: str) -> dict | None:
     """Tag « gridded » du registre GBIF, ou None. Les doublons sont dédupliqués."""
-    try:
-        with urllib.request.urlopen(f"{API}/dataset/{dataset_key}", timeout=30) as r:
-            tags = json.load(r).get("machineTags", [])
-    except (OSError, ValueError, AttributeError) as e:
-        # OSError : réseau (timeout, DNS, HTTPError...) ; ValueError : JSON malformé ;
-        # AttributeError : réponse JSON qui n'est pas l'objet attendu (pas de .get).
+    tags = None
+    derniere_erreur = None
+    for tentative in range(RETRIES + 1):
+        try:
+            with urllib.request.urlopen(f"{API}/dataset/{dataset_key}", timeout=30) as r:
+                tags = json.load(r).get("machineTags", [])
+            break
+        except (OSError, ValueError, AttributeError) as e:
+            # OSError : réseau (timeout, DNS, HTTPError...) ; ValueError : JSON malformé ;
+            # AttributeError : réponse JSON qui n'est pas l'objet attendu (pas de .get).
+            derniere_erreur = e
+            if tentative < RETRIES:
+                time.sleep(BACKOFF * (tentative + 1))
+    if tags is None:
         logger.warning("Impossible de lire les machine tags du dataset GBIF %s : %s",
-                        dataset_key, e)
+                        dataset_key, derniere_erreur)
         return None
     for t in tags:
         if t.get("namespace") == TAG_NAMESPACE and t.get("name") == TAG_NAME:
@@ -103,14 +118,22 @@ def _echantillon(dataset_key: str, filtres: dict, taille: int, tranches: int) ->
         params = {**filtres, "datasetKey": dataset_key,
                   "limit": par_tranche, "offset": i * pas}
         url = f"{API}/occurrence/search?" + urllib.parse.urlencode(params, doseq=True)
-        try:
-            with urllib.request.urlopen(url, timeout=60) as r:
-                lot = json.load(r).get("results", [])
-        except (OSError, ValueError, AttributeError) as e:
+        lot = None
+        derniere_erreur = None
+        for tentative in range(RETRIES + 1):
+            try:
+                with urllib.request.urlopen(url, timeout=60) as r:
+                    lot = json.load(r).get("results", [])
+                break
+            except (OSError, ValueError, AttributeError) as e:
+                derniere_erreur = e
+                if tentative < RETRIES:
+                    time.sleep(BACKOFF * (tentative + 1))
+        if lot is None:
             # Résilience voulue : un échantillon partiel vaut mieux qu'un import qui
             # échoue sur un simple aléa réseau — mais l'échec ne doit plus être muet.
             logger.warning("Échantillonnage du dataset GBIF %s interrompu à l'offset %s : %s",
-                            dataset_key, i * pas, e)
+                            dataset_key, i * pas, derniere_erreur)
             break
         if not lot:
             break
@@ -118,12 +141,14 @@ def _echantillon(dataset_key: str, filtres: dict, taille: int, tranches: int) ->
     return resultats
 
 
-_CACHE: dict[tuple, dict] = {}
-
-
 def inspect(dataset_key: str, filtres: dict, taille: int = 1000,
             tranches: int = 5) -> dict:
     """Verdict de précision d'un jeu de données.
+
+    Recalculé à chaque appel, volontairement : un jeu n'est inspecté qu'une fois par
+    exécution (une clé par jeu du périmètre), donc un cache inter-appels n'apporterait
+    aucun gain ici — il ne ferait que figer un verdict d'une exécution planifiée sur
+    l'autre, alors même que le producteur peut avoir corrigé sa publication entre-temps.
 
     `verdict` vaut :
       - "maille"  : grillé — tag GBIF au-delà du seuil, ou incertitude élevée et uniforme
@@ -132,10 +157,6 @@ def inspect(dataset_key: str, filtres: dict, taille: int = 1000,
       - "ok"      : précision compatible avec de l'observation ponctuelle
       - "vide"    : aucune occurrence dans le périmètre
     """
-    cle_cache = (dataset_key, tuple(sorted(filtres.items())), taille, tranches)
-    if cle_cache in _CACHE:
-        return _CACHE[cle_cache]
-
     res: dict = {"dataset_key": dataset_key, "tag": machine_tag(dataset_key)}
     tag = res["tag"]
 
@@ -148,7 +169,6 @@ def inspect(dataset_key: str, filtres: dict, taille: int = 1000,
     res["n"] = len(echantillon)
     if not echantillon:
         res.update(verdict="vide", origine="echantillon")
-        _CACHE[cle_cache] = res
         return res
 
     points = Counter((o.get("decimalLongitude"), o.get("decimalLatitude"))
@@ -213,7 +233,6 @@ def inspect(dataset_key: str, filtres: dict, taille: int = 1000,
         verdict, origine = "ok", "heuristique"
 
     res.update(verdict=verdict, origine=origine)
-    _CACHE[cle_cache] = res
     return res
 
 
