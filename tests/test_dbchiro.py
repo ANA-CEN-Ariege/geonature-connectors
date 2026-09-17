@@ -202,6 +202,12 @@ def test_un_effectif_dit_ce_quil_denombre():
     assert N.cd_nomenclatures(props(total_count=None))["OBJ_DENBR"] is None
 
 
+def test_effectif_zero_hors_absence_denombre_quand_meme():
+    """0 est un effectif déclaré, pas une absence de donnée : `not effectif(...)`
+    le confondrait avec `total_count` absent (même bug que GBIF et VisioNature)."""
+    assert N.cd_nomenclatures(props(total_count=0))["OBJ_DENBR"] == "IND"
+
+
 def test_une_absence_ne_denombre_rien():
     """Un effectif nul déclaré par une absence ne dénombre aucun individu."""
     assert N.cd_nomenclatures(props(total_count=0), absence=True)["OBJ_DENBR"] is None

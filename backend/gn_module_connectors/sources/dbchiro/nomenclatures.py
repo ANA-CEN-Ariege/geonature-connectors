@@ -163,7 +163,11 @@ def cd_nomenclatures(properties: dict, *, absence: bool = False,
         "STATUT_OBS": STATUT_OBS_ABSENT if absence else STATUT_OBS_PRESENT,
         "STATUT_SOURCE": STATUT_SOURCE,
         "NAT_OBJ_GEO": NAT_OBJ_GEO_STATIONNEL,
-        "OBJ_DENBR": (None if absence or not effectif(properties)
+        # ⚠ `effectif(properties)` peut valoir 0 : `not effectif(...)` le confondrait
+        # avec un effectif absent (même bug déjà corrigé dans les nomenclatures GBIF et
+        # VisioNature). Seule une absence de valeur — pas un zéro déclaré — doit laisser
+        # la colonne à son défaut.
+        "OBJ_DENBR": (None if absence or effectif(properties) is None
                       else OBJ_DENBR_INDIVIDU),
         "STATUT_BIO": (STATUT_BIO_REPRODUCTION
                        if est_colonie_reproduction(properties) else None),

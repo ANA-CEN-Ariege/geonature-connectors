@@ -1742,6 +1742,17 @@ def dbchiro_import(area, departements, importer_absences, max_results, batch_siz
     id_module = syn_core.get_module_id("CONNECTORS")
     srid = syn_core.local_srid()
     af = ds_core.get_acquisition_framework(CA_UUID)
+    # Le cadre est créé par la migration, qui ne peut connaître ni le territoire ni la
+    # structure exploitante. Sans eux, le formulaire de GeoNature refuse de
+    # l'enregistrer. Qualifié à chaque import plutôt qu'à la migration : une
+    # configuration renseignée après coup rattrape ainsi un cadre déjà créé.
+    ds_core.qualifier_cadre(
+        af, territoires=list(cfg.get("territoires") or []),
+        contact_principal=cfg.get("organisme_contact_principal", ""),
+        objectifs=list(cfg.get("objectifs_cadre") or []),
+        financement=cfg.get("financement_cadre", ""),
+        niveau_territorial=cfg.get("niveau_territorial", ""),
+        journal=lambda m: click.secho(f"  ⚠ {m}", fg="yellow"))
     v_taxref = syn_core.version_taxref()
     click.secho(f"instance={instance} source={id_source} srid={srid} "
                 f"taxref={v_taxref or 'inconnu'}", fg="green")
@@ -1793,7 +1804,7 @@ def dbchiro_import(area, departements, importer_absences, max_results, batch_siz
         if not lignes:
             return (0, 0)
         if jdd is None:
-            jdd = _jdd_dbchiro(instance, af)
+            jdd = _jdd_dbchiro(instance, af, cfg.get("territoires"))
         for ligne in lignes:
             ligne["id_dataset"] = jdd.id_dataset
         return syn_core.insert_batch(lignes, prevalidation)
@@ -1876,7 +1887,7 @@ def dbchiro_import(area, departements, importer_absences, max_results, batch_siz
         click.echo(f"  Journal détaillé : {chemin}")
 
 
-def _jdd_dbchiro(instance: str, af):
+def _jdd_dbchiro(instance: str, af, territoires=None):
     """JDD unique de l'instance, créé à la première écriture.
 
     ⚠ Le découpage naturel serait l'**étude** dbChiro (`management.Study`) : ce sont des
@@ -1904,6 +1915,11 @@ def _jdd_dbchiro(instance: str, af):
     db.session.flush()
     if cree:
         click.secho(f"  + JDD créé : {jdd.id_dataset}", fg="green")
+    # Sans territoire, le formulaire de GeoNature refuse d'enregistrer le jeu — comme
+    # pour le cadre ci-dessus. Posé à chaque passage, pas seulement à la création : une
+    # configuration corrigée après coup doit pouvoir rattraper un jeu déjà créé.
+    ds_core.attacher_territoires(
+        jdd, territoires, journal=lambda m: click.secho(f"    ⚠ {m}", fg="yellow"))
     return jdd
 
 

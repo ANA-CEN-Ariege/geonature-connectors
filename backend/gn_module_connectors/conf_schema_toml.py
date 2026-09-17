@@ -379,6 +379,16 @@ class DbChiroSchemaConf(Schema):
     # ⚠ Code ou libellé, et une valeur inconnue arrête l'import : cf. `[visionature]`.
     niveau_diffusion = fields.String(load_default="")
 
+    # ── Cadre d'acquisition et jeu de données (métadonnées SINP) ─────────────
+    # Créé par la migration, le cadre en sort sans territoire ni structure exploitante —
+    # que la migration ne peut pas connaître — et le formulaire de GeoNature refuse de
+    # l'enregistrer sans eux, comme pour [gbif] et [visionature].
+    territoires = fields.List(fields.String(), load_default=lambda: ["METROP"])
+    organisme_contact_principal = fields.String(load_default="")
+    objectifs_cadre = fields.List(fields.String(), load_default=list)
+    financement_cadre = fields.String(load_default="")
+    niveau_territorial = fields.String(load_default="")
+
     # ── Moissonnage ──────────────────────────────────────────────────────────
     # `LargeGeoJsonPageNumberPagination` plafonne à 5000.
     page_size = fields.Integer(load_default=5000, validate=Range(min=1))

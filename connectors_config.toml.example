@@ -102,6 +102,24 @@ download_doi = ""
 # s'amortit qu'en insérant par paquets. Ne pas descendre sous quelques centaines.
 batch_size = 1000
 
+# ── Cadre d'acquisition et jeux de données (métadonnées SINP) ────────────────
+# Le cadre est créé par la migration du module, qui ne peut pas connaître ces valeurs :
+# elles dépendent de l'instance et de la structure qui l'exploite. Le formulaire de
+# GeoNature refuse d'enregistrer le cadre et les jeux de données sans elles.
+#
+# Territoires, EXIGÉS par le formulaire : sans eux, ni le cadre ni les jeux ne peuvent
+# être enregistrés. METROP pour la métropole ; une instance ultramarine emploiera GLP,
+# MTQ, REU, MYT, GUF, SPM, NCL, PYF…
+territoires = ["METROP"]
+
+# Contact principal du cadre (rôle ROLE_ACTEUR 1), lui aussi exigé.
+# organisme_contact_principal = "ANA-CEN Ariège"
+
+# Chaque valeur s'écrit en cd_nomenclature OU en libellé, le code primant.
+objectifs_cadre = ["Multiples ou autres"]
+financement_cadre = "Mixte"
+niveau_territorial = "Régional terrestre, ou sous-région marine"
+
 
 # ── Exclusions taxonomiques ──────────────────────────────────────────────────
 # Écarter certains taxons, globalement ou pour un seul jeu de données.
@@ -549,6 +567,24 @@ pseudonymisation_secret = ""
 # (« Trou souffleur - trois frères »), et le référentiel de sensibilité de GeoNature ne
 # couvre pas nécessairement tous les sites que l'exploitant juge sensibles.
 niveau_diffusion = ""
+
+# ── Cadre d'acquisition et jeu de données (métadonnées SINP) ─────────────────
+# Le cadre est créé par la migration du module, qui ne peut pas connaître ces valeurs :
+# elles dépendent de l'instance et de la structure qui l'exploite. Le formulaire de
+# GeoNature refuse d'enregistrer le cadre et le jeu de données sans elles — comme pour
+# [gbif] et [visionature].
+#
+# Territoires, EXIGÉS par le formulaire. METROP pour la métropole ; une instance
+# ultramarine emploiera GLP, MTQ, REU, MYT, GUF, SPM, NCL, PYF…
+territoires = ["METROP"]
+
+# Contact principal du cadre (rôle ROLE_ACTEUR 1), lui aussi exigé.
+# organisme_contact_principal = "ANA-CEN Ariège"
+
+# Chaque valeur s'écrit en cd_nomenclature OU en libellé, le code primant.
+objectifs_cadre = ["Multiples ou autres"]
+financement_cadre = "Mixte"
+niveau_territorial = "Régional terrestre, ou sous-région marine"
 
 # ── Moissonnage ───────────────────────────────────────────────────────────────
 # Plafonné à 5000 par la pagination de dbChiro. À 8 039 observations, deux pages.
