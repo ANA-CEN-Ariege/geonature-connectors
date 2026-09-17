@@ -502,7 +502,12 @@ def to_row(sighting: dict, observation: dict, *, cd_nom: int, id_dataset: int | 
         # même observateur restent rapprochables sans qu'il soit identifiable.
         # Identifiant pseudonymisé, quel que soit le sort du nom : il permet de
         # rapprocher les observations d'un même contributeur sans l'identifier.
-        "observateur": (vn_conf.pseudonyme(observation.get("@uid"), secret_pseudo)[:12]
+        # ⚠ Même résolution d'identifiant que `vn_conf.observateur()` ci-dessus (`@uid`
+        # puis repli `@id`) : recalculer sur `observation.get("@uid")` seul divergerait
+        # silencieusement de la valeur écrite dans `observers` dès qu'une observation n'a
+        # pas de `@uid`, et casserait le rapprochement de `reanonymisation.py`.
+        "observateur": (vn_conf.pseudonyme(vn_conf.identifiant_observateur(observation),
+                                           secret_pseudo)[:12]
                         if secret_pseudo else ""),
         "anonymat": motif_anonymat,
         "place": lieu.get("name") or "",

@@ -319,9 +319,14 @@ def denombrement(observation: dict) -> tuple[str | None, str | None]:
     VisioNature distingue le comptage exact de l'estimation via `estimation_code` :
     « EXACT_VALUE », « ESTIMATION », « MINIMUM ». Confondre les deux ferait passer une
     estimation pour un dénombrement, ce qui fausse toute analyse quantitative.
+
+    ⚠ `effectif` peut valoir 0 (une absence déclarée avec un effectif exact, cf.
+    `est_absence`) : `if not effectif` le confondrait avec un effectif absent, laissant
+    `OBJ_DENBR`/`TYP_DENBR` à NULL alors que `count_min`/`count_max` écrivent bien 0 —
+    même bug que celui déjà corrigé dans `est_absence` ci-dessus, pour la même raison.
     """
     effectif = _entier(observation.get("count"))
-    if not effectif:
+    if effectif is None:
         return (None, None)
     estimation = str(observation.get("estimation_code") or "").upper()
     if "ESTIM" in estimation or "MIN" in estimation:

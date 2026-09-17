@@ -123,6 +123,13 @@ def test_sans_effectif_pas_de_denombrement():
     assert N.denombrement(obs()) == (None, None)
 
 
+def test_effectif_zero_nest_pas_une_absence_de_denombrement():
+    """0 est un effectif déclaré (absence exacte, cf. `est_absence`), pas une absence de
+    donnée : `count_min`/`count_max` écrivent 0, `OBJ_DENBR`/`TYP_DENBR` doivent suivre."""
+    assert N.denombrement(obs(count="0", estimation_code="EXACT_VALUE")) == ("IND", "Co")
+    assert N.denombrement(obs(count=0, estimation_code="EXACT_VALUE")) == ("IND", "Co")
+
+
 # ── Rien n'est imposé sans source ────────────────────────────────────────────
 
 def test_methode_observation_non_imposee():
@@ -441,6 +448,15 @@ def test_pseudonyme_depend_de_la_cle():
 def test_pseudonymisation_refusee_sans_cle():
     with pytest.raises(ValueError, match="clé de pseudonymisation"):
         C.pseudonyme("42", "")
+
+
+def test_identifiant_observateur_replie_sur_id_sans_uid():
+    """`transform.py` appelle cette même fonction pour `additional_data.observateur` :
+    un repli différent de celui d'`observateur()` romprait le rapprochement que fait
+    `reanonymisation.py` sur ce champ."""
+    assert C.identifiant_observateur({"@uid": "42", "@id": "99"}) == "42"
+    assert C.identifiant_observateur({"@id": "99"}) == "99"
+    assert C.identifiant_observateur({}) == ""
 
 
 def test_consentement_individuel_respecte():
@@ -1242,6 +1258,23 @@ def test_labsence_de_ces_champs_nalourdit_pas_la_provenance():
     provenance = _ligne()
     for champ in ("details", "behaviours", "juridical_person"):
         assert champ not in provenance
+
+
+def test_additional_data_observateur_suit_le_meme_repli_que_observers():
+    """`additional_data.observateur` doit désigner le MÊME observateur que celui pour qui
+    `observers` a été calculé, y compris quand `@uid` manque et que la résolution replie
+    sur `@id` — sans quoi `reanonymisation.py` rapprocherait la mauvaise ligne."""
+    import json
+    ligne = T.to_row(
+        {"date": {"@ISO8601": "2026-09-01"}, "species": {"@id": "1", "name": "X"},
+         "place": {"county": "09"}},
+        # Pas de `@uid` : seule `@id` identifie l'observateur.
+        {"@id": "7", "name": "Untel", "coord_lat": "42.8", "coord_lon": "1.9"},
+        cd_nom=1, id_dataset=1, id_source=1, id_module=1, srid=2154,
+        resolver=_ResolverFactice(), instance="i",
+        index_anonymat={"7": True}, secret_pseudo="cle")
+    provenance = json.loads(ligne["additional_data"])
+    assert ligne["observers"] == f"obs-{provenance['observateur']}"
 
 
 # ── Cohérence STATUT_OBS / effectif sous surcharge d'absence ─────────────────

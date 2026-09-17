@@ -97,6 +97,18 @@ def souhait_exprime(observation: dict) -> bool | None:
     return bool(vrai(observation, "anonymous") or brut_export in ANONYMAT_EXPORT)
 
 
+def identifiant_observateur(observation: dict) -> str:
+    """Identifiant d'observateur porté par une observation, `@uid` puis repli `@id`.
+
+    Fonction partagée : `transform.py` en a besoin hors de `observateur()` pour calculer
+    `additional_data.observateur`, l'identifiant pseudonymisé conservé même quand le nom
+    est publié. Dupliquer cette résolution romprait le rapprochement que fait
+    `reanonymisation.py` sur ce champ dès qu'une observation n'a pas de `@uid` : les deux
+    calculs divergeraient silencieusement sur le repli.
+    """
+    return str(observation.get("@uid") or observation.get("@id") or "").strip()
+
+
 def observateur(observation: dict, index_anonymat: dict[str, bool] | None = None,
                 secret: str = "", forcer_anonymat: bool = False) -> tuple[str | None, str]:
     """(valeur pour `synthese.observers`, motif).
@@ -119,7 +131,7 @@ def observateur(observation: dict, index_anonymat: dict[str, bool] | None = None
     if vrai(observation, "second_hand"):
         return (None, "donnée rapportée par un tiers")
 
-    uid = str(observation.get("@uid") or observation.get("@id") or "").strip()
+    uid = identifiant_observateur(observation)
     nom = (observation.get("name") or "").strip() or None
 
     if forcer_anonymat:
