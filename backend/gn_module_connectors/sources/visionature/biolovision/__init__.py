@@ -15,7 +15,7 @@ coïncident tout juste avec celles de GeoNature.
 La contrepartie est assumée : les correctifs amont ne parviennent pas automatiquement.
 La révision ci-dessus permet de suivre l'écart.
 
-GPL-3.0 est compatible avec l'AGPL-3.0 de GeoNature.
+Même licence que GeoNature (GPL-3.0) et que ce module (GPL-3.0 ou ultérieure).
 """
 
 import gettext

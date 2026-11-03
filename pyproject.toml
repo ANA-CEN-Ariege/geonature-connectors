@@ -7,10 +7,11 @@ name = "gn_module_connectors"
 description = "Module GeoNature d'alimentation de la Synthèse depuis des sources externes (GBIF, VisioNature)"
 readme = "README.md"
 authors = [{ name = "ANA-CEN Ariège" }]
+license = { text = "GPL-3.0-or-later" }
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Programming Language :: Python :: 3",
-  "License :: OSI Approved :: GNU Affero General Public License v3",
+  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
   "Operating System :: OS Independent",
 ]
 dynamic = ["version", "dependencies"]

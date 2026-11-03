@@ -26,7 +26,7 @@ observation, et une installation à la portée d'un administrateur fonctionnel.
 - [Pré-validation](#pré-validation) — faut-il valider ce qu'on moissonne ?
 - [Purger](#purger) — revenir en arrière
 - [Points de vigilance](#points-de-vigilance) — **à lire avant le premier import**
-- [Tests](#tests) · [Documentation](#documentation) · [Développement](#développement)
+- [Tests](#tests) · [Documentation](#documentation) · [Développement](#développement) · [Licence](#licence)
 
 Le **pourquoi** des choix — ce qui a été mesuré, essayé, écarté — est dans
 [docs/decisions.md](docs/decisions.md). Ce fichier-ci s'en tient au comment, dans les
@@ -639,3 +639,12 @@ indéfiniment. Un moissonnage pouvait se figer sans fin ni message, le client jo
 dans un logger que la CLI n'affiche pas. Les onze constructeurs le transmettent désormais,
 et `tests/test_visionature.py` le vérifie sur chaque contrôleur employé : si un
 re-vendoring écrase le correctif, les tests le disent. À signaler en amont.
+
+## Licence
+
+Ce module est distribué sous licence **GNU General Public License v3.0 ou ultérieure**
+(GPL-3.0-or-later), comme GeoNature dont il dépend. Texte complet dans [`LICENSE`](LICENSE).
+
+Le client Biolovision copié dans `sources/visionature/biolovision/` provient de
+[Client_API_VN](https://github.com/dthonon/Client_API_VN) (© Daniel Thonon) et reste
+sous sa licence d'origine, la GPL-3.0.
