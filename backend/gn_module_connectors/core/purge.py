@@ -9,10 +9,42 @@ import, même sur une erreur de critère.
 La suppression d'une ligne de `gn_synthese.synthese` entraîne en cascade celle de ses
 rattachements dans `cor_area_synthese`, et le trigger `tri_log_delete_synthese` en
 consigne la trace dans `gn_synthese.t_log_synthese` — la suppression reste donc traçable.
+
+Les médias, eux, ne suivent pas : `gn_commons.t_medias` n'a aucune clé étrangère vers la
+Synthèse. Toute suppression passe donc par `_supprimer`, qui retire dans le même
+statement les médias que le module avait rattachés aux lignes parties — et seulement
+ceux-là : l'emplacement `gn_synthese.synthese` de `bib_tables_location` (voir
+`core/medias.py`), jamais celui d'Occtax ou d'un autre module.
 """
 
 from sqlalchemy import text
 from geonature.utils.env import db
+
+# Un seul statement : la suppression des lignes, puis celle de leurs médias. Dans une
+# CTE, le second DELETE ne voit pas encore le premier — il s'appuie donc sur les UUID
+# rendus, et non sur un `NOT EXISTS` qui trouverait la ligne toujours là. `unique_id_sinp`
+# étant UNIQUE, un UUID supprimé n'est plus porté par aucune autre ligne.
+_SUPPRIMER = """
+    WITH partis AS (
+        DELETE FROM gn_synthese.synthese s
+        WHERE {condition}
+        RETURNING s.unique_id_sinp
+    ), medias AS (
+        DELETE FROM gn_commons.t_medias m
+        USING partis p
+        WHERE m.uuid_attached_row = p.unique_id_sinp
+          AND m.id_table_location = (
+              SELECT id_table_location FROM gn_commons.bib_tables_location
+              WHERE schema_name = 'gn_synthese' AND table_name = 'synthese')
+    )
+    SELECT count(*) FROM partis
+"""
+
+
+def _supprimer(condition: str, params: dict) -> int:
+    """Supprime les lignes de Synthèse désignées (alias `s`), et leurs médias importés."""
+    return db.session.execute(
+        text(_SUPPRIMER.format(condition=condition)), params).scalar() or 0
 
 
 def _conditions(taxon: str | None, max_uncertainty: int | None) -> tuple[str, dict]:
@@ -76,13 +108,8 @@ def supprimer(id_source: int, id_dataset: int | None = None, taxon: str | None =
               max_uncertainty: int | None = None) -> int:
     cond, params = _conditions(taxon, max_uncertainty)
     params.update({"src": id_source, "jdd": id_dataset})
-    n = db.session.execute(
-        text(f"""DELETE FROM gn_synthese.synthese s
-                 WHERE s.id_source = :src
-                   AND (:jdd IS NULL OR s.id_dataset = :jdd){cond}"""),
-        params,
-    ).rowcount
-    return n
+    return _supprimer(
+        f"s.id_source = :src AND (:jdd IS NULL OR s.id_dataset = :jdd){cond}", params)
 
 
 def jdd_vides(id_acquisition_framework: int) -> list[tuple[int, str]]:
@@ -136,14 +163,9 @@ def supprimer_par_identifiants_source(id_source: int, champ: str,
     """
     if not identifiants:
         return 0
-    return db.session.execute(
-        text(f"""
-            DELETE FROM gn_synthese.synthese
-            WHERE id_source = :s
-              AND additional_data->>'{champ}' = ANY(:ids)
-        """),
-        {"s": id_source, "ids": [str(i) for i in identifiants]},
-    ).rowcount
+    return _supprimer(
+        f"s.id_source = :s AND s.additional_data->>'{champ}' = ANY(:ids)",
+        {"s": id_source, "ids": [str(i) for i in identifiants]})
 
 
 def supprimer_par_uuid(uuids: list[str], sauf_id_source: int) -> int:
@@ -162,12 +184,10 @@ def supprimer_par_uuid(uuids: list[str], sauf_id_source: int) -> int:
     """
     if not uuids:
         return 0
-    return db.session.execute(
-        text("""DELETE FROM gn_synthese.synthese
-                WHERE unique_id_sinp = ANY(CAST(:u AS uuid[]))
-                  AND id_source IS DISTINCT FROM :src"""),
-        {"u": [str(u) for u in uuids], "src": sauf_id_source},
-    ).rowcount
+    return _supprimer(
+        "s.unique_id_sinp = ANY(CAST(:u AS uuid[])) "
+        "AND s.id_source IS DISTINCT FROM :src",
+        {"u": [str(u) for u in uuids], "src": sauf_id_source})
 
 
 def compter_absents(id_source: int, id_datasets: list[int], uuids_vus: list[str],
@@ -204,9 +224,7 @@ def supprimer_absents(id_source: int, id_datasets: list[int], uuids_vus: list[st
     requete, params = _absents(id_source, id_datasets, uuids_vus, marqueurs)
     if requete is None:
         return 0
-    return db.session.execute(
-        text(f"DELETE FROM gn_synthese.synthese WHERE {requete}"), params
-    ).rowcount
+    return _supprimer(requete, params)
 
 
 def _absents(id_source: int, id_datasets: list[int], uuids_vus: list[str],

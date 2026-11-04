@@ -356,6 +356,11 @@ fois les données en base : filtres ignorés par le serveur, colonnes absentes d
 d'export, version TAXREF distante différente de la locale, correspondances de
 nomenclature non résolues, doublons avec une source déjà présente.
 
+**Médias** : la vue d'export standard n'en publie aucun. Si le producteur ajoute une
+colonne `medias` à son export, les URL de ses photos et sons sont rattachées aux
+observations dans `gn_commons.t_medias`, sans copie des fichiers. Requête à lui proposer :
+[docs/connecteurs/geonature.md](docs/connecteurs/geonature.md#médias).
+
 ⚠️ **Les suppressions ne sont pas détectées automatiquement.** L'API d'export ne publie
 aucun journal de suppression ; il faut relire tout le corpus et purger ce qui n'est pas
 revenu :

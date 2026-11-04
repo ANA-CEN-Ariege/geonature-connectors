@@ -466,6 +466,15 @@ class GeoNatureSchemaConf(Schema):
     # Licences acceptées, par leur nom tel que l'export le déclare. Vide = tout accepter.
     licences_acceptees = fields.List(fields.String(), load_default=list)
 
+    # ── Médias ───────────────────────────────────────────────────────────────
+    # Rattacher dans `gn_commons.t_medias` les médias que l'export publie dans une
+    # colonne `medias` (tableau JSON). La vue SINP standard n'en porte aucune : sans elle,
+    # rien n'est fait. Seules les URL sont reprises, aucun fichier n'est copié.
+    importer_medias = fields.Boolean(load_default=True)
+    # URL publique des pièces jointes du distant, pour les médias publiés par `chemin`
+    # (`media_path`) plutôt que par `url`. Vide = `<url>/api/media/attachments`.
+    url_medias = fields.String(load_default="")
+
     # ── Métadonnées SINP des cadres et jeux créés ────────────────────────────
     territoires = fields.List(fields.String(), load_default=list)
     organisme_contact_principal = fields.String(load_default="")

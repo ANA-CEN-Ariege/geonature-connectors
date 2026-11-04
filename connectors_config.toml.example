@@ -736,6 +736,19 @@ niveau_diffusion_si_sensible = ""
 # L'import refuse de tourner si la licence de l'export n'y figure pas.
 licences_acceptees = []
 
+# ── Médias ────────────────────────────────────────────────────────────────────
+# Les photos, sons et vidéos saisis dans Occtax ne sont pas dans la Synthèse mais dans
+# gn_commons.t_medias, et la vue d'export standard n'en publie rien. Si l'administrateur
+# distant ajoute à son export une colonne `medias` (requête dans
+# docs/connecteurs/geonature.md), ils sont rattachés ici aux observations importées.
+# Seules les URL sont reprises : les fichiers restent hébergés chez le producteur. Un média
+# qu'il a marqué non public n'est pas relayé.
+importer_medias = true
+# URL publique des pièces jointes du distant, pour les médias publiés par `chemin`
+# (media_path). Vide = <url>/api/media/attachments, valable si le distant n'a pas changé
+# MEDIA_URL.
+url_medias = ""
+
 # ── Métadonnées SINP des cadres et jeux créés ─────────────────────────────────
 # Le formulaire de GeoNature exige un territoire et un contact principal : sans eux, ni le
 # cadre ni le jeu ne peuvent être enregistrés depuis l'interface, et rien ne le signale

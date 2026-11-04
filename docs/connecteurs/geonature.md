@@ -110,6 +110,74 @@ Synthèse :
    producteur qui republierait sous de nouveaux identifiants ferait sinon tout disparaître
    d'un coup.
 
+## Médias
+
+Les photos, sons, vidéos et PDF saisis dans Occtax (ou dans un autre module) ne sont
+**pas** dans la Synthèse. Ils sont rangés dans `gn_commons.t_medias` et rattachés par
+`uuid_attached_row` à l'UUID de l'objet saisi, qui est aussi l'`unique_id_sinp` de la
+ligne de Synthèse. La Synthèse les affiche au travers de cette relation, mais rien ne les
+recopie dans `digital_proof`. La vue d'export standard (`v_synthese_sinp`) n'en publie
+donc **aucun**. Le champ texte « preuve numérique » d'Occtax, lui, est bien repris dans
+`digital_proof`.
+
+Pour récupérer les médias, l'administrateur distant doit publier un export qui ajoute une
+colonne `medias`. Par exemple, une vue bâtie sur la vue SINP :
+
+```sql
+CREATE VIEW gn_exports.v_synthese_sinp_medias AS
+SELECT v.*, m.medias
+FROM gn_exports.v_synthese_sinp v
+JOIN gn_synthese.synthese s ON s.id_synthese = v.id_synthese
+LEFT JOIN LATERAL (
+    SELECT json_agg(json_build_object(
+               'uuid',        tm.unique_id_media,
+               'type',        n.cd_nomenclature,
+               'url',         tm.media_url,
+               'chemin',      tm.media_path,
+               'titre',       tm.title_fr,
+               'auteur',      tm.author,
+               'description', tm.description_fr,
+               'public',      tm.is_public)
+           ORDER BY tm.id_media) AS medias
+    FROM gn_commons.t_medias tm
+    JOIN ref_nomenclatures.t_nomenclatures n
+      ON n.id_nomenclature = tm.id_nomenclature_media_type
+    WHERE tm.uuid_attached_row = s.unique_id_sinp
+      AND tm.is_public
+) m ON true;
+```
+
+L'export est ensuite déclaré sur cette vue dans le module d'export du distant, et son
+`id_export` reporté dans `[geonature] id_export`.
+
+Côté connecteur :
+
+- **seules les URL sont reprises**, dans `t_medias.media_url`. Aucun fichier n'est
+  copié : le média reste hébergé chez le producteur, et cesse de s'afficher ici s'il le
+  retire ou le déplace ;
+- un fichier téléversé (`chemin`) donne l'URL `<url>/api/media/attachments/<chemin>`.
+  Si le distant a changé `MEDIA_URL`, renseignez `[geonature] url_medias` ;
+- un média que le producteur a marqué **non public** n'est pas relayé, même si sa vue le
+  publie ;
+- le type vient du `cd_nomenclature` (ou du libellé) `TYPE_MEDIA` publié. À défaut, il
+  est déduit de l'URL (extension, YouTube, Vimeo, Dailymotion) ;
+- les médias sont rattachés **directement à la ligne de Synthèse**, sous l'emplacement
+  `gn_synthese.synthese` de `gn_commons.bib_tables_location`. La migration `c9d3e5f7a1b2`
+  le déclare. Ils apparaissent dans la fiche d'observation et répondent au filtre « avec
+  médias » de la Synthèse ;
+- chaque import **synchronise** : un média ajouté, modifié ou retiré à la source l'est
+  ici. Un média inchangé n'est jamais réécrit. Une observation absente de la moisson ne
+  perd rien, et un export **sans** colonne `medias` ne retire rien ;
+- `geonature-reconcilier`, `geonature-purge` et le remplacement d'une ligne concurrente
+  retirent les médias des lignes qu'ils suppriment.
+
+⚠ **Incrémental.** Ajouter un média à une observation existante ne modifie pas
+forcément sa ligne de Synthèse, donc pas sa `date_modification`. Un import incrémental
+peut alors ne pas le voir. `geonature-import --tout` le rattrape.
+
+`geonature-couverture` indique combien de médias l'export porte, et lesquels seront
+écartés.
+
 ## Limites connues
 
 **Les géométries non ponctuelles sont ramenées à leur centroïde.** `core/synthese.py`

@@ -298,7 +298,7 @@ def realigner_uuid(lignes: list[dict], id_source: int, cle: str) -> int:
     if not anciens:
         return 0
 
-    return db.session.execute(
+    renommees = db.session.execute(
         text("""
             UPDATE gn_synthese.synthese AS s
             SET unique_id_sinp = c.cible
@@ -311,6 +311,12 @@ def realigner_uuid(lignes: list[dict], id_source: int, cle: str) -> int:
         """),
         {"anciens": anciens, "cibles": cibles, "id_source": id_source},
     ).rowcount
+    if renommees:
+        # Les médias importés sont rattachés par UUID, sans clé étrangère : ils doivent
+        # suivre la ligne, sans quoi ils resteraient sur un UUID que plus rien ne porte.
+        from . import medias as medias_core
+        medias_core.realigner(anciens, cibles)
+    return renommees
 
 
 def get_source_id(name_source: str) -> int:

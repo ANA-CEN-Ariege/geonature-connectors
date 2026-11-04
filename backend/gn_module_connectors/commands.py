@@ -2723,6 +2723,9 @@ def geonature_couverture(id_export, perimetre, max_results):
         click.secho(f"  ⚠ {message}" if not message.startswith("    ") else message,
                     fg="yellow")
 
+    # ── Médias ───────────────────────────────────────────────────────────────
+    _couverture_medias(cfg, items)
+
     # ── Métadonnées ──────────────────────────────────────────────────────────
     jdds = {str(i.get("jdd_uuid") or "").strip() for i in items} - {""}
     cadres = {str(i.get("ca_uuid") or "").strip() for i in items} - {""}
@@ -2764,6 +2767,36 @@ def geonature_couverture(id_export, perimetre, max_results):
 
     click.secho("\nRien n'a été écrit. Ne lancez l'import qu'une fois chaque ligne "
                 "ci-dessus comprise.", fg="green")
+
+
+def _couverture_medias(cfg, items) -> None:
+    """Ce que la colonne `medias` de l'export apporterait, sans rien écrire."""
+    from .core import medias as medias_core
+    from .sources.geonature import medias as gn_medias
+
+    if not gn_medias.present(items[0]):
+        click.echo("  médias : pas de colonne `medias` dans l'export — les photos et sons "
+                   "saisis à la source ne seront pas rattachés (voir "
+                   "docs/connecteurs/geonature.md).")
+        return
+    url_medias = gn_medias.url_medias_par_defaut(cfg)
+    avec, total, ecartes = 0, 0, {}
+    for item in items:
+        medias, motifs = gn_medias.lire(item, "", url_medias)
+        avec += bool(medias)
+        total += len(medias)
+        for motif, combien in motifs.items():
+            ecartes[motif] = ecartes.get(motif, 0) + combien
+    click.echo(f"  médias : {total} sur {avec} observation(s)"
+               + ("" if cfg.get("importer_medias", True)
+                  else " — non importés ([geonature] importer_medias = false)"))
+    for motif, combien in sorted(ecartes.items()):
+        click.secho(f"    ⚠ {combien} média(s) {_MOTIFS_MEDIAS.get(motif, motif)}",
+                    fg="yellow")
+    if medias_core.emplacement() is None:
+        click.secho("    ⚠ la Synthèse n'est pas déclarée dans "
+                    "gn_commons.bib_tables_location : appliquez les migrations du module "
+                    "avant l'import.", fg="yellow")
 
 
 def _cadre_geonature(item, af_repli, cfg, caches):
@@ -2909,6 +2942,91 @@ def _jdd_geonature(item, cfg, contexte, caches):
     return resultat
 
 
+def _medias_geonature(cfg, items, dry_run: bool) -> tuple[bool, int | None]:
+    """Les médias seront-ils importés ? Rend `(avec_medias, id_table_location)`.
+
+    La présence de la colonne `medias` se juge sur le premier enregistrement, comme
+    `verifier_colonnes` : c'est la vue qui l'expose ou non, pas la ligne. Une colonne
+    absente ne retire rien — seule une colonne présente et vide le peut.
+    """
+    from .core import medias as medias_core
+    from .sources.geonature import medias as gn_medias
+
+    if not cfg.get("importer_medias", True):
+        click.echo("  médias : non importés ([geonature] importer_medias = false).")
+        return (False, None)
+    if not items or not gn_medias.present(items[0]):
+        click.echo("  médias : l'export n'a pas de colonne `medias` — aucun média "
+                   "rattaché. La vue SINP standard n'en publie pas ; la requête à "
+                   "proposer au producteur est dans docs/connecteurs/geonature.md.")
+        return (False, None)
+    id_location = medias_core.emplacement()
+    if id_location is None:
+        if dry_run:
+            click.secho("  ⚠ médias : la Synthèse n'est pas déclarée dans "
+                        "gn_commons.bib_tables_location. Appliquez les migrations du "
+                        "module avant l'import réel.", fg="yellow")
+            return (True, None)
+        raise click.ClickException(
+            "L'export publie des médias, mais la Synthèse n'est pas déclarée dans "
+            "gn_commons.bib_tables_location. Appliquez les migrations du module "
+            "(`geonature db upgrade connectors@head`), ou passez [geonature] "
+            "importer_medias = false.")
+    return (True, id_location)
+
+
+def _resoudre_medias(item, uuid_observation: str, url_medias: str, resolver,
+                     bilan: dict) -> list[dict]:
+    """Médias d'un enregistrement, prêts pour `core.medias.synchroniser`.
+
+    Le type est d'abord celui que publie le producteur — code ou libellé de `TYPE_MEDIA`,
+    d'où `id_souple` — puis, à défaut, celui que l'URL laisse deviner. Un type publié
+    mais inconnu ici est compté plutôt que perdu en silence.
+    """
+    from .sources.geonature import medias as gn_medias
+
+    medias, ecartes = gn_medias.lire(item, uuid_observation, url_medias)
+    for motif, combien in ecartes.items():
+        bilan["ecartes"][motif] = bilan["ecartes"].get(motif, 0) + combien
+    resolus = []
+    for media in medias:
+        id_type = resolver.id_souple("TYPE_MEDIA", media["type"]) if media["type"] \
+            else None
+        if id_type is None and media["type"]:
+            cle = f"type « {media['type']} » inconnu, déduit de l'URL"
+            bilan["ecartes"][cle] = bilan["ecartes"].get(cle, 0) + 1
+        if id_type is None:
+            id_type = resolver.id_souple("TYPE_MEDIA", media["type_devine"])
+        if id_type is None:
+            bilan["ecartes"]["type_introuvable"] = \
+                bilan["ecartes"].get("type_introuvable", 0) + 1
+            continue
+        resolus.append({**media, "id_nomenclature_media_type": id_type})
+    bilan["lus"] += len(resolus)
+    return resolus
+
+
+_MOTIFS_MEDIAS = {
+    "non_public": "marqué(s) non public(s) par le producteur — non relayé(s)",
+    "sans_url": "sans URL ni chemin",
+    "url_trop_longue": "URL de plus de 255 caractères (t_medias.media_url)",
+    "doublon": "en double dans la même observation",
+    "type_introuvable": "type TYPE_MEDIA introuvable dans le référentiel local",
+}
+
+
+def _bilan_medias(bilan: dict, dry_run: bool) -> None:
+    if dry_run:
+        click.echo(f"  médias : {bilan['lus']} à rattacher.")
+    else:
+        click.echo(f"  médias : {bilan['lus']} lu(s), {bilan['ajoutes']} ajouté(s), "
+                   f"{bilan['retires']} retiré(s) (un média modifié compte dans les "
+                   f"deux).")
+    for motif, combien in sorted(bilan["ecartes"].items()):
+        click.secho(f"    ⚠ {combien} média(s) {_MOTIFS_MEDIAS.get(motif, motif)}",
+                    fg="yellow")
+
+
 @click.command("geonature-import")
 @click.option("--export", "id_export", default=None, type=int,
               help="Identifiant d'export distant (défaut : configuration).")
@@ -2931,9 +3049,11 @@ def geonature_import(id_export, jeux, depuis, complet, perimetre, max_results,
     """Importe dans la Synthèse les observations d'une autre instance GeoNature."""
     from geonature.utils.config import config as gn_config
     from .core import (report as report_core, synthese as syn_core,
-                       nomenclatures as nomen_core, purge as purge_core)
+                       nomenclatures as nomen_core, purge as purge_core,
+                       medias as medias_core)
     from .sources.geonature import (api as gn_api, conflits as gn_conflits,
-                                    taxonomy as gn_taxo, transform as gn_tr)
+                                    medias as gn_medias, taxonomy as gn_taxo,
+                                    transform as gn_tr)
 
     cfg = _cfg_geonature(id_export)
     pseudonymiser = cfg.get("pseudonymiser_observateurs", False)
@@ -2993,6 +3113,8 @@ def geonature_import(id_export, jeux, depuis, complet, perimetre, max_results,
     licence = cfg["_licence"].get("name", "")
     if licence:
         click.echo(f"  licence de l'export : {licence}")
+    avec_medias, id_location = _medias_geonature(cfg, items, dry_run)
+    url_medias = gn_medias.url_medias_par_defaut(cfg)
 
     # ── Référentiels ─────────────────────────────────────────────────────────
     connus = gn_taxo.charger_index(gn_taxo.codes_a_verifier(items))
@@ -3015,6 +3137,10 @@ def geonature_import(id_export, jeux, depuis, complet, perimetre, max_results,
     caches = {"jdds": {}, "cadres": {}}
     lot, lus, ecrits, maj = [], 0, 0, 0
     hors_perimetre = hors_liste = replis_cd_ref = sans_uuid = conflits_vus = 0
+    # Médias de chaque observation du lot en cours, par `unique_id_sinp` : ils ne peuvent
+    # pas voyager dans la ligne, que `test_insert_alignement` aligne sur `INSERT_SQL`.
+    medias_lot: dict[str, list[dict]] = {}
+    bilan_medias = {"lus": 0, "ajoutes": 0, "retires": 0, "ecartes": {}}
 
     def _ecrire(lignes):
         nonlocal conflits_vus
@@ -3050,6 +3176,19 @@ def geonature_import(id_export, jeux, depuis, complet, perimetre, max_results,
         # du producteur : sans quoi elles deviendraient des doublons invisibles.
         syn_core.realigner_uuid(lignes, contexte["id_source"], cle="gn_uuid_calcule")
         return syn_core.insert_batch(lignes, prevalidation)
+
+    def _ecrire_lot(lignes):
+        """`_ecrire`, puis les médias du lot — dans la même transaction."""
+        resultat = _ecrire(lignes)
+        if avec_medias:
+            ajoutes, retires = medias_core.synchroniser(
+                {str(l["unique_id_sinp"]): medias_lot.get(str(l["unique_id_sinp"]), [])
+                 for l in lignes},
+                contexte["id_source"], id_location)
+            bilan_medias["ajoutes"] += ajoutes
+            bilan_medias["retires"] += retires
+        medias_lot.clear()
+        return resultat
 
     for item in items:
         lus += 1
@@ -3097,16 +3236,19 @@ def geonature_import(id_export, jeux, depuis, complet, perimetre, max_results,
             continue
         if not str(item.get("id_perm_sinp") or "").strip():
             sans_uuid += 1
+        if avec_medias:
+            medias_lot[str(ligne["unique_id_sinp"])] = _resoudre_medias(
+                item, str(ligne["unique_id_sinp"]), url_medias, resolver, bilan_medias)
 
         lot.append(ligne)
         if len(lot) >= batch_size and not dry_run:
-            i, u = _ecrire(lot)
+            i, u = _ecrire_lot(lot)
             ecrits += i; maj += u
             db.session.commit(); lot = []
             click.echo(f"    … {ecrits} écrites, {maj} mises à jour")
 
     if lot and not dry_run:
-        i, u = _ecrire(lot)
+        i, u = _ecrire_lot(lot)
         ecrits += i; maj += u
     if dry_run:
         deja = syn_core.compter_existants(lot)
@@ -3116,6 +3258,8 @@ def geonature_import(id_export, jeux, depuis, complet, perimetre, max_results,
         db.session.commit()
 
     # ── Bilan ────────────────────────────────────────────────────────────────
+    if avec_medias:
+        _bilan_medias(bilan_medias, dry_run)
     if hors_liste:
         click.echo(f"  {hors_liste} enregistrement(s) écarté(s) par la liste blanche "
                    f"de jeux de données.")

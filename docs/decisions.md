@@ -808,6 +808,51 @@ dédoublonne pas et *chaque passage recréerait tout le corpus*. Un uuid5 est do
 producteur publiera son UUID natif, `core.synthese.realigner_uuid` renommera la ligne au
 lieu de la dupliquer, exactement comme cela s'est fait pour VisioNature.
 
+### Médias : l'URL dans `t_medias`, pas le fichier, et pas `digital_proof`
+
+Les médias GeoNature vivent dans `gn_commons.t_medias`, rattachés par UUID. La Synthèse
+les affiche par `uuid_attached_row = unique_id_sinp`, sans regarder la table d'origine.
+La vue `v_synthese_sinp` n'en dit rien. Trois options ont été pesées.
+
+| | retenu ? | pourquoi |
+|---|---|---|
+| URL concaténées dans `digital_proof`, comme VisioNature | non | écraserait la preuve numérique que le producteur a saisie, et le média ne serait ni typé ni affiché comme tel |
+| `GET /gn_commons/medias/<uuid>` du distant, par observation | non | un appel HTTP par observation : des dizaines de milliers par moisson complète. La route n'exige pas de compte aujourd'hui, mais rien ne garantit que cela dure |
+| une colonne `medias` ajoutée par le producteur à son export | **oui** | une requête par page, comme le reste. Le producteur garde la main sur ce qu'il publie |
+
+Le prix est la coopération du producteur : sans colonne, rien n'est importé, et le
+diagnostic le dit.
+
+**Rattachés à la ligne de Synthèse.** `id_table_location` est obligatoire, et GeoNature
+ne déclare pas la Synthèse dans `bib_tables_location`. La migration `c9d3e5f7a1b2` le
+fait. L'emplacement délimite aussi ce que le module gère : les médias d'Occtax,
+rangés sous `cor_counting_occtax`, ne sont jamais lus ni touchés.
+
+**URL seulement.** Copier les fichiers obligerait à gérer un stockage, des vignettes et
+des droits, pour des médias dont le producteur reste responsable. Contrepartie
+assumée : un média retiré à la source cesse de s'afficher ici.
+
+**Synchronisation sans réécriture.** `t_medias` n'a pas de contrainte d'unicité sur
+`unique_id_media`, donc pas d'`ON CONFLICT` possible. L'appariement se fait sur le
+triplet (emplacement, observation, `unique_id_media`). On retire ce qui diffère, puis on
+insère ce qui manque. Un média inchangé garde son `id_media` et ses dates. Le
+`unique_id_media` du producteur est repris, ce qui rend l'appariement stable. À défaut,
+un uuid5 est dérivé de l'observation et de l'URL.
+
+**Ce qui n'est pas lu ne se retire pas.** Seules les observations du lot, lues **avec**
+leur colonne `medias`, sont synchronisées. Une colonne présente mais vide retire les
+médias. Une colonne absente ne retire rien : une vue rabattue sur la vue standard ne doit
+pas vider les médias de tout le corpus.
+
+**Pas de clé étrangère, donc un ménage explicite.** Toute suppression de ligne de
+Synthèse passe par `core/purge._supprimer`, une CTE qui retire dans le même statement
+les médias de la Synthèse rattachés aux UUID supprimés. `realigner_uuid` déplace les
+médias avec la ligne qu'il renomme. Un test interdit tout `DELETE FROM
+gn_synthese.synthese` en dehors de `_supprimer`.
+
+**Non public = non relayé.** `is_public = false` est un choix du producteur. Republier
+le média ici l'annulerait.
+
 ---
 
 ## Pré-validation
